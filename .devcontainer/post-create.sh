@@ -82,10 +82,14 @@ elif [[ -e "$DRAWTHINGS_REPO" ]]; then
     exit 1
 else
     echo "==> Cloning draw-things-community from $DRAWTHINGS_REPO_URL"
+    git clone "$DRAWTHINGS_REPO_URL" "$DRAWTHINGS_REPO"
+
     if [[ -n "$DRAWTHINGS_REPO_REF" ]]; then
-        git clone --branch "$DRAWTHINGS_REPO_REF" --single-branch "$DRAWTHINGS_REPO_URL" "$DRAWTHINGS_REPO"
-    else
-        git clone "$DRAWTHINGS_REPO_URL" "$DRAWTHINGS_REPO"
+        echo "==> Checking out draw-things-community ref: $DRAWTHINGS_REPO_REF"
+        if ! git -C "$DRAWTHINGS_REPO" checkout "$DRAWTHINGS_REPO_REF"; then
+            echo "ERROR: Failed to checkout draw-things-community ref: $DRAWTHINGS_REPO_REF"
+            exit 1
+        fi
     fi
 fi
 
