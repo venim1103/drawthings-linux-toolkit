@@ -20,7 +20,8 @@
     "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
     "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
     "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
-    "DRAWTHINGS_MODEL_DIR": "/workspaces/LTX2_3/dt-models"
+    "DRAWTHINGS_MODEL_DIR": "/workspaces/LTX2_3/dt-models",
+    "DRAWTHINGS_REPO_URL": "https://github.com/drawthingsai/draw-things-community.git"
   },
   "features": {},
   "customizations": {

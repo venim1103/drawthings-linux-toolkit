@@ -12,9 +12,8 @@ output/
 dt-models/
 models/
 
-# Draw Things / Swift build artifacts
-draw-things-community/.build/
-draw-things-community/.swiftpm/
+# Draw Things Community
+draw-things-community
 
 # ComfyUI runtime artifacts
 ComfyUI/output/

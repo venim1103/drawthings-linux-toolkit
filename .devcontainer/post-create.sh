@@ -4,6 +4,8 @@ set -euo pipefail
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRAWTHINGS_MODEL_DIR="${DRAWTHINGS_MODEL_DIR:-$WORKSPACE_ROOT/dt-models}"
 DRAWTHINGS_REPO="$WORKSPACE_ROOT/draw-things-community"
+DRAWTHINGS_REPO_URL="${DRAWTHINGS_REPO_URL:-https://github.com/drawthingsai/draw-things-community.git}"
+DRAWTHINGS_REPO_REF="${DRAWTHINGS_REPO_REF:-}"
 QUANT_PATCH_SCRIPT="$WORKSPACE_ROOT/tools/apply_drawthings_quant_patch.sh"
 VENV_DIR="$WORKSPACE_ROOT/.venv"
 TOOLS_REQ_FILE="$WORKSPACE_ROOT/requirements-drawthings-tools.txt"
@@ -32,6 +34,32 @@ if ! ldconfig -p | grep -q "libxml2.so.2"; then
     exit 1
 fi
 
+echo "==> Ensuring linker tooling availability (ld)..."
+if command -v ld >/dev/null 2>&1; then
+    echo "==> ld already available: $(command -v ld)"
+else
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends binutils
+fi
+
+if ! command -v ld >/dev/null 2>&1; then
+    echo "ERROR: ld not found in PATH after installing binutils."
+    exit 1
+fi
+
+echo "==> Ensuring C/C++ toolchain availability..."
+if command -v gcc >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
+    echo "==> gcc/g++ already available."
+else
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends build-essential
+fi
+
+if ! command -v gcc >/dev/null 2>&1 || ! command -v g++ >/dev/null 2>&1; then
+    echo "ERROR: gcc/g++ not found in PATH after installing build-essential."
+    exit 1
+fi
+
 echo "==> Verifying Python tooling availability..."
 if ! command -v python3 >/dev/null 2>&1; then
     echo "ERROR: python3 not found in PATH."
@@ -40,6 +68,25 @@ fi
 if ! command -v pip3 >/dev/null 2>&1; then
     echo "ERROR: pip3 not found in PATH."
     exit 1
+fi
+if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git not found in PATH."
+    exit 1
+fi
+
+echo "==> Ensuring draw-things-community source tree..."
+if [[ -d "$DRAWTHINGS_REPO/.git" ]]; then
+    echo "==> draw-things-community already present: $DRAWTHINGS_REPO"
+elif [[ -e "$DRAWTHINGS_REPO" ]]; then
+    echo "ERROR: path exists but is not a git repository: $DRAWTHINGS_REPO"
+    exit 1
+else
+    echo "==> Cloning draw-things-community from $DRAWTHINGS_REPO_URL"
+    if [[ -n "$DRAWTHINGS_REPO_REF" ]]; then
+        git clone --branch "$DRAWTHINGS_REPO_REF" --single-branch "$DRAWTHINGS_REPO_URL" "$DRAWTHINGS_REPO"
+    else
+        git clone "$DRAWTHINGS_REPO_URL" "$DRAWTHINGS_REPO"
+    fi
 fi
 
 echo "==> Bootstrapping workspace virtual environment..."

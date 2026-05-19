@@ -21,6 +21,8 @@ RUN set -eux; \
         python3-pip \
         python3-venv \
         python-is-python3 \
+        binutils \
+        build-essential \
         flatbuffers-compiler \
         libxml2 \
         libxml2-dev \
