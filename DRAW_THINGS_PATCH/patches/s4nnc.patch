@@ -1,0 +1,77 @@
+diff --git a/Package.swift b/Package.swift
+index d1bdb8d..27e10d7 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -1,6 +1,34 @@
+ // swift-tools-version:5.9
++import Foundation
+ import PackageDescription
+ 
++let isLinuxHost = FileManager.default.fileExists(atPath: "/proc/sys/kernel/ostype")
++
++let nncTargetDependencies: [Target.Dependency] = {
++  var deps: [Target.Dependency] = [
++    .product(name: "nnc", package: "ccv"),
++    .product(name: "sfmt", package: "ccv"),
++  ]
++  if !isLinuxHost {
++    deps.append(.product(name: "lib_nnc_mps_compat", package: "ccv"))
++  }
++  deps.append(.product(name: "SQLite3", package: "swift-sqlite3-support"))
++  deps.append(.product(name: "C_fpzip", package: "swift-fpzip-support"))
++  deps.append("C_zlib")
++  return deps
++}()
++
++let coreMLConversionDependencies: [Target.Dependency] = {
++  var deps: [Target.Dependency] = [
++    "NNC",
++  ]
++  if !isLinuxHost {
++    deps.append(.product(name: "lib_nnc_mps_compat", package: "ccv"))
++  }
++  deps.append(.product(name: "sfmt", package: "ccv"))
++  return deps
++}()
++
+ let package = Package(
+   name: "s4nnc",
+   platforms: [
+@@ -33,6 +61,9 @@ let package = Package(
+     .package(
+       url: "https://github.com/apple/swift-system.git",
+       revision: "fbd61a676d79cbde05cd4fda3cc46e94d6b8f0eb"),
++    .package(
++      url: "https://github.com/liuliu/swift-sqlite3-support.git",
++      revision: "9d543d0af5da0b81ae65be3a61ea6920647779a7"),
+   ],
+   targets: [
+     // C_zlib - System zlib wrapper
+@@ -44,13 +75,7 @@ let package = Package(
+     // NNC - Main Swift library
+     .target(
+       name: "NNC",
+-      dependencies: [
+-        .product(name: "nnc", package: "ccv"),
+-        .product(name: "sfmt", package: "ccv"),
+-        .product(name: "lib_nnc_mps_compat", package: "ccv"),
+-        .product(name: "C_fpzip", package: "swift-fpzip-support"),
+-        "C_zlib",
+-      ],
++      dependencies: nncTargetDependencies,
+       path: "nnc",
+       exclude: [
+         "C_ccv",
+@@ -95,11 +120,7 @@ let package = Package(
+     // NNCCoreMLConversion - CoreML conversion utilities
+     .target(
+       name: "NNCCoreMLConversion",
+-      dependencies: [
+-        "NNC",
+-        .product(name: "lib_nnc_mps_compat", package: "ccv"),
+-        .product(name: "sfmt", package: "ccv"),
+-      ],
++      dependencies: coreMLConversionDependencies,
+       path: "nnc",
+       exclude: [
+         "C_ccv",

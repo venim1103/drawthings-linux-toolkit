@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local caches and outputs
+.cache/
+output/
+dt-models/
+models/
+
+# Draw Things / Swift build artifacts
+draw-things-community/.build/
+draw-things-community/.swiftpm/
+
+# ComfyUI runtime artifacts
+ComfyUI/output/
+ComfyUI/temp/
+ComfyUI/input/
+
+# Editor and OS files
+.vscode/
+.DS_Store
+
+# Logs
+*.log
+
+# Optional local binaries
+tools/grpcurl

@@ -1,0 +1,8 @@
+grpcio
+grpcio-tools
+protobuf
+flatbuffers
+numpy
+pillow
+opencv-python-headless
+fpzip

@@ -1,0 +1,8 @@
+accelerate
+safetensors
+imageio
+imageio-ffmpeg
+bitsandbytes
+diffusers
+sentencepiece
+tiktoken

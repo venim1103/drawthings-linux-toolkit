@@ -1,0 +1,268 @@
+diff --git a/Apps/ModelQuantizer/Quantizer.swift b/Apps/ModelQuantizer/Quantizer.swift
+index 7f3969b..ddbf58d 100644
+--- a/Apps/ModelQuantizer/Quantizer.swift
++++ b/Apps/ModelQuantizer/Quantizer.swift
+@@ -2,6 +2,15 @@ import ArgumentParser
+ import Diffusion
+ import NNC
+ 
++enum QuantizationTargetCodec: String, ExpressibleByArgument {
++  case auto
++  case q4p
++  case q5p
++  case q6p
++  case q8p
++  case i8x
++}
++
+ @main
+ struct Quantizer: ParsableCommand {
+   @Option(
+@@ -24,6 +33,13 @@ struct Quantizer: ParsableCommand {
+   @Option(name: .shortAndLong, help: "The output file after conversion")
+   var outputFile: String
+ 
++  @Option(
++    name: .long,
++    help:
++      "Target quantization codec. Use auto for model-specific defaults, or force one of: q4p, q5p, q6p, q8p, i8x."
++  )
++  var targetCodec: QuantizationTargetCodec = .auto
++
+   mutating func run() throws {
+     // Convert string to ModelVersion enum
+     guard let version = ModelVersion(rawValue: modelVersion) else {
+@@ -32,6 +48,25 @@ struct Quantizer: ParsableCommand {
+     // Now you can use 'version' as your ModelVersion enum
+     print("Converting \(inputFile), model version: \(version)")
+ 
++    let forcedCodec: DynamicGraph.Store.Codec?
++    switch targetCodec {
++    case .auto:
++      forcedCodec = nil
++    case .q4p:
++      forcedCodec = .q4p
++    case .q5p:
++      forcedCodec = .q5p
++    case .q6p:
++      forcedCodec = .q6p
++    case .q8p:
++      forcedCodec = .q8p
++    case .i8x:
++      forcedCodec = .i8x
++    }
++    if let forcedCodec {
++      print("Forcing quantization codec: \(targetCodec.rawValue) (\(forcedCodec))")
++    }
++
+     let graph = DynamicGraph()
+     graph.openStore(
+       inputFile, flags: .readOnly, externalStore: TensorData.externalStore(filePath: inputFile)
+@@ -40,7 +75,14 @@ struct Quantizer: ParsableCommand {
+ 
+       graph.openStore(outputFile) {
+         for key in keys {
+-          guard let tensor = store.read(key, codec: [.q8p, .q8p, .ezm7, .externalData]) else {
++          guard
++            let tensor = store.read(
++              key,
++              codec: [
++                .jit, .q4p, .q5p, .q6p, .q7p, .q8p, .i8x, .ezm7, .externalData,
++                .externalOnDemand,
++              ])
++          else {
+             continue
+           }
+ 
+@@ -48,6 +90,24 @@ struct Quantizer: ParsableCommand {
+           let fp16 = Tensor<FloatType>(from: tensor)
+           let shape = fp16.shape
+           let squeezedDims = shape.reduce(0) { $1 > 1 ? 1 + $0 : $0 }
++
++          if let forcedCodec {
++            // Keep common fragile projection/positional tensors in FP16 when forcing a codec.
++            if key.contains("embedder") || key.contains("pos_embed") || key.contains("visual_proj")
++              || key.contains("encoder_hid_proj") || key.contains("register_tokens")
++              || key.contains("refiner_")
++            {
++              $0.write(key, tensor: fp16)
++              continue
++            }
++            if squeezedDims > 1 {
++              $0.write(key, tensor: fp16, codec: forcedCodec)
++            } else {
++              $0.write(key, tensor: fp16, codec: .ezm7)
++            }
++            continue
++          }
++
+           switch version {
+           case .v1, .v2, .ssd1b, .svdI2v, .sdxlBase, .sdxlRefiner, .wurstchenStageB, .kandinsky21:
+             if key.contains("visual_proj") || key.contains("encoder_hid_proj") {
+@@ -262,7 +322,23 @@ struct Quantizer: ParsableCommand {
+               }
+             }
+           case .ltx2, .ltx2_3:
+-            fatalError()
++            if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
++              $0.write(key, tensor: fp16)
++            } else {
++              if squeezedDims > 1 {
++                if key.contains("ada_ln") {
++                  $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
++                } else {
++                  if shape.count == 4 {  // Convolution.
++                    $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
++                  } else {
++                    $0.write(key, tensor: fp16, codec: [.q6p, .ezm7])
++                  }
++                }
++              } else {
++                $0.write(key, tensor: fp16, codec: .ezm7)
++              }
++            }
+           case .flux2, .flux2_9b, .flux2_4b:
+             if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
+               $0.write(key, tensor: fp16)
+diff --git a/Package.swift b/Package.swift
+index a85f7bf..f6be90a 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -8,6 +8,7 @@ let package = Package(
+   products: [
+     .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
+     .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
++    .executable(name: "model-quantizer", targets: ["ModelQuantizer"]),
+     .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
+   ],
+   dependencies: [
+@@ -78,6 +79,15 @@ let package = Package(
+       path: "Libraries/BinaryResources/GeneratedC",
+       publicHeadersPath: "."
+     ),
++    .systemLibrary(
++      name: "CZlib",
++      path: "Vendors/ZIPFoundation/Sources/CZLib",
++      pkgConfig: "zlib",
++      providers: [
++        .apt(["zlib1g-dev"]),
++        .brew(["zlib"]),
++      ]
++    ),
+     .target(
+       name: "BinaryResources",
+       dependencies: ["C_Resources"],
+@@ -91,6 +101,7 @@ let package = Package(
+     ),
+     .target(
+       name: "ZIPFoundation",
++      dependencies: ["CZlib"],
+       path: "Vendors/ZIPFoundation/Sources/ZIPFoundation"
+     ),
+ 
+@@ -471,6 +482,16 @@ let package = Package(
+       path: "Apps/DrawThingsCLI",
+       sources: ["DrawThingsCLI.swift"]
+     ),
++    .executableTarget(
++      name: "ModelQuantizer",
++      dependencies: [
++        "Diffusion",
++        .product(name: "ArgumentParser", package: "swift-argument-parser"),
++        .product(name: "NNC", package: "s4nnc"),
++      ],
++      path: "Apps/ModelQuantizer",
++      sources: ["Quantizer.swift"]
++    ),
+     .target(
+       name: "DeviceAttestation",
+       path: "Libraries/DeviceAttestation/Sources"
+diff --git a/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift b/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
+index 7c261ab..de36fd5 100644
+--- a/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
++++ b/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
+@@ -18,27 +18,82 @@ extension Archive {
+ 
+   extension Archive {
+     /// Returns a `Data` object containing a representation of the receiver.
+-    public var data: Data? { return self.memoryFile?.data }
++    public var data: Data? { return self.memoryFile?.snapshotData() }
+   }
+ 
+   class MemoryFile {
+     private(set) var data: Data
+     private var offset = 0
++    #if os(Linux)
++      private var tempFile: FILEPointer?
++    #endif
+ 
+     init(data: Data = Data()) {
+       self.data = data
+     }
+ 
++    func snapshotData() -> Data {
++      #if os(Linux)
++        guard let tempFile else {
++          return data
++        }
++        fflush(tempFile)
++        let currentOffset = ftello(tempFile)
++        guard currentOffset >= 0 else {
++          return data
++        }
++        fseeko(tempFile, 0, SEEK_END)
++        let endOffset = ftello(tempFile)
++        guard endOffset >= 0 else {
++          fseeko(tempFile, currentOffset, SEEK_SET)
++          return data
++        }
++        fseeko(tempFile, 0, SEEK_SET)
++        var updatedData = Data(count: Int(endOffset))
++        let bufferCount = updatedData.count
++        let bytesRead = updatedData.withUnsafeMutableBytes { buffer -> Int in
++          guard let baseAddress = buffer.baseAddress else {
++            return 0
++          }
++          return fread(baseAddress, 1, bufferCount, tempFile)
++        }
++        if bytesRead < bufferCount {
++          updatedData.count = bytesRead
++        }
++        fseeko(tempFile, currentOffset, SEEK_SET)
++        data = updatedData
++      #endif
++      return data
++    }
++
+     func open(mode: String) -> FILEPointer? {
+-      let cookie = Unmanaged.passRetained(self)
+       let writable = mode.count > 0 && (mode.first! != "r" || mode.last! == "+")
+       let append = mode.count > 0 && mode.first! == "a"
+       #if os(macOS) || os(iOS) || os(watchOS) || os(tvOS) || os(visionOS) || os(Android)
++        let cookie = Unmanaged.passRetained(self)
+         let result =
+           writable
+           ? funopen(cookie.toOpaque(), readStub, writeStub, seekStub, closeStub)
+           : funopen(cookie.toOpaque(), readStub, nil, seekStub, closeStub)
++      #elseif os(Linux)
++        guard let result = tmpfile() else { return nil }
++        if !data.isEmpty {
++          _ = data.withUnsafeBytes { buffer in
++            guard let baseAddress = buffer.baseAddress else {
++              return 0
++            }
++            return fwrite(baseAddress, 1, buffer.count, result)
++          }
++          fflush(result)
++        }
++        if append {
++          fseeko(result, 0, SEEK_END)
++        } else {
++          fseeko(result, 0, SEEK_SET)
++        }
++        tempFile = result
+       #else
++        let cookie = Unmanaged.passRetained(self)
+         let stubs = cookie_io_functions_t(
+           read: readStub, write: writeStub, seek: seekStub, close: closeStub)
+         let result = fopencookie(cookie.toOpaque(), mode, stubs)
