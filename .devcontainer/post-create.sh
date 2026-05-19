@@ -6,6 +6,8 @@ DRAWTHINGS_MODEL_DIR="${DRAWTHINGS_MODEL_DIR:-$WORKSPACE_ROOT/dt-models}"
 DRAWTHINGS_REPO="$WORKSPACE_ROOT/draw-things-community"
 DRAWTHINGS_REPO_URL="${DRAWTHINGS_REPO_URL:-https://github.com/drawthingsai/draw-things-community.git}"
 DRAWTHINGS_REPO_REF="${DRAWTHINGS_REPO_REF:-}"
+DRAWTHINGS_PREBUILD_RELEASE="${DRAWTHINGS_PREBUILD_RELEASE:-0}"
+DRAWTHINGS_PREBUILD_CLI="${DRAWTHINGS_PREBUILD_CLI:-0}"
 QUANT_PATCH_SCRIPT="$WORKSPACE_ROOT/tools/apply_drawthings_quant_patch.sh"
 VENV_DIR="$WORKSPACE_ROOT/.venv"
 TOOLS_REQ_FILE="$WORKSPACE_ROOT/requirements-drawthings-tools.txt"
@@ -166,16 +168,24 @@ else
 fi
 
 if command -v swift >/dev/null 2>&1 && [[ -d "$DRAWTHINGS_REPO" ]]; then
-    echo "==> Prebuilding Draw Things CLI binaries (release) to avoid rebuild on every run..."
+    if [[ "$DRAWTHINGS_PREBUILD_RELEASE" != "1" ]]; then
+        echo "==> Skipping optional Swift prebuilds (set DRAWTHINGS_PREBUILD_RELEASE=1 to enable)."
+    elif pgrep -f "swift-(build|package).*$DRAWTHINGS_REPO" >/dev/null 2>&1; then
+        echo "WARNING: Another SwiftPM process is active for $DRAWTHINGS_REPO. Skipping optional prebuilds."
+    else
+        echo "==> Optional prebuild enabled. Compiling release products when missing..."
 
-    if [[ ! -x "$DRAWTHINGS_REPO/.build/release/draw-things-cli" ]] && [[ ! -x "$DRAWTHINGS_REPO/.build/release/DrawThingsCLI" ]]; then
-        if ! swift build --package-path "$DRAWTHINGS_REPO" -c release --product draw-things-cli; then
-            swift build --package-path "$DRAWTHINGS_REPO" -c release --product DrawThingsCLI || true
+        if [[ "$DRAWTHINGS_PREBUILD_CLI" == "1" ]] && [[ ! -x "$DRAWTHINGS_REPO/.build/release/draw-things-cli" ]]; then
+            if ! swift build --package-path "$DRAWTHINGS_REPO" -c release --product draw-things-cli; then
+                echo "WARNING: draw-things-cli prebuild failed; continuing setup."
+            fi
         fi
-    fi
 
-    if [[ ! -x "$DRAWTHINGS_REPO/.build/release/model-quantizer" ]]; then
-        swift build --package-path "$DRAWTHINGS_REPO" -c release --product model-quantizer || true
+        if [[ ! -x "$DRAWTHINGS_REPO/.build/release/model-quantizer" ]]; then
+            if ! swift build --package-path "$DRAWTHINGS_REPO" -c release --product model-quantizer; then
+                echo "WARNING: model-quantizer prebuild failed; continuing setup."
+            fi
+        fi
     fi
 fi
 

@@ -30,7 +30,9 @@ When the container is created, .devcontainer/post-create.sh performs:
 - Python virtual environment bootstrap at .venv.
 - Python dependency installs from requirements files.
 - Draw Things patch application via tools/apply_drawthings_quant_patch.sh.
-- Prebuild of draw-things-cli and model-quantizer binaries (release) when missing.
+- Optional Swift prebuilds are skipped by default to keep first-run stable on Linux.
+  - Enable with DRAWTHINGS_PREBUILD_RELEASE=1.
+  - Optionally include CLI prebuild with DRAWTHINGS_PREBUILD_CLI=1.
 - Shell aliases in ~/.bashrc:
   - drawthings-start
   - dt-venv
