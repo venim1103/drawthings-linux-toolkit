@@ -196,7 +196,12 @@ def resolve_spec(specs: Iterable[ModelSpec], model_ref: str) -> ModelSpec:
     )
 
 
-def required_files_for_spec(spec: ModelSpec, include_upscalers: bool) -> List[str]:
+def required_files_for_spec(
+    spec: ModelSpec,
+    *,
+    include_upscalers: bool,
+    include_dependencies: bool,
+) -> List[str]:
     files: List[str] = []
 
     def add(name: str | None) -> None:
@@ -206,6 +211,9 @@ def required_files_for_spec(spec: ModelSpec, include_upscalers: bool) -> List[st
             files.append(name)
 
     add(spec.file)
+    if not include_dependencies:
+        return files
+
     add(spec.text_encoder or ("clip_vit_l14_f16.ckpt" if spec.version == "v1" else "open_clip_vit_h14_f16.ckpt"))
     add(spec.autoencoder or "vae_ft_mse_840000_f16.ckpt")
     add(spec.image_encoder)
@@ -491,11 +499,19 @@ def _verify_hash_or_raise(path: Path, expected_sha: str, file_name: str) -> None
         )
 
 
-def print_model_list(specs: List[ModelSpec], filter_text: str | None) -> None:
+def print_model_list(
+    specs: List[ModelSpec],
+    filter_text: str | None,
+    *,
+    models_dir: Path,
+    downloaded_only: bool,
+) -> None:
     rows = specs
     if filter_text:
         x = filter_text.lower()
         rows = [s for s in rows if x in s.file.lower() or x in s.name.lower() or x in s.version.lower()]
+    if downloaded_only:
+        rows = [s for s in rows if (models_dir / s.file).exists()]
     for s in rows:
         print(f"{s.file}\t{s.name}\t{s.version}")
 
@@ -531,10 +547,27 @@ def main() -> int:
     ap.add_argument("--retries", type=int, default=2, help="Retries per file when download fails")
     ap.add_argument("--timeout", type=int, default=60, help="HTTP timeout in seconds")
     ap.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="Download chunk size in bytes")
+    ap.add_argument(
+        "--include-dependencies",
+        action="store_true",
+        default=True,
+        help="Include dependent model files in requirements (default: true)",
+    )
+    ap.add_argument(
+        "--no-include-dependencies",
+        dest="include_dependencies",
+        action="store_false",
+        help="Only require the primary model file",
+    )
     ap.add_argument("--include-upscalers", action="store_true", default=True, help="Include latent upscalers in requirements (default: true)")
     ap.add_argument("--no-include-upscalers", dest="include_upscalers", action="store_false", help="Exclude latent upscalers")
     ap.add_argument("--list", action="store_true", help="List known built-in model mappings")
     ap.add_argument("--filter", help="Filter text for --list")
+    ap.add_argument(
+        "--downloaded-only",
+        action="store_true",
+        help="With --list, show only models present in --models-dir",
+    )
     ap.add_argument("--verify-existing", action="store_true", help="Verify sha256 of already-present files when hash metadata exists")
 
     args = ap.parse_args()
@@ -558,14 +591,23 @@ def main() -> int:
         sha_map = parse_sha_mapping(swift_text)
 
         if args.list:
-            print_model_list(specs, args.filter)
+            print_model_list(
+                specs,
+                args.filter,
+                models_dir=models_dir,
+                downloaded_only=args.downloaded_only,
+            )
             return 0
 
         if not args.model:
             raise RuntimeError("--model is required unless using --list")
 
         spec = resolve_spec(specs, args.model)
-        required = required_files_for_spec(spec, include_upscalers=args.include_upscalers)
+        required = required_files_for_spec(
+            spec,
+            include_upscalers=args.include_upscalers,
+            include_dependencies=args.include_dependencies,
+        )
 
         print(f"Model: {spec.name}")
         print(f"File: {spec.file}")
