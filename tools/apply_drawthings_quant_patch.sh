@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${1:-/workspaces/LTX2_3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_ROOT="${DRAWTHINGS_WORKSPACE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ROOT="${1:-$DEFAULT_ROOT}"
 PATCH_ROOT="$ROOT/DRAW_THINGS_PATCH"
 REPO_ROOT="$ROOT/draw-things-community"
 PATCHES_DIR="$PATCH_ROOT/patches"

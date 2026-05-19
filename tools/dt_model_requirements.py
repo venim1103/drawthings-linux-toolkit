@@ -26,10 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Literal
 
-DEFAULT_MODELZOO_SWIFT = Path(
-    "/workspaces/LTX2_3/draw-things-community/Libraries/ModelZoo/Sources/ModelZoo.swift"
-)
-DEFAULT_MODELS_DIR = Path("/workspaces/LTX2_3/dt-models")
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODELZOO_SWIFT = WORKSPACE_ROOT / "draw-things-community/Libraries/ModelZoo/Sources/ModelZoo.swift"
+DEFAULT_MODELS_DIR = WORKSPACE_ROOT / "dt-models"
 DEFAULT_DOWNLOAD_BASE = "https://static.libnnc.org"
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 

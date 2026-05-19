@@ -11,9 +11,10 @@ from pathlib import Path
 import grpc
 from google.protobuf.json_format import MessageToDict
 
-DEFAULT_PROTO = Path(
-    "/workspaces/LTX2_3/draw-things-community/Libraries/GRPC/Models/Sources/imageService/imageService.proto"
-)
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PROTO = WORKSPACE_ROOT / "draw-things-community/Libraries/GRPC/Models/Sources/imageService/imageService.proto"
+DEFAULT_CACHE_DIR = WORKSPACE_ROOT / ".cache/dt_proto"
+DEFAULT_OUTPUT_DIR = WORKSPACE_ROOT / "output/dt_api"
 DEFAULT_HOST = "127.0.0.1:7859"
 
 
@@ -293,7 +294,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--cache-dir",
-        default="/workspaces/LTX2_3/.cache/dt_proto",
+        default=str(DEFAULT_CACHE_DIR),
         help="Directory for generated Python stubs",
     )
     parser.add_argument(
@@ -333,7 +334,7 @@ def main() -> int:
     p_generate.add_argument("--mask-content-index", type=int)
     p_generate.add_argument("--image-hash-hex", default="", help="Optional SHA256 hex for image field")
     p_generate.add_argument("--mask-hash-hex", default="", help="Optional SHA256 hex for mask field")
-    p_generate.add_argument("--output-dir", default="/workspaces/LTX2_3/output/dt_api")
+    p_generate.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     p_generate.add_argument("--save-preview", action="store_true")
     p_generate.add_argument("--max-responses", type=int, default=0, help="0 means no limit")
 

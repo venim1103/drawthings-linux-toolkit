@@ -6,7 +6,8 @@ from pathlib import Path
 
 import flatbuffers
 
-DEFAULT_PY_BINDINGS = Path("/workspaces/LTX2_3/.cache/dt_flatbuf_py")
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PY_BINDINGS = WORKSPACE_ROOT / ".cache/dt_flatbuf_py"
 
 
 def _parse_bool(v: str) -> bool:

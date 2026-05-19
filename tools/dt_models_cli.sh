@@ -9,9 +9,14 @@ set -euo pipefail
 #   tools/dt_models_cli.sh ensure ltx_2.3_22b_distilled_1.1_q6p.ckpt
 #   tools/dt_models_cli.sh ensure ltx_2.3_22b_distilled_1.1_q6p.ckpt --offline
 
-ROOT="/workspaces/LTX2_3"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${DRAWTHINGS_WORKSPACE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PKG_PATH="$ROOT/draw-things-community"
-MODELS_DIR_DEFAULT="$ROOT/dt-models"
+if [[ -n "${DRAWTHINGS_MODEL_DIR:-}" ]] && [[ -d "${DRAWTHINGS_MODEL_DIR}" ]]; then
+  MODELS_DIR_DEFAULT="$DRAWTHINGS_MODEL_DIR"
+else
+  MODELS_DIR_DEFAULT="$ROOT/dt-models"
+fi
 BUILD_CONFIG="${DRAWTHINGS_BUILD_CONFIG:-release}"
 
 resolve_cli_bin() {
@@ -29,7 +34,8 @@ resolve_cli_bin() {
 
   echo "==> Building Draw Things CLI ($BUILD_CONFIG) once for reuse..."
   if ! swift build --package-path "$PKG_PATH" -c "$BUILD_CONFIG" --product draw-things-cli; then
-    swift build --package-path "$PKG_PATH" -c "$BUILD_CONFIG" --product DrawThingsCLI
+    echo "error: failed to build draw-things-cli; see swift build errors above" >&2
+    exit 1
   fi
 
   if [[ -x "$primary" ]]; then
