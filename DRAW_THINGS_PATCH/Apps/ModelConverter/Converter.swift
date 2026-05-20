@@ -4,6 +4,11 @@ import Foundation
 import ModelOp
 import ModelZoo
 import NNC
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 @main
 struct Converter: ParsableCommand {
@@ -19,6 +24,10 @@ struct Converter: ParsableCommand {
   var outputDirectory: String
   @Flag(help: "Whether to convert the text encoder(s).")
   var textEncoders = false
+  @Option(help: "Override math backend thread count. Defaults to available CPU cores.")
+  var mathThreads: Int? = nil
+  @Flag(help: "Suppress progress updates on stderr.")
+  var quiet = false
 
   private struct Specification: Codable {
     var name: String
@@ -32,15 +41,75 @@ struct Converter: ParsableCommand {
     var guidanceEmbed: Bool?
   }
 
+  private func writeStderr(_ message: String) {
+    FileHandle.standardError.write(Data(message.utf8))
+  }
+
+  private func configureMathThreadEnvironment() {
+    let requestedThreads = mathThreads ?? ProcessInfo.processInfo.activeProcessorCount
+    let threadCount = max(requestedThreads, 1)
+    let threadCountString = String(threadCount)
+    let env = ProcessInfo.processInfo.environment
+    let mathThreadKeys = [
+      "OPENBLAS_NUM_THREADS",
+      "OMP_NUM_THREADS",
+      "MKL_NUM_THREADS",
+      "GOTO_NUM_THREADS",
+      "BLIS_NUM_THREADS",
+      "VECLIB_MAXIMUM_THREADS",
+      "NUMEXPR_NUM_THREADS",
+    ]
+
+    var applied = [String]()
+    for key in mathThreadKeys {
+      if mathThreads == nil && env[key] != nil {
+        continue
+      }
+      setenv(key, threadCountString, 1)
+      applied.append("\(key)=\(threadCountString)")
+    }
+
+    if !quiet && !applied.isEmpty {
+      writeStderr("configured math threads: \(applied.joined(separator: ", "))\n")
+    }
+  }
+
   mutating func run() throws {
+    configureMathThreadEnvironment()
+
     ModelZoo.externalUrls = [URL(fileURLWithPath: outputDirectory)]
     let fileName = Importer.cleanup(filename: name)
     let importer = ModelImporter(
       filePath: file, modelName: fileName,
       isTextEncoderCustomized: textEncoders,
       autoencoderFilePath: autoencoderFile, textEncoderFilePath: nil, textEncoder2FilePath: nil)
+    let shouldReportProgress = !quiet
+    var lastPercent = -1
+    let reportProgress: (Float) -> Void = { progress in
+      if !shouldReportProgress {
+        return
+      }
+
+      let clamped = max(0, min(progress, 1))
+      let percent = Int((clamped * 100).rounded(.down))
+      if percent <= lastPercent {
+        return
+      }
+      lastPercent = percent
+
+      let barWidth = 40
+      let filled = min(barWidth, max(0, Int((clamped * Float(barWidth)).rounded(.down))))
+      let bar = String(repeating: "#", count: filled)
+        + String(repeating: "-", count: barWidth - filled)
+      let paddedPercent = String(format: "%3d", percent)
+      FileHandle.standardError.write(Data("convert progress \(paddedPercent)% [\(bar)]\n".utf8))
+    }
     let (filePaths, modelVersion, modifier, inspectionResult) = try importer.import { _ in
-    } progress: { _ in
+    } progress: { progress in
+      reportProgress(progress)
+    }
+    if shouldReportProgress {
+      reportProgress(1)
     }
     let fileNames = filePaths.map { ($0 as NSString).lastPathComponent }
     var autoencoder = fileNames.first {
