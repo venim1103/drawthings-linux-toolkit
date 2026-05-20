@@ -1,5 +1,18 @@
+diff --git a/Apps/ModelConverter/Converter.swift b/Apps/ModelConverter/Converter.swift
+index 1ab4a19f..4ab13eb9 100644
+--- a/Apps/ModelConverter/Converter.swift
++++ b/Apps/ModelConverter/Converter.swift
+@@ -170,7 +170,7 @@ struct Converter: ParsableCommand {
+     case .flux2, .flux2_9b, .flux2_4b:
+       fatalError()
+     case .ltx2, .ltx2_3:
+-      fatalError()
++      textEncoder = nil
+     case .kandinsky21, .wurstchenStageC, .wurstchenStageB, .auraflow:
+       fatalError()
+     }
 diff --git a/Apps/ModelQuantizer/Quantizer.swift b/Apps/ModelQuantizer/Quantizer.swift
-index 7f3969b..ddbf58d 100644
+index 7f3969b1..ddbf58d8 100644
 --- a/Apps/ModelQuantizer/Quantizer.swift
 +++ b/Apps/ModelQuantizer/Quantizer.swift
 @@ -2,6 +2,15 @@ import ArgumentParser
@@ -124,19 +137,59 @@ index 7f3969b..ddbf58d 100644
            case .flux2, .flux2_9b, .flux2_4b:
              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
                $0.write(key, tensor: fp16)
+diff --git a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift b/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
+index d2a5d9f6..bced744a 100644
+--- a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
++++ b/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
+@@ -93,9 +93,9 @@ private func FeedForward(hiddenSize: Int, intermediateSize: Int, upcast: Bool, n
+   out = w2(out)
+   if upcast {
+     let scaleFactor: Float = 4
+-    out = out.to(.Float32) * scaleFactor
++    out = out.to(DataType.Float32) * scaleFactor
+   } else {
+-    out = out.to(.Float32)
++    out = out.to(DataType.Float32)
+   }
+   return (w1, w2, w3, Model([x], [out]))
+ }
+@@ -775,9 +775,9 @@ private func LoRAFeedForward(
+   out = w2(out)
+   if upcast {
+     let scaleFactor: Float = 4
+-    out = out.to(.Float32) * scaleFactor
++    out = out.to(DataType.Float32) * scaleFactor
+   } else {
+-    out = out.to(.Float32)
++    out = out.to(DataType.Float32)
+   }
+   return (w1, w2, w3, Model([x], [out]))
+ }
 diff --git a/Package.swift b/Package.swift
-index a85f7bf..f6be90a 100644
+index 6ae4c90b..8d31497a 100644
 --- a/Package.swift
 +++ b/Package.swift
-@@ -8,6 +8,7 @@ let package = Package(
+@@ -8,15 +8,17 @@ let package = Package(
    products: [
      .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
      .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
 +    .executable(name: "model-quantizer", targets: ["ModelQuantizer"]),
++    .executable(name: "model-converter", targets: ["ModelConverter"]),
      .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
    ],
    dependencies: [
-@@ -78,6 +79,15 @@ let package = Package(
+     .package(
+-      url: "https://github.com/liuliu/ccv.git", revision: "48ec1fd002f4da916323fcd8bb79d3e00885dd4f"
++      url: "https://github.com/liuliu/ccv.git", revision: "0b3bb15153c19f120a9e41f842c26e6ab6c09ece"
+     ),
+     .package(
+       url: "https://github.com/liuliu/s4nnc.git",
+-      revision: "594050126b5cee0dd18488dc05a57947df912878"),
++      revision: "c91108d94ebadc53b7e782e90c51e48c1162c4de"),
+     .package(
+       url: "https://github.com/liuliu/dflat.git",
+       revision: "73925e51e4f44add842177a229f9990cb13711ff"),
+@@ -78,6 +80,15 @@ let package = Package(
        path: "Libraries/BinaryResources/GeneratedC",
        publicHeadersPath: "."
      ),
@@ -152,7 +205,7 @@ index a85f7bf..f6be90a 100644
      .target(
        name: "BinaryResources",
        dependencies: ["C_Resources"],
-@@ -91,6 +101,7 @@ let package = Package(
+@@ -91,6 +102,7 @@ let package = Package(
      ),
      .target(
        name: "ZIPFoundation",
@@ -160,7 +213,21 @@ index a85f7bf..f6be90a 100644
        path: "Vendors/ZIPFoundation/Sources/ZIPFoundation"
      ),
  
-@@ -471,6 +482,16 @@ let package = Package(
+@@ -101,11 +113,10 @@ let package = Package(
+     .target(
+       name: "LLM",
+       dependencies: [
+-        "Tokenizer",
+-        .product(name: "ccv", package: "ccv"),
+         .product(name: "NNC", package: "s4nnc"),
+       ],
+-      path: "Libraries/SwiftLLM/Sources"
++      path: "Libraries/SwiftLLM/Sources",
++      sources: ["TensorData.swift", "Models/Moondream.swift"]
+     ),
+     .target(
+       name: "Diffusion",
+@@ -481,6 +492,28 @@ let package = Package(
        path: "Apps/DrawThingsCLI",
        sources: ["DrawThingsCLI.swift"]
      ),
@@ -174,11 +241,23 @@ index a85f7bf..f6be90a 100644
 +      path: "Apps/ModelQuantizer",
 +      sources: ["Quantizer.swift"]
 +    ),
++    .executableTarget(
++      name: "ModelConverter",
++      dependencies: [
++        "Diffusion",
++        "ModelOp",
++        "ModelZoo",
++        .product(name: "ArgumentParser", package: "swift-argument-parser"),
++        .product(name: "NNC", package: "s4nnc"),
++      ],
++      path: "Apps/ModelConverter",
++      sources: ["Converter.swift"]
++    ),
      .target(
        name: "DeviceAttestation",
        path: "Libraries/DeviceAttestation/Sources"
 diff --git a/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift b/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
-index 7c261ab..de36fd5 100644
+index 7c261ab7..de36fd54 100644
 --- a/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
 +++ b/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
 @@ -18,27 +18,82 @@ extension Archive {
@@ -266,3 +345,41 @@ index 7c261ab..de36fd5 100644
          let stubs = cookie_io_functions_t(
            read: readStub, write: writeStub, seek: seekStub, close: closeStub)
          let result = fopencookie(cookie.toOpaque(), mode, stubs)
+diff --git a/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift b/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
+new file mode 100644
+index 00000000..a8801b7a
+--- /dev/null
++++ b/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
+@@ -0,0 +1,31 @@
++import NNC
++
++extension Functional {
++  public static func swishMul(
++    value: Model.IO,
++    gate: Model.IO,
++    beta: Float = 1,
++    scale: Float = 1,
++    streamContext: StreamContext? = nil
++  ) -> Model.IO {
++    let activated = gate.swish(beta: beta)
++    if scale == 1 {
++      return value .* activated
++    }
++    return scale * (value .* activated)
++  }
++
++  public static func swishMul<T: DynamicGraph.TensorGroup>(
++    value: T,
++    gate: T,
++    beta: Float = 1,
++    scale: Float = 1,
++    streamContext: StreamContext? = nil
++  ) -> T {
++    let activated = Functional.swish(gate, beta: beta, streamContext: streamContext)
++    if scale == 1 {
++      return value .* activated
++    }
++    return scale * (value .* activated)
++  }
++}
+\ No newline at end of file

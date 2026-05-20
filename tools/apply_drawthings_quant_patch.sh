@@ -57,15 +57,6 @@ copy_snapshot_patch() {
     return 1
   fi
 
-  if [[ ! -e "$dst" ]]; then
-    if [[ "$required" == "1" ]]; then
-      echo "error: required snapshot target not found: $dst" >&2
-      exit 1
-    fi
-    echo "warning: snapshot target not found yet: $dst"
-    return 1
-  fi
-
   mkdir -p "$(dirname "$dst")"
   cp "$src" "$dst"
   echo "patched: ${dst#$REPO_ROOT/}"
@@ -78,8 +69,17 @@ echo "==> Applying Draw Things quantization patch set..."
 if ! apply_git_patch "$REPO_ROOT" "$PATCHES_DIR/draw-things-community.patch" "draw-things-community"; then
   copy_snapshot_patch "$PATCH_ROOT/Package.swift" "$REPO_ROOT/Package.swift" 1
   copy_snapshot_patch \
+    "$PATCH_ROOT/Apps/ModelConverter/Converter.swift" \
+    "$REPO_ROOT/Apps/ModelConverter/Converter.swift" 1
+  copy_snapshot_patch \
     "$PATCH_ROOT/Apps/ModelQuantizer/Quantizer.swift" \
     "$REPO_ROOT/Apps/ModelQuantizer/Quantizer.swift" 1
+  copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" \
+    "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" 1
+  copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" \
+    "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" 1
   copy_snapshot_patch \
     "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" \
     "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" 1

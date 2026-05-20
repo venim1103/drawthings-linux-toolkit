@@ -9,6 +9,7 @@ let package = Package(
     .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
     .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
     .executable(name: "model-quantizer", targets: ["ModelQuantizer"]),
+    .executable(name: "model-converter", targets: ["ModelConverter"]),
     .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
   ],
   dependencies: [
@@ -110,9 +111,18 @@ let package = Package(
       path: "Libraries/SwiftDiffusion/Sources/Mappings"
     ),
     .target(
+      name: "LLM",
+      dependencies: [
+        .product(name: "NNC", package: "s4nnc"),
+      ],
+      path: "Libraries/SwiftLLM/Sources",
+      sources: ["TensorData.swift", "Models/Moondream.swift"]
+    ),
+    .target(
       name: "Diffusion",
       dependencies: [
         "DiffusionMappings",
+        "LLM",
         "Tokenizer",
         "WeightsCache",
         "ZIPFoundation",
@@ -491,6 +501,18 @@ let package = Package(
       ],
       path: "Apps/ModelQuantizer",
       sources: ["Quantizer.swift"]
+    ),
+    .executableTarget(
+      name: "ModelConverter",
+      dependencies: [
+        "Diffusion",
+        "ModelOp",
+        "ModelZoo",
+        .product(name: "ArgumentParser", package: "swift-argument-parser"),
+        .product(name: "NNC", package: "s4nnc"),
+      ],
+      path: "Apps/ModelConverter",
+      sources: ["Converter.swift"]
     ),
     .target(
       name: "DeviceAttestation",
