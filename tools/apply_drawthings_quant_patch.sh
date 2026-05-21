@@ -68,9 +68,13 @@ echo "==> Applying Draw Things quantization patch set..."
 # Root repo patch: prefer unified diff, fallback to snapshot copy.
 if ! apply_git_patch "$REPO_ROOT" "$PATCHES_DIR/draw-things-community.patch" "draw-things-community"; then
   copy_snapshot_patch "$PATCH_ROOT/Package.swift" "$REPO_ROOT/Package.swift" 1
+  copy_snapshot_patch "$PATCH_ROOT/Package.resolved" "$REPO_ROOT/Package.resolved" 1
   copy_snapshot_patch \
     "$PATCH_ROOT/Apps/ModelConverter/Converter.swift" \
     "$REPO_ROOT/Apps/ModelConverter/Converter.swift" 1
+  copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift" \
+    "$REPO_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift" 1
   copy_snapshot_patch \
     "$PATCH_ROOT/Apps/ModelQuantizer/Quantizer.swift" \
     "$REPO_ROOT/Apps/ModelQuantizer/Quantizer.swift" 1

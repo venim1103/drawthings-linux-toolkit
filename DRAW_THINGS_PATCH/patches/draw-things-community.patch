@@ -1,5 +1,5 @@
 diff --git a/Apps/ModelConverter/Converter.swift b/Apps/ModelConverter/Converter.swift
-index 1ab4a19f..f7ddac4e 100644
+index 1ab4a19f..52191bc0 100644
 --- a/Apps/ModelConverter/Converter.swift
 +++ b/Apps/ModelConverter/Converter.swift
 @@ -4,6 +4,11 @@ import Foundation
@@ -25,12 +25,33 @@ index 1ab4a19f..f7ddac4e 100644
  
    private struct Specification: Codable {
      var name: String
-@@ -32,15 +41,75 @@ struct Converter: ParsableCommand {
+@@ -32,16 +41,129 @@ struct Converter: ParsableCommand {
      var guidanceEmbed: Bool?
    }
  
 +  private func writeStderr(_ message: String) {
 +    FileHandle.standardError.write(Data(message.utf8))
++  }
++
++  private func formatTimestamp() -> String {
++    let formatter = ISO8601DateFormatter()
++    formatter.formatOptions = [.withInternetDateTime]
++    return formatter.string(from: Date())
++  }
++
++  private func formatBytes(_ bytes: UInt64) -> String {
++    let units = ["B", "KiB", "MiB", "GiB", "TiB"]
++    var value = Double(bytes)
++    var unitIndex = 0
++    while value >= 1024 && unitIndex < units.count - 1 {
++      value /= 1024
++      unitIndex += 1
++    }
++    return String(format: "%.2f %@", value, units[unitIndex])
++  }
++
++  private func logStage(_ message: String) {
++    writeStderr("[\(formatTimestamp())] converter: \(message)\n")
 +  }
 +
 +  private func configureMathThreadEnvironment() {
@@ -63,14 +84,43 @@ index 1ab4a19f..f7ddac4e 100644
 +  }
 +
    mutating func run() throws {
+-    ModelZoo.externalUrls = [URL(fileURLWithPath: outputDirectory)]
+-    let fileName = Importer.cleanup(filename: name)
++    let startedAt = Date()
 +    configureMathThreadEnvironment()
 +
-     ModelZoo.externalUrls = [URL(fileURLWithPath: outputDirectory)]
-     let fileName = Importer.cleanup(filename: name)
++    let fileManager = FileManager.default
++    let inputURL = URL(fileURLWithPath: file).standardizedFileURL
++    let outputURL = URL(fileURLWithPath: outputDirectory).standardizedFileURL
++    let cleanedModelName = Importer.cleanup(filename: name)
++
++    guard fileManager.fileExists(atPath: inputURL.path) else {
++      logStage("input file missing: \(inputURL.path)")
++      throw ValidationError("input file not found: \(inputURL.path)")
++    }
++
++    try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
++
++    if let attrs = try? fileManager.attributesOfItem(atPath: inputURL.path),
++      let fileSize = attrs[.size] as? NSNumber
++    {
++      logStage(
++        "starting conversion model=\(name) cleanedModel=\(cleanedModelName) input=\(inputURL.path) size=\(formatBytes(fileSize.uint64Value)) outputDir=\(outputURL.path) textEncoders=\(textEncoders)"
++      )
++    } else {
++      logStage(
++        "starting conversion model=\(name) cleanedModel=\(cleanedModelName) input=\(inputURL.path) outputDir=\(outputURL.path) textEncoders=\(textEncoders)"
++      )
++    }
++
++    ModelZoo.externalUrls = [outputURL]
++    let fileName = cleanedModelName
      let importer = ModelImporter(
        filePath: file, modelName: fileName,
        isTextEncoderCustomized: textEncoders,
        autoencoderFilePath: autoencoderFile, textEncoderFilePath: nil, textEncoder2FilePath: nil)
+-    let (filePaths, modelVersion, modifier, inspectionResult) = try importer.import { _ in
+-    } progress: { _ in
 +    let shouldReportProgress = !quiet
 +    var lastPercent = -1
 +    let reportProgress: (Float) -> Void = { progress in
@@ -91,18 +141,25 @@ index 1ab4a19f..f7ddac4e 100644
 +        + String(repeating: "-", count: barWidth - filled)
 +      let paddedPercent = String(format: "%3d", percent)
 +      FileHandle.standardError.write(Data("convert progress \(paddedPercent)% [\(bar)]\n".utf8))
-+    }
-     let (filePaths, modelVersion, modifier, inspectionResult) = try importer.import { _ in
--    } progress: { _ in
-+    } progress: { progress in
-+      reportProgress(progress)
-+    }
-+    if shouldReportProgress {
-+      reportProgress(1)
      }
++    var phase = "import"
++    do {
++      logStage("phase=\(phase) started")
++      let (filePaths, modelVersion, modifier, inspectionResult) = try importer.import { _ in
++      } progress: { progress in
++        reportProgress(progress)
++      }
++      if shouldReportProgress {
++        reportProgress(1)
++      }
++      logStage(
++        "phase=\(phase) finished generatedFiles=\(filePaths.count) version=\(modelVersion) modifier=\(modifier)"
++      )
++
      let fileNames = filePaths.map { ($0 as NSString).lastPathComponent }
      var autoencoder = fileNames.first {
-@@ -170,7 +239,7 @@ struct Converter: ParsableCommand {
+       $0.hasSuffix("_vae_f16.ckpt")
+@@ -170,7 +292,7 @@ struct Converter: ParsableCommand {
      case .flux2, .flux2_9b, .flux2_4b:
        fatalError()
      case .ltx2, .ltx2_3:
@@ -111,6 +168,46 @@ index 1ab4a19f..f7ddac4e 100644
      case .kandinsky21, .wurstchenStageC, .wurstchenStageB, .auraflow:
        fatalError()
      }
+@@ -181,10 +303,39 @@ struct Converter: ParsableCommand {
+     if inspectionResult.hasGuidanceEmbed {
+       specification.guidanceEmbed = true
+     }
++      phase = "encode specification"
++      logStage("phase=\(phase) started")
+     let jsonEncoder = JSONEncoder()
+     jsonEncoder.keyEncodingStrategy = .convertToSnakeCase
+     jsonEncoder.outputFormatting = .prettyPrinted
+     let jsonData = try jsonEncoder.encode(specification)
+     print(String(decoding: jsonData, as: UTF8.self))
++
++      let elapsed = Int(Date().timeIntervalSince(startedAt))
++      logStage(
++        "completed successfully elapsed=\(elapsed)s primaryFile=\(fileName)_f16.ckpt outputDir=\(outputURL.path)"
++      )
++    } catch {
++      let elapsed = Int(Date().timeIntervalSince(startedAt))
++      logStage("failed phase=\(phase) elapsed=\(elapsed)s error=\(error)")
++      if let importerError = error as? ModelImporter.Error {
++        switch importerError {
++        case .tensorWritesFailed:
++          logStage("failure detail: tensorWritesFailed")
++        case .noTextEncoder:
++          logStage("failure detail: noTextEncoder")
++        case .textEncoder(let nestedError):
++          logStage("failure detail: textEncoder nestedError=\(nestedError)")
++        case .autoencoder(let nestedError):
++          logStage("failure detail: autoencoder nestedError=\(nestedError)")
++        case .unsupportedSourceFormat(let message):
++          logStage("failure detail: unsupportedSourceFormat=\(message)")
++        }
++      }
++      if let unpickleError = error as? UnpickleError {
++        logStage("failure detail: unpickleError=\(unpickleError)")
++      }
++      throw error
++    }
+   }
+ }
 diff --git a/Apps/ModelQuantizer/Quantizer.swift b/Apps/ModelQuantizer/Quantizer.swift
 index 7f3969b1..ddbf58d8 100644
 --- a/Apps/ModelQuantizer/Quantizer.swift
@@ -237,6 +334,768 @@ index 7f3969b1..ddbf58d8 100644
            case .flux2, .flux2_9b, .flux2_4b:
              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
                $0.write(key, tensor: fp16)
+diff --git a/Libraries/ModelOp/Sources/ModelImporter.swift b/Libraries/ModelOp/Sources/ModelImporter.swift
+index 8435d2f1..c3ab2f22 100644
+--- a/Libraries/ModelOp/Sources/ModelImporter.swift
++++ b/Libraries/ModelOp/Sources/ModelImporter.swift
+@@ -13,6 +13,7 @@ public final class ModelImporter {
+     case textEncoder(Swift.Error)
+     case autoencoder(Swift.Error)
+     case noTextEncoder
++    case unsupportedSourceFormat(String)
+   }
+   private let filePath: String
+   private let modelName: String
+@@ -132,8 +133,27 @@ public final class ModelImporter {
+         ($0.contains("joint_blocks.23.context_block.")
+           || $0.contains("transformer_blocks.22.ff_context."))
+       }
++    var isLTXCandidate = stateDict.keys.contains {
++      $0.contains("audio_patchify_proj.weight")
++    } && stateDict.keys.contains {
++      $0.contains("audio_proj_out.weight")
++    } && stateDict.keys.contains {
++      $0.contains("transformer_blocks.47.")
++    }
++    var isLTX2_3 = isLTXCandidate && stateDict.keys.contains {
++      $0.contains("video_embeddings_connector.learnable_registers")
++    } && stateDict.keys.contains {
++      $0.contains("audio_embeddings_connector.learnable_registers")
++    }
++    var isLTX2 =
++      isLTXCandidate && !isLTX2_3
++      && stateDict.keys.contains {
++        $0.contains("embeddings_connector.learnable_registers")
++      } && stateDict.keys.contains {
++        $0.contains("audio_embeddings_connector.learnable_registers")
++      }
+     var isPixArtSigmaXL =
+-      !isSD3Large
++      !isSD3Large && !isLTX2 && !isLTX2_3
+       && stateDict.keys.contains {
+         $0.contains("blocks.27.cross_attn.kv_") || $0.contains("transformer_blocks.27.attn2.to_")
+       }
+@@ -173,12 +193,14 @@ public final class ModelImporter {
+           || $0.contains("single_transformer_blocks.37.proj_mlp.")
+       }
+     var isWan21_14B = stateDict.keys.contains {
+-      $0.contains("blocks.39.cross_attn.v.") || $0.contains("blocks.39.attn2.to_v.")
++      $0.hasPrefix("blocks.39.cross_attn.v.") || $0.contains(".blocks.39.cross_attn.v.")
++        || $0.hasPrefix("blocks.39.attn2.to_v.") || $0.contains(".blocks.39.attn2.to_v.")
+     }
+     var isWan21_1_3B =
+       !isWan21_14B
+       && stateDict.keys.contains {
+-        $0.contains("blocks.29.cross_attn.v.") || $0.contains("blocks.29.attn2.to_v.")
++        $0.hasPrefix("blocks.29.cross_attn.v.") || $0.contains(".blocks.29.cross_attn.v.")
++          || $0.hasPrefix("blocks.29.attn2.to_v.") || $0.contains(".blocks.29.attn2.to_v.")
+       }
+     var isHiDream = stateDict.keys.contains {
+       $0.contains("double_stream_blocks.15.block.ff_i.experts.0.")
+@@ -275,12 +297,35 @@ public final class ModelImporter {
+       isFlux2 = false
+       isFlux2_9B = false
+       isFlux2_4B = false
++      isLTXCandidate = false
++      isLTX2 = false
++      isLTX2_3 = false
+     } else if isWurstchenStageC {
+       modelVersion = .wurstchenStageC
+       modifier = .none
+       inputDim = 16
+       expectedTotalAccess = 1550
+       isDiffusersFormat = false
++    } else if isLTX2_3 {
++      modelVersion = .ltx2_3
++      modifier = .kontext
++      inputDim = 32
++      expectedTotalAccess = 1800
++      isDiffusersFormat = stateDict.keys.contains {
++        $0.contains("model.diffusion_model.video_embeddings_connector.")
++      }
++    } else if isLTX2 {
++      modelVersion = .ltx2
++      modifier = .kontext
++      inputDim = 32
++      expectedTotalAccess = 1500
++      isDiffusersFormat = stateDict.keys.contains {
++        $0.contains("model.diffusion_model.embeddings_connector.")
++      }
++    } else if isLTXCandidate {
++      throw Error.unsupportedSourceFormat(
++        "Detected an LTX-like checkpoint, but required connector layout was not recognized."
++      )
+     } else if isPixArtSigmaXL {
+       modelVersion = .pixart
+       modifier = .none
+@@ -451,6 +496,53 @@ public final class ModelImporter {
+     )
+   }
+ 
++  private static func hasStateKey(_ stateDict: [String: TensorDescriptor], key: String) -> Bool {
++    if stateDict[key] != nil {
++      return true
++    }
++    if stateDict["model.diffusion_model.\(key)"] != nil {
++      return true
++    }
++    if stateDict["model.\(key)"] != nil {
++      return true
++    }
++    return false
++  }
++
++  private static func validateLTXSourceLayout(
++    stateDict: [String: TensorDescriptor], modelVersion: ModelVersion
++  ) throws {
++    let requiredKeys: [String]
++    switch modelVersion {
++    case .ltx2:
++      requiredKeys = [
++        "transformer_blocks.47.attn1.to_q.weight",
++        "audio_patchify_proj.weight",
++        "embeddings_connector.learnable_registers",
++        "audio_embeddings_connector.learnable_registers",
++        "embeddings_connector.transformer_1d_blocks.1.attn1.to_q.weight",
++        "audio_embeddings_connector.transformer_1d_blocks.1.attn1.to_q.weight",
++      ]
++    case .ltx2_3:
++      requiredKeys = [
++        "transformer_blocks.47.attn1.to_q.weight",
++        "audio_patchify_proj.weight",
++        "video_embeddings_connector.learnable_registers",
++        "audio_embeddings_connector.learnable_registers",
++        "video_embeddings_connector.transformer_1d_blocks.7.attn1.to_q.weight",
++        "audio_embeddings_connector.transformer_1d_blocks.7.attn1.to_q.weight",
++      ]
++    default:
++      return
++    }
++    let missing = requiredKeys.filter { !hasStateKey(stateDict, key: $0) }
++    guard missing.isEmpty else {
++      throw Error.unsupportedSourceFormat(
++        "Missing required \(modelVersion) tensors: \(missing.joined(separator: ", "))."
++      )
++    }
++  }
++
+   private func internalImport(versionCheck: @escaping (ModelVersion) -> Void) throws -> (
+     [String], ModelVersion, SamplerModifier, InspectionResult
+   ) {
+@@ -466,6 +558,7 @@ public final class ModelImporter {
+     let dualAttentionLayers = inspectionResult.dualAttentionLayers
+     let distilledGuidanceLayers = inspectionResult.distilledGuidanceLayers
+     expectedTotalAccess = inspectionResult.numberOfTensors
++    try Self.validateLTXSourceLayout(stateDict: stateDict, modelVersion: modelVersion)
+     versionCheck(modelVersion)
+     progress?(0.05)
+     if isTextEncoderCustomized {
+@@ -767,7 +860,13 @@ public final class ModelImporter {
+     case .flux2_4b:
+       conditionalLength = 7680
+       batchSize = 1
+-    case .ltx2, .ltx2_3, .seedvr2_3b, .seedvr2_7b:
++    case .ltx2:
++      conditionalLength = 3840
++      batchSize = 1
++    case .ltx2_3:
++      conditionalLength = 6144
++      batchSize = 1
++    case .seedvr2_3b, .seedvr2_7b:
+       fatalError()
+     case .kandinsky21, .wurstchenStageB:
+       fatalError()
+@@ -780,7 +879,7 @@ public final class ModelImporter {
+             embeddingSize: modelVersion == .sdxlRefiner ? 384 : 320,
+             maxPeriod: 10_000)
+         ))
+-      let xTensor = graph.variable(.CPU, .NHWC(batchSize, 64, 64, inputDim), of: FloatType.self)
++      var xTensor = graph.variable(.CPU, .NHWC(batchSize, 64, 64, inputDim), of: FloatType.self)
+       let cTensor = graph.variable(.CPU, .HWC(batchSize, 77, conditionalLength), of: FloatType.self)
+       var cArr = [cTensor]
+       let unet: Model
+@@ -1014,7 +1113,73 @@ public final class ModelImporter {
+           ).map {
+             graph.variable(.CPU, format: .NHWC, shape: $0, of: FloatType.self)
+           }
+-      case .ltx2, .ltx2_3, .seedvr2_3b, .seedvr2_7b:
++      case .ltx2:
++        let totalHeight = 64
++        let totalWidth = 64
++        let (_, audioHeight) = LTX2ExtractAudioFramesAndHeight([
++          batchSize, totalHeight, totalWidth,
++        ])
++        let videoHeight = totalHeight - audioHeight
++        let audioFrames = (batchSize - 1) * 8 + 1
++        xTensor = graph.variable(
++          .CPU, .NHWC(batchSize, videoHeight, totalWidth, inputDim), of: FloatType.self)
++        let audioInput = graph.variable(
++          .CPU, .HWC(batchSize, audioFrames, inputDim), of: FloatType.self)
++        let (rotaryEmbedding, rotaryEmbeddingAudio, rotaryEmbeddingVideoToAudio) =
++          LTX2VideoAudioRotaryPositionEmbedding(
++            time: batchSize, height: videoHeight, width: totalWidth, audioTime: audioFrames,
++            channels: (4096, 2048), numberOfHeads: 32)
++        cArr =
++          [
++            audioInput,
++            graph.variable(Tensor<FloatType>(from: rotaryEmbedding)),
++            graph.variable(Tensor<FloatType>(from: rotaryEmbeddingAudio)),
++            graph.variable(Tensor<FloatType>(from: rotaryEmbeddingVideoToAudio)),
++          ]
++          + LTX2FixedOutputShapes(
++            time: batchSize, textLength: 1024, audioFrames: audioFrames, timesteps: 1,
++            channels: (4096, 2048), layers: 48, textCrossAttentionAdaLN: false, KV: true
++          ).map {
++            graph.variable(.CPU, format: .NHWC, shape: $0, of: FloatType.self)
++          }
++          + [
++            graph.variable(.CPU, .HWC(batchSize, 1024, 3840), of: FloatType.self),
++            graph.variable(.CPU, .HWC(batchSize, 1024, 3840), of: FloatType.self),
++          ]
++      case .ltx2_3:
++        let totalHeight = 64
++        let totalWidth = 64
++        let (_, audioHeight) = LTX2ExtractAudioFramesAndHeight([
++          batchSize, totalHeight, totalWidth,
++        ])
++        let videoHeight = totalHeight - audioHeight
++        let audioFrames = (batchSize - 1) * 8 + 1
++        xTensor = graph.variable(
++          .CPU, .NHWC(batchSize, videoHeight, totalWidth, inputDim), of: FloatType.self)
++        let audioInput = graph.variable(
++          .CPU, .HWC(batchSize, audioFrames, inputDim), of: FloatType.self)
++        let (rotaryEmbedding, rotaryEmbeddingAudio, rotaryEmbeddingVideoToAudio) =
++          LTX2VideoAudioRotaryPositionEmbedding(
++            time: batchSize, height: videoHeight, width: totalWidth, audioTime: audioFrames,
++            channels: (4096, 2048), numberOfHeads: 32)
++        cArr =
++          [
++            audioInput,
++            graph.variable(Tensor<FloatType>(from: rotaryEmbedding)),
++            graph.variable(Tensor<FloatType>(from: rotaryEmbeddingAudio)),
++            graph.variable(Tensor<FloatType>(from: rotaryEmbeddingVideoToAudio)),
++          ]
++          + LTX2FixedOutputShapes(
++            time: batchSize, textLength: 1024, audioFrames: audioFrames, timesteps: 1,
++            channels: (4096, 2048), layers: 48, textCrossAttentionAdaLN: true, KV: false
++          ).map {
++            graph.variable(.CPU, format: .NHWC, shape: $0, of: FloatType.self)
++          }
++          + [
++            graph.variable(.CPU, .HWC(batchSize, 1024, 4096), of: FloatType.self),
++            graph.variable(.CPU, .HWC(batchSize, 1024, 2048), of: FloatType.self),
++          ]
++      case .seedvr2_3b, .seedvr2_7b:
+         fatalError()
+       case .kandinsky21, .v1, .v2:
+         break
+@@ -1271,7 +1436,55 @@ public final class ModelImporter {
+           timesteps: 1,
+           channels: 3072, layers: (5, 20), numberOfReferenceImages: 0, guidanceEmbed: true,
+           usesFlashAttention: .scale1, kvCache: false)
+-      case .ltx2, .ltx2_3, .seedvr2_3b, .seedvr2_7b:
++      case .ltx2:
++        (unetMapper, unet) = LTX2(
++          time: 1, h: 63, w: 64, textLength: 1024, audioFrames: 1, channels: (4096, 2048),
++          layers: 48,
++          tokenModulation: false, KV: true, usesFlashAttention: .scale1,
++          useGatedAttention: false,
++          textCrossAttentionAdaLN: false)
++        (unetFixedMapper, unetFixed) = LTX2Fixed(
++          time: 1, textLength: 1024, audioFrames: 1, timesteps: 1, channels: (4096, 2048),
++          layers: 48,
++          contextProjection: true, textCrossAttentionAdaLN: false, KV: true,
++          usesFlashAttention: .scale1)
++        let (_, videoConnectorMapper) = Embedding1DConnector(
++          prefix: "embeddings_connector", layers: 2, batchSize: 1,
++          tokenLength: 1024, headDimension: 128, numberOfHeads: 30,
++          usesFlashAttention: true, useGatedAttention: false)
++        let (_, audioConnectorMapper) = Embedding1DConnector(
++          prefix: "audio_embeddings_connector", layers: 2, batchSize: 1,
++          tokenLength: 1024, headDimension: 128, numberOfHeads: 30,
++          usesFlashAttention: true, useGatedAttention: false)
++        additionalMappings.append(
++          (prefix: "text_video_connector", mapping: videoConnectorMapper(.generativeModels)))
++        additionalMappings.append(
++          (prefix: "text_audio_connector", mapping: audioConnectorMapper(.generativeModels)))
++      case .ltx2_3:
++        (unetMapper, unet) = LTX2(
++          time: 1, h: 63, w: 64, textLength: 1024, audioFrames: 1, channels: (4096, 2048),
++          layers: 48,
++          tokenModulation: false, KV: false, usesFlashAttention: .scale1,
++          useGatedAttention: true,
++          textCrossAttentionAdaLN: true)
++        (unetFixedMapper, unetFixed) = LTX2Fixed(
++          time: 1, textLength: 1024, audioFrames: 1, timesteps: 1, channels: (4096, 2048),
++          layers: 48,
++          contextProjection: false, textCrossAttentionAdaLN: true, KV: false,
++          usesFlashAttention: .scale1)
++        let (_, videoConnectorMapper) = Embedding1DConnector(
++          prefix: "video_embeddings_connector", layers: 8, batchSize: 1,
++          tokenLength: 1024, headDimension: 128, numberOfHeads: 32,
++          usesFlashAttention: true, useGatedAttention: true)
++        let (_, audioConnectorMapper) = Embedding1DConnector(
++          prefix: "audio_embeddings_connector", layers: 8, batchSize: 1,
++          tokenLength: 1024, headDimension: 64, numberOfHeads: 32,
++          usesFlashAttention: true, useGatedAttention: true)
++        additionalMappings.append(
++          (prefix: "text_video_connector", mapping: videoConnectorMapper(.generativeModels)))
++        additionalMappings.append(
++          (prefix: "text_audio_connector", mapping: audioConnectorMapper(.generativeModels)))
++      case .seedvr2_3b, .seedvr2_7b:
+         fatalError()
+       case .kandinsky21, .wurstchenStageB:
+         fatalError()
+@@ -1422,7 +1635,19 @@ public final class ModelImporter {
+           graph.variable(.CPU, .WC(1, 256), of: FloatType.self),
+         ]
+         tEmb = nil
+-      case .ltx2, .ltx2_3, .seedvr2_3b, .seedvr2_7b:
++      case .ltx2:
++        crossattn = [
++          graph.variable(.CPU, .HWC(1, 1024, 3840), of: FloatType.self),
++          graph.variable(.CPU, .HWC(1, 1024, 3840), of: FloatType.self),
++          graph.variable(.CPU, .HWC(1, 1, 256), of: FloatType.self),
++        ]
++        tEmb = nil
++      case .ltx2_3:
++        crossattn = [
++          graph.variable(.CPU, .HWC(1, 1, 256), of: FloatType.self),
++        ]
++        tEmb = nil
++      case .seedvr2_3b, .seedvr2_7b:
+         fatalError()
+       case .v1, .v2, .kandinsky21, .wurstchenStageB:
+         crossattn = []
+@@ -1558,6 +1783,15 @@ public final class ModelImporter {
+             stateDict[String(key.dropFirst(4))] = value
+           }
+         }
++      } else if modelVersion == .ltx2 || modelVersion == .ltx2_3 {
++        // Remove the model.diffusion_model / model prefix.
++        for (key, value) in stateDict {
++          if key.hasPrefix("model.diffusion_model.") {
++            stateDict[String(key.dropFirst(22))] = value
++          } else if key.hasPrefix("model.") {
++            stateDict[String(key.dropFirst(6))] = value
++          }
++        }
+       }
+       // In case it is not on high performance device and it is SDXL model, read the parameters directly from the mapping.
+       if let unetReader = unetReader {
+@@ -1686,6 +1920,40 @@ public final class ModelImporter {
+                 store.write("cap_pad_token", tensor: tensor)
+               }
+             }
++            if modelVersion == .ltx2 || modelVersion == .ltx2_3 {
++              let videoRegistersKey =
++                modelVersion == .ltx2
++                ? "embeddings_connector.learnable_registers"
++                : "video_embeddings_connector.learnable_registers"
++              let audioRegistersKey = "audio_embeddings_connector.learnable_registers"
++              guard let videoRegistersDescriptor = stateDict[videoRegistersKey],
++                let audioRegistersDescriptor = stateDict[audioRegistersKey]
++              else {
++                throw Error.unsupportedSourceFormat(
++                  "Missing connector learnable registers for \(modelVersion)."
++                )
++              }
++              do {
++                try archive.with(videoRegistersDescriptor) { tensor in
++                  let tensor = Tensor<FloatType>(from: tensor)
++                  store.write("text_video_connector_learnable_registers", tensor: tensor)
++                }
++              } catch {
++                throw Error.unsupportedSourceFormat(
++                  "Failed reading connector register tensor for key \(videoRegistersKey): \(error)"
++                )
++              }
++              do {
++                try archive.with(audioRegistersDescriptor) { tensor in
++                  let tensor = Tensor<FloatType>(from: tensor)
++                  store.write("text_audio_connector_learnable_registers", tensor: tensor)
++                }
++              } catch {
++                throw Error.unsupportedSourceFormat(
++                  "Failed reading connector register tensor for key \(audioRegistersKey): \(error)"
++                )
++              }
++            }
+             var consumed = Set<String>()
+             for (key, value) in UNetMapping.sorted(by: { $0.key < $1.key }) {
+               guard let _ = stateDict[key], !consumed.contains(key) else {
+@@ -1694,64 +1962,39 @@ public final class ModelImporter {
+               let values = value.count == 1 ? (reverseUNetMapping[value[0]] ?? [key]) : [key]
+               consumed.formUnion(values)
+               let tensorDescriptors = values.compactMap { stateDict[$0] }
+-              try archive.with(tensorDescriptors) { tensors in
+-                guard !tensors.isEmpty else { return }
+-                let tensor: Tensor<FloatType>
+-                if tensors.count == 1 {
+-                  tensor = Tensor<FloatType>(from: tensors[0])
+-                } else {
+-                  let shape = [tensors.count] + Array(tensors[0].shape)
+-                  var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
+-                  for (i, tensor) in tensors.enumerated() {
+-                    let shape = tensor.shape
+-                    if shape.count == 4 {
+-                      combined[
+-                        i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
+-                        Tensor<FloatType>(from: tensor).reshaped(
++              do {
++                try archive.with(tensorDescriptors) { tensors in
++                  guard !tensors.isEmpty else { return }
++                  let tensor: Tensor<FloatType>
++                  if tensors.count == 1 {
++                    tensor = Tensor<FloatType>(from: tensors[0])
++                  } else {
++                    let shape = [tensors.count] + Array(tensors[0].shape)
++                    var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
++                    for (i, tensor) in tensors.enumerated() {
++                      let shape = tensor.shape
++                      if shape.count == 4 {
++                        combined[
++                          i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
++                          Tensor<FloatType>(from: tensor).reshaped(
++                            format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                      } else if shape.count == 3 {
++                        combined[i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2]] = Tensor<
++                          FloatType
++                        >(from: tensor).reshaped(
+                           format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    } else if shape.count == 3 {
+-                      combined[i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2]] = Tensor<
+-                        FloatType
+-                      >(from: tensor).reshaped(
+-                        format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    } else if shape.count == 2 {
+-                      combined[i..<(i + 1), 0..<shape[0], 0..<shape[1]] = Tensor<FloatType>(
+-                        from: tensor
+-                      ).reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    } else if shape.count == 1 {
+-                      combined[i..<(i + 1), 0..<shape[0]] = Tensor<FloatType>(from: tensor)
+-                        .reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                      } else if shape.count == 2 {
++                        combined[i..<(i + 1), 0..<shape[0], 0..<shape[1]] = Tensor<FloatType>(
++                          from: tensor
++                        ).reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                      } else if shape.count == 1 {
++                        combined[i..<(i + 1), 0..<shape[0]] = Tensor<FloatType>(from: tensor)
++                          .reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                      }
+                     }
++                    tensor = combined
+                   }
+-                  tensor = combined
+-                }
+-                if value.count > 1 {
+-                  value.write(
+-                    graph: graph,
+-                    to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
+-                    isDiagonalDown: false
+-                  ) {
+-                    let _ = interrupt()
+-                    return "__\(modelPrefix)__[\($0)]"
+-                  }
+-                } else if let name = value.first {
+-                  // For FLUX.1 model, we can inspect x_embedder for whether it is a inpainting, depth, or canny.
+-                  if name == "t-x_embedder-0-0" && modelVersion == .flux1 {
+-                    let shape = tensor.shape
+-                    if shape[1] == 384 {
+-                      // This is an inpainting model.
+-                      modifier = .inpainting
+-                    } else if shape[1] == 128 {
+-                      modifier = .depth  // We cannot differentiate depth or canny, assuming it is depth.
+-                    }
+-                    store.write("__\(modelPrefix)__[\(name)]", tensor: tensor)
+-                  } else if name.contains("time_mixer") {
+-                    var f32Tensor = Tensor<Float>(from: tensor)
+-                    // Apply sigmoid transformation.
+-                    f32Tensor[0] = 1.0 / (1.0 + expf(-f32Tensor[0]))
+-                    store.write(
+-                      "__\(modelPrefix)__[\(name)]", tensor: Tensor<FloatType>(from: f32Tensor))
+-                  } else {
++                  if value.count > 1 {
+                     value.write(
+                       graph: graph,
+                       to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
+@@ -1760,9 +2003,40 @@ public final class ModelImporter {
+                       let _ = interrupt()
+                       return "__\(modelPrefix)__[\($0)]"
+                     }
++                  } else if let name = value.first {
++                    // For FLUX.1 model, we can inspect x_embedder for whether it is a inpainting, depth, or canny.
++                    if name == "t-x_embedder-0-0" && modelVersion == .flux1 {
++                      let shape = tensor.shape
++                      if shape[1] == 384 {
++                        // This is an inpainting model.
++                        modifier = .inpainting
++                      } else if shape[1] == 128 {
++                        modifier = .depth  // We cannot differentiate depth or canny, assuming it is depth.
++                      }
++                      store.write("__\(modelPrefix)__[\(name)]", tensor: tensor)
++                    } else if name.contains("time_mixer") {
++                      var f32Tensor = Tensor<Float>(from: tensor)
++                      // Apply sigmoid transformation.
++                      f32Tensor[0] = 1.0 / (1.0 + expf(-f32Tensor[0]))
++                      store.write(
++                        "__\(modelPrefix)__[\(name)]", tensor: Tensor<FloatType>(from: f32Tensor))
++                    } else {
++                      value.write(
++                        graph: graph,
++                        to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
++                        isDiagonalDown: false
++                      ) {
++                        let _ = interrupt()
++                        return "__\(modelPrefix)__[\($0)]"
++                      }
++                    }
++                    let _ = interrupt()
+                   }
+-                  let _ = interrupt()
+                 }
++              } catch {
++                throw Error.unsupportedSourceFormat(
++                  "Failed reading tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
++                )
+               }
+             }
+             for (key, value) in UNetMappingFixed.sorted(by: { $0.key < $1.key }) {
+@@ -1772,73 +2046,7 @@ public final class ModelImporter {
+               let values = value.count == 1 ? (reverseUNetMappingFixed[value[0]] ?? [key]) : [key]
+               consumed.formUnion(values)
+               let tensorDescriptors = values.compactMap { stateDict[$0] }
+-              try archive.with(tensorDescriptors) { tensors in
+-                guard !tensors.isEmpty else { return }
+-                let tensor: Tensor<FloatType>
+-                if tensors.count == 1 {
+-                  tensor = Tensor<FloatType>(from: tensors[0])
+-                } else {
+-                  let shape = [tensors.count] + Array(tensors[0].shape)
+-                  var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
+-                  for (i, tensor) in tensors.enumerated() {
+-                    let shape = tensor.shape
+-                    if shape.count == 3 {
+-                      combined[
+-                        i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
+-                        Tensor<FloatType>(from: tensor).reshaped(
+-                          format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    } else if shape.count == 3 {
+-                      combined[i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2]] = Tensor<
+-                        FloatType
+-                      >(from: tensor).reshaped(
+-                        format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    } else if shape.count == 2 {
+-                      combined[i..<(i + 1), 0..<shape[0], 0..<shape[1]] = Tensor<FloatType>(
+-                        from: tensor
+-                      ).reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    } else if shape.count == 1 {
+-                      combined[i..<(i + 1), 0..<shape[0]] = Tensor<FloatType>(from: tensor)
+-                        .reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
+-                    }
+-                  }
+-                  tensor = combined
+-                }
+-                if value.count > 1 {
+-                  value.write(
+-                    graph: graph,
+-                    to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
+-                    isDiagonalDown: false
+-                  ) {
+-                    let _ = interrupt()
+-                    return "__\(modelPrefixFixed)__[\($0)]"
+-                  }
+-                } else if !value.isEmpty {
+-                  value.write(
+-                    graph: graph,
+-                    to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
+-                    isDiagonalDown: false
+-                  ) {
+-                    let _ = interrupt()
+-                    return "__\(modelPrefixFixed)__[\($0)]"
+-                  }
+-                  let _ = interrupt()
+-                }
+-              }
+-            }
+-            for additionalMapping in additionalMappings {
+-              let reverseAdditionalMapping = reverseMapping(original: additionalMapping.mapping)
+-              for (key, value) in additionalMapping.mapping.sorted(by: { $0.key < $1.key }) {
+-                guard let _ = stateDict[key], !consumed.contains(key) else {
+-                  continue
+-                }
+-                let values =
+-                  value.count == 1
+-                  ? (reverseAdditionalMapping[value[0]] ?? [key])
+-                  : [
+-                    key
+-                  ]
+-                consumed.formUnion(values)
+-                let tensorDescriptors = values.compactMap { stateDict[$0] }
++              do {
+                 try archive.with(tensorDescriptors) { tensors in
+                   guard !tensors.isEmpty else { return }
+                   let tensor: Tensor<FloatType>
+@@ -1849,7 +2057,7 @@ public final class ModelImporter {
+                     var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
+                     for (i, tensor) in tensors.enumerated() {
+                       let shape = tensor.shape
+-                      if shape.count == 4 {
++                        if shape.count == 4 {
+                         combined[
+                           i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
+                           Tensor<FloatType>(from: tensor).reshaped(
+@@ -1870,15 +2078,93 @@ public final class ModelImporter {
+                     }
+                     tensor = combined
+                   }
+-                  value.write(
+-                    graph: graph,
+-                    to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
+-                    isDiagonalDown: false
+-                  ) {
++                  if value.count > 1 {
++                    value.write(
++                      graph: graph,
++                      to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
++                      isDiagonalDown: false
++                    ) {
++                      let _ = interrupt()
++                      return "__\(modelPrefixFixed)__[\($0)]"
++                    }
++                  } else if !value.isEmpty {
++                    value.write(
++                      graph: graph,
++                      to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
++                      isDiagonalDown: false
++                    ) {
++                      let _ = interrupt()
++                      return "__\(modelPrefixFixed)__[\($0)]"
++                    }
+                     let _ = interrupt()
+-                    return "__\(additionalMapping.prefix)__[\($0)]"
+                   }
+-                  let _ = interrupt()
++                }
++              } catch {
++                throw Error.unsupportedSourceFormat(
++                  "Failed reading fixed tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
++                )
++              }
++            }
++            for additionalMapping in additionalMappings {
++              let reverseAdditionalMapping = reverseMapping(original: additionalMapping.mapping)
++              for (key, value) in additionalMapping.mapping.sorted(by: { $0.key < $1.key }) {
++                guard let _ = stateDict[key], !consumed.contains(key) else {
++                  continue
++                }
++                let values =
++                  value.count == 1
++                  ? (reverseAdditionalMapping[value[0]] ?? [key])
++                  : [
++                    key
++                  ]
++                consumed.formUnion(values)
++                let tensorDescriptors = values.compactMap { stateDict[$0] }
++                do {
++                  try archive.with(tensorDescriptors) { tensors in
++                    guard !tensors.isEmpty else { return }
++                    let tensor: Tensor<FloatType>
++                    if tensors.count == 1 {
++                      tensor = Tensor<FloatType>(from: tensors[0])
++                    } else {
++                      let shape = [tensors.count] + Array(tensors[0].shape)
++                      var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
++                      for (i, tensor) in tensors.enumerated() {
++                        let shape = tensor.shape
++                        if shape.count == 4 {
++                          combined[
++                            i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
++                            Tensor<FloatType>(from: tensor).reshaped(
++                              format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                        } else if shape.count == 3 {
++                          combined[i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2]] = Tensor<
++                            FloatType
++                          >(from: tensor).reshaped(
++                            format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                        } else if shape.count == 2 {
++                          combined[i..<(i + 1), 0..<shape[0], 0..<shape[1]] = Tensor<FloatType>(
++                            from: tensor
++                          ).reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                        } else if shape.count == 1 {
++                          combined[i..<(i + 1), 0..<shape[0]] = Tensor<FloatType>(from: tensor)
++                            .reshaped(format: .NCHW, shape: TensorShape([1] + Array(shape)))
++                        }
++                      }
++                      tensor = combined
++                    }
++                    value.write(
++                      graph: graph,
++                      to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
++                      isDiagonalDown: false
++                    ) {
++                      let _ = interrupt()
++                      return "__\(additionalMapping.prefix)__[\($0)]"
++                    }
++                    let _ = interrupt()
++                  }
++                } catch {
++                  throw Error.unsupportedSourceFormat(
++                    "Failed reading additional mapping tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
++                  )
+                 }
+               }
+             }
+@@ -1986,7 +2272,15 @@ public final class ModelImporter {
+           if $0.keys.count != 292 && $0.keys.count != 294 {
+             throw Error.tensorWritesFailed
+           }
+-        case .ltx2, .ltx2_3, .seedvr2_3b, .seedvr2_7b:
++        case .ltx2:
++          if $0.keys.count < 500 {
++            throw Error.tensorWritesFailed
++          }
++        case .ltx2_3:
++          if $0.keys.count < 700 {
++            throw Error.tensorWritesFailed
++          }
++        case .seedvr2_3b, .seedvr2_7b:
+           fatalError()
+         case .kandinsky21, .wurstchenStageB:
+           fatalError()
+@@ -2565,7 +2859,31 @@ extension ModelImporter {
+       }
+       // For FLUX.2, the hires fix trigger scale is 2 of the finetune scale.
+       specification.hiresFixScale = finetuneScale * 2
+-    case .ltx2, .ltx2_3, .seedvr2_3b, .seedvr2_7b:
++    case .ltx2:
++      if specification.textEncoder == nil {
++        specification.textEncoder = "gemma_3_12b_it_qat_q8p.ckpt"
++      }
++      if specification.autoencoder == nil {
++        specification.autoencoder = "ltx_2_audio_video_vae_f16.ckpt"
++      }
++      specification.paddedTextEncodingLength = 1024
++      specification.objective = .u(conditionScale: 1000)
++      specification.noiseDiscretization = .rf(
++        .init(sigmaMin: 0, sigmaMax: 1, conditionScale: 1_000))
++      specification.hiresFixScale = finetuneScale * 2
++    case .ltx2_3:
++      if specification.textEncoder == nil {
++        specification.textEncoder = "gemma_3_12b_it_qat_q8p.ckpt"
++      }
++      if specification.autoencoder == nil {
++        specification.autoencoder = "ltx_2.3_audio_video_vae_f16.ckpt"
++      }
++      specification.paddedTextEncodingLength = 1024
++      specification.objective = .u(conditionScale: 1000)
++      specification.noiseDiscretization = .rf(
++        .init(sigmaMin: 0, sigmaMax: 1, conditionScale: 1_000))
++      specification.hiresFixScale = finetuneScale * 2
++    case .seedvr2_3b, .seedvr2_7b:
+       fatalError()
+     case .kandinsky21, .wurstchenStageB:
+       fatalError()
 diff --git a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift b/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
 index d2a5d9f6..bced744a 100644
 --- a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
@@ -265,6 +1124,55 @@ index d2a5d9f6..bced744a 100644
    }
    return (w1, w2, w3, Model([x], [out]))
  }
+diff --git a/Package.resolved b/Package.resolved
+index 34bef46a..686eeeba 100644
+--- a/Package.resolved
++++ b/Package.resolved
+@@ -5,7 +5,7 @@
+       "kind" : "remoteSourceControl",
+       "location" : "https://github.com/liuliu/ccv.git",
+       "state" : {
+-        "revision" : "48ec1fd002f4da916323fcd8bb79d3e00885dd4f"
++        "revision" : "0b3bb15153c19f120a9e41f842c26e6ab6c09ece"
+       }
+     },
+     {
+@@ -29,8 +29,8 @@
+       "kind" : "remoteSourceControl",
+       "location" : "https://github.com/grpc/grpc-swift.git",
+       "state" : {
+-        "revision" : "5770e231585cb68388a6ae37ce36c4d8dbd46d90",
+-        "version" : "1.27.2"
++        "revision" : "6d11ae4c0eb43a7cf927b10ad3628ed0d063d224",
++        "version" : "1.26.2"
+       }
+     },
+     {
+@@ -38,7 +38,7 @@
+       "kind" : "remoteSourceControl",
+       "location" : "https://github.com/liuliu/s4nnc.git",
+       "state" : {
+-        "revision" : "594050126b5cee0dd18488dc05a57947df912878"
++        "revision" : "c91108d94ebadc53b7e782e90c51e48c1162c4de"
+       }
+     },
+     {
+@@ -278,6 +278,15 @@
+         "version" : "2.10.1"
+       }
+     },
++    {
++      "identity" : "swift-sqlite3-support",
++      "kind" : "remoteSourceControl",
++      "location" : "https://github.com/liuliu/swift-sqlite3-support.git",
++      "state" : {
++        "revision" : "9d543d0af5da0b81ae65be3a61ea6920647779a7",
++        "version" : "3.47.1"
++      }
++    },
+     {
+       "identity" : "swift-system",
+       "kind" : "remoteSourceControl",
 diff --git a/Package.swift b/Package.swift
 index 6ae4c90b..8d31497a 100644
 --- a/Package.swift

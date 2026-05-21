@@ -23,10 +23,13 @@ echo "==> Resolving Swift package dependencies..."
 
 echo "==> Refreshing snapshot backups..."
 cp "$REPO_ROOT/Package.swift" "$PATCH_ROOT/Package.swift"
+cp "$REPO_ROOT/Package.resolved" "$PATCH_ROOT/Package.resolved"
 mkdir -p "$PATCH_ROOT/Apps/ModelQuantizer"
 cp "$REPO_ROOT/Apps/ModelQuantizer/Quantizer.swift" "$PATCH_ROOT/Apps/ModelQuantizer/Quantizer.swift"
 mkdir -p "$PATCH_ROOT/Apps/ModelConverter"
 cp "$REPO_ROOT/Apps/ModelConverter/Converter.swift" "$PATCH_ROOT/Apps/ModelConverter/Converter.swift"
+mkdir -p "$PATCH_ROOT/Libraries/ModelOp/Sources"
+cp "$REPO_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift" "$PATCH_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift"
 mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" \
@@ -44,7 +47,9 @@ cp "$REPO_ROOT/.build/checkouts/ccv/Package.swift" "$PATCH_ROOT/checkouts/ccv/Pa
 echo "==> Regenerating unified patch files..."
 PATCH_TARGETS=(
   Package.swift
+  Package.resolved
   Apps/ModelConverter/Converter.swift
+  Libraries/ModelOp/Sources/ModelImporter.swift
   Apps/ModelQuantizer/Quantizer.swift
   Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
   Libraries/SwiftDiffusion/Sources/Models/HiDream.swift

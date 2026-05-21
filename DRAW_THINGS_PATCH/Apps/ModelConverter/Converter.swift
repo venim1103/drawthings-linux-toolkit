@@ -45,6 +45,27 @@ struct Converter: ParsableCommand {
     FileHandle.standardError.write(Data(message.utf8))
   }
 
+  private func formatTimestamp() -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.string(from: Date())
+  }
+
+  private func formatBytes(_ bytes: UInt64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    var value = Double(bytes)
+    var unitIndex = 0
+    while value >= 1024 && unitIndex < units.count - 1 {
+      value /= 1024
+      unitIndex += 1
+    }
+    return String(format: "%.2f %@", value, units[unitIndex])
+  }
+
+  private func logStage(_ message: String) {
+    writeStderr("[\(formatTimestamp())] converter: \(message)\n")
+  }
+
   private func configureMathThreadEnvironment() {
     let requestedThreads = mathThreads ?? ProcessInfo.processInfo.activeProcessorCount
     let threadCount = max(requestedThreads, 1)
@@ -75,10 +96,35 @@ struct Converter: ParsableCommand {
   }
 
   mutating func run() throws {
+    let startedAt = Date()
     configureMathThreadEnvironment()
 
-    ModelZoo.externalUrls = [URL(fileURLWithPath: outputDirectory)]
-    let fileName = Importer.cleanup(filename: name)
+    let fileManager = FileManager.default
+    let inputURL = URL(fileURLWithPath: file).standardizedFileURL
+    let outputURL = URL(fileURLWithPath: outputDirectory).standardizedFileURL
+    let cleanedModelName = Importer.cleanup(filename: name)
+
+    guard fileManager.fileExists(atPath: inputURL.path) else {
+      logStage("input file missing: \(inputURL.path)")
+      throw ValidationError("input file not found: \(inputURL.path)")
+    }
+
+    try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
+
+    if let attrs = try? fileManager.attributesOfItem(atPath: inputURL.path),
+      let fileSize = attrs[.size] as? NSNumber
+    {
+      logStage(
+        "starting conversion model=\(name) cleanedModel=\(cleanedModelName) input=\(inputURL.path) size=\(formatBytes(fileSize.uint64Value)) outputDir=\(outputURL.path) textEncoders=\(textEncoders)"
+      )
+    } else {
+      logStage(
+        "starting conversion model=\(name) cleanedModel=\(cleanedModelName) input=\(inputURL.path) outputDir=\(outputURL.path) textEncoders=\(textEncoders)"
+      )
+    }
+
+    ModelZoo.externalUrls = [outputURL]
+    let fileName = cleanedModelName
     let importer = ModelImporter(
       filePath: file, modelName: fileName,
       isTextEncoderCustomized: textEncoders,
@@ -104,13 +150,20 @@ struct Converter: ParsableCommand {
       let paddedPercent = String(format: "%3d", percent)
       FileHandle.standardError.write(Data("convert progress \(paddedPercent)% [\(bar)]\n".utf8))
     }
-    let (filePaths, modelVersion, modifier, inspectionResult) = try importer.import { _ in
-    } progress: { progress in
-      reportProgress(progress)
-    }
-    if shouldReportProgress {
-      reportProgress(1)
-    }
+    var phase = "import"
+    do {
+      logStage("phase=\(phase) started")
+      let (filePaths, modelVersion, modifier, inspectionResult) = try importer.import { _ in
+      } progress: { progress in
+        reportProgress(progress)
+      }
+      if shouldReportProgress {
+        reportProgress(1)
+      }
+      logStage(
+        "phase=\(phase) finished generatedFiles=\(filePaths.count) version=\(modelVersion) modifier=\(modifier)"
+      )
+
     let fileNames = filePaths.map { ($0 as NSString).lastPathComponent }
     var autoencoder = fileNames.first {
       $0.hasSuffix("_vae_f16.ckpt")
@@ -250,10 +303,39 @@ struct Converter: ParsableCommand {
     if inspectionResult.hasGuidanceEmbed {
       specification.guidanceEmbed = true
     }
+      phase = "encode specification"
+      logStage("phase=\(phase) started")
     let jsonEncoder = JSONEncoder()
     jsonEncoder.keyEncodingStrategy = .convertToSnakeCase
     jsonEncoder.outputFormatting = .prettyPrinted
     let jsonData = try jsonEncoder.encode(specification)
     print(String(decoding: jsonData, as: UTF8.self))
+
+      let elapsed = Int(Date().timeIntervalSince(startedAt))
+      logStage(
+        "completed successfully elapsed=\(elapsed)s primaryFile=\(fileName)_f16.ckpt outputDir=\(outputURL.path)"
+      )
+    } catch {
+      let elapsed = Int(Date().timeIntervalSince(startedAt))
+      logStage("failed phase=\(phase) elapsed=\(elapsed)s error=\(error)")
+      if let importerError = error as? ModelImporter.Error {
+        switch importerError {
+        case .tensorWritesFailed:
+          logStage("failure detail: tensorWritesFailed")
+        case .noTextEncoder:
+          logStage("failure detail: noTextEncoder")
+        case .textEncoder(let nestedError):
+          logStage("failure detail: textEncoder nestedError=\(nestedError)")
+        case .autoencoder(let nestedError):
+          logStage("failure detail: autoencoder nestedError=\(nestedError)")
+        case .unsupportedSourceFormat(let message):
+          logStage("failure detail: unsupportedSourceFormat=\(message)")
+        }
+      }
+      if let unpickleError = error as? UnpickleError {
+        logStage("failure detail: unpickleError=\(unpickleError)")
+      }
+      throw error
+    }
   }
 }
