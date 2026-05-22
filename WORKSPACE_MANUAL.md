@@ -93,10 +93,22 @@ Example quantization command:
       -o /workspaces/LTX2_3/dt-models/ltx_2.3_22b_distilled_1.1_q4p.ckpt \
       --target-codec q4p
 
+Progress + ETA wrapper (recommended for large files):
+
+    cd /workspaces/LTX2_3
+    bash tools/dt_quantize_model.sh \
+      -i dt-models/ltx_2.3_22b_distilled_1.1_f16.ckpt \
+      -m ltx2.3 \
+      -o dt-models/ltx_2.3_22b_distilled_1.1_q4p.ckpt \
+      --target-codec q4p
+
 Important:
 
 - The -o value must be a file path, not only a directory path.
 - For forced codec output, --target-codec supports: auto, q4p, q5p, q6p, q8p, i8x.
+- Wrapper env toggles:
+  - `DRAWTHINGS_QUANTIZER_MONITOR=0` disables the monitor.
+  - `DRAWTHINGS_QUANTIZER_MONITOR_INTERVAL=5` controls refresh interval seconds.
 
 ## 5) Model management tools
 

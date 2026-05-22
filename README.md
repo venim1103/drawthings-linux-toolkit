@@ -6,6 +6,7 @@ Linux-first toolkit for Draw Things workflows: reproducible devcontainer setup, 
 
 - Devcontainer setup and bootstrap scripts.
 - Draw Things quantization patch system (unified patches + snapshot fallback).
+- Quantization wrapper with live progress and ETA (`tools/dt_quantize_model.sh`).
 - Model management and download/audit utilities.
 - gRPC generation helpers and tensor-to-playable converters.
 - Python utility scripts for Draw Things workflows.
