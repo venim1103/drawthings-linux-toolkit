@@ -34,6 +34,10 @@ mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" \
   "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift"
+mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Archive"
+cp \
+  "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift" \
+  "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" \
   "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift"
@@ -43,6 +47,23 @@ cp \
   "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift"
 cp "$REPO_ROOT/.build/checkouts/s4nnc/Package.swift" "$PATCH_ROOT/checkouts/s4nnc/Package.swift"
 cp "$REPO_ROOT/.build/checkouts/ccv/Package.swift" "$PATCH_ROOT/checkouts/ccv/Package.swift"
+mkdir -p "$PATCH_ROOT/checkouts/ccv/lib/nnc"
+cp \
+  "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_cnnp_model.c" \
+  "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_cnnp_model.c"
+cp \
+  "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_cnnp_model_addons.c" \
+  "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_cnnp_model_addons.c"
+cp \
+  "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_nnc_tensor.c" \
+  "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_nnc_tensor.c"
+cp \
+  "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_nnc_cmd.c" \
+  "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_nnc_cmd.c"
+mkdir -p "$PATCH_ROOT/checkouts/ccv/lib/nnc/cmd/scaled_dot_product_attention"
+cp \
+  "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c" \
+  "$PATCH_ROOT/checkouts/ccv/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c"
 
 echo "==> Regenerating unified patch files..."
 PATCH_TARGETS=(
@@ -52,6 +73,7 @@ PATCH_TARGETS=(
   Libraries/ModelOp/Sources/ModelImporter.swift
   Apps/ModelQuantizer/Quantizer.swift
   Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
+  Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
   Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
   Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
 )
@@ -72,7 +94,13 @@ for rel_path in "${PATCH_TARGETS[@]}"; do
 done
 
 git -C "$REPO_ROOT/.build/checkouts/s4nnc" diff -- Package.swift > "$PATCHES_DIR/s4nnc.patch"
-git -C "$REPO_ROOT/.build/checkouts/ccv" diff -- Package.swift > "$PATCHES_DIR/ccv.patch"
+git -C "$REPO_ROOT/.build/checkouts/ccv" diff -- \
+  Package.swift \
+  lib/nnc/ccv_cnnp_model.c \
+  lib/nnc/ccv_cnnp_model_addons.c \
+  lib/nnc/ccv_nnc_tensor.c \
+  lib/nnc/ccv_nnc_cmd.c \
+  lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c > "$PATCHES_DIR/ccv.patch"
 
 echo "==> Patch generation complete:"
 wc -c \

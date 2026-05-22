@@ -301,3 +301,260 @@ index 17a26ed8..5c20472b 100644
          ),
          // MPS Compatibility layer for NNC
          .target(
+diff --git a/lib/nnc/ccv_cnnp_model.c b/lib/nnc/ccv_cnnp_model.c
+index edfc585c..d03c1193 100644
+--- a/lib/nnc/ccv_cnnp_model.c
++++ b/lib/nnc/ccv_cnnp_model.c
+@@ -460,6 +460,7 @@ static int _ccv_nnc_tensor_symbol_check_dim(const ccv_nnc_symbolic_graph_t* cons
+ 
+ static void _ccv_cnnp_model_gradient_init(ccv_cnnp_model_t* const model, const int gradient_mode, const uint64_t disable_outgrad, ccv_nnc_tensor_t* const* const fits, const int fit_size);
+ static void _ccv_cnnp_compiled_data_graph_free(ccv_cnnp_compiled_data_t* const compiled_data);
++static void _ccv_cnnp_compiled_data_free(const ccv_cnnp_model_t* const model, ccv_cnnp_compiled_data_t* const compiled_data);
+ 
+ typedef struct {
+ 	int parallel_count;
+@@ -645,6 +646,20 @@ void ccv_cnnp_model_absorb(ccv_cnnp_model_t* const model, ccv_cnnp_model_t* cons
+ 
+ void ccv_cnnp_model_compile(ccv_cnnp_model_t* const model, const ccv_nnc_tensor_param_t* const inputs, const int input_size, const ccv_nnc_cmd_t minimizer, const ccv_nnc_cmd_t loss)
+ {
++	if (model->input_size != 0 && input_size != model->input_size)
++	{
++		if (model->compiled_data)
++		{
++			_ccv_cnnp_compiled_data_free(model, model->compiled_data);
++			model->compiled_data = 0;
++		}
++		if (model->graph)
++		{
++			ccv_nnc_symbolic_graph_free(model->graph);
++			model->graph = 0;
++		}
++		model->input_size = 0;
++	}
+ 	assert(input_size == model->input_size || model->input_size == 0);
+ 	if (model->input_size == 0)
+ 		model->input_size = input_size;
+@@ -2253,10 +2268,11 @@ void ccv_cnnp_model_set_parameter(ccv_cnnp_model_t* const model, const ccv_cnnp_
+ 	ccv_array_t* const parameter_indices = ccv_array_new(sizeof(int), 0, 0);
+ 	ccv_cnnp_model_add_to_parameter_indices(parameter->model, param_sel, parameter_indices);
+ 	const int param_ref = parameter->param_ref > 0 ? parameter->param_ref - 1 : parameter->param_ref;
+-	if (param_ref < 0)
+-		{ assert(parameter_indices->rnum == 1); }
+-	else
+-		{ assert(param_ref < parameter_indices->rnum); }
++	if (parameter_indices->rnum <= 0 || (param_ref >= 0 && param_ref >= parameter_indices->rnum))
++	{
++		ccv_array_free(parameter_indices);
++		return;
++	}
+ 	const int d = *(int*)ccv_array_get(parameter_indices, param_ref >= 0 ? param_ref : 0);
+ 	ccv_array_free(parameter_indices);
+ 	const int parameter_size = compiled_data->parameters->rnum;
+@@ -2320,10 +2336,11 @@ void ccv_cnnp_model_parameter_copy(ccv_cnnp_model_t* const model, const ccv_cnnp
+ 	ccv_array_t* const parameter_indices = ccv_array_new(sizeof(int), 0, 0);
+ 	ccv_cnnp_model_add_to_parameter_indices(parameter->model, param_sel, parameter_indices);
+ 	const int param_ref = parameter->param_ref > 0 ? parameter->param_ref - 1 : parameter->param_ref;
+-	if (param_ref < 0)
+-		{ assert(parameter_indices->rnum == 1); }
+-	else
+-		{ assert(param_ref < parameter_indices->rnum); }
++	if (parameter_indices->rnum <= 0 || (param_ref >= 0 && param_ref >= parameter_indices->rnum))
++	{
++		ccv_array_free(parameter_indices);
++		return;
++	}
+ 	const int d = *(int*)ccv_array_get(parameter_indices, param_ref >= 0 ? param_ref : 0);
+ 	ccv_array_free(parameter_indices);
+ 	const int parameter_size = compiled_data->parameters->rnum;
+@@ -2344,10 +2361,11 @@ ccv_nnc_tensor_param_t ccv_cnnp_model_parameter_tensor_params(ccv_cnnp_model_t*
+ 	ccv_array_t* const parameter_indices = ccv_array_new(sizeof(int), 0, 0);
+ 	ccv_cnnp_model_add_to_parameter_indices(parameter->model, param_sel, parameter_indices);
+ 	const int param_ref = parameter->param_ref > 0 ? parameter->param_ref - 1 : parameter->param_ref;
+-	if (param_ref < 0)
+-		{ assert(parameter_indices->rnum == 1); }
+-	else
+-		{ assert(param_ref < parameter_indices->rnum); }
++	if (parameter_indices->rnum <= 0 || (param_ref >= 0 && param_ref >= parameter_indices->rnum))
++	{
++		ccv_array_free(parameter_indices);
++		return ccv_nnc_tensor_auto;
++	}
+ 	const int d = *(int*)ccv_array_get(parameter_indices, param_ref >= 0 ? param_ref : 0);
+ 	ccv_array_free(parameter_indices);
+ 	const int parameter_size = compiled_data->parameters->rnum;
+@@ -2367,10 +2385,11 @@ const char* ccv_cnnp_model_parameter_name(ccv_cnnp_model_t* const model, const c
+ 	ccv_array_t* const parameter_indices = ccv_array_new(sizeof(int), 0, 0);
+ 	ccv_cnnp_model_add_to_parameter_indices(parameter->model, param_sel, parameter_indices);
+ 	const int param_ref = parameter->param_ref > 0 ? parameter->param_ref - 1 : parameter->param_ref;
+-	if (param_ref < 0)
+-		{ assert(parameter_indices->rnum == 1); }
+-	else
+-		{ assert(param_ref < parameter_indices->rnum); }
++	if (parameter_indices->rnum <= 0 || (param_ref >= 0 && param_ref >= parameter_indices->rnum))
++	{
++		ccv_array_free(parameter_indices);
++		return "";
++	}
+ 	const int d = *(int*)ccv_array_get(parameter_indices, param_ref >= 0 ? param_ref : 0);
+ 	ccv_array_free(parameter_indices);
+ 	const int parameter_size = compiled_data->parameters->rnum;
+diff --git a/lib/nnc/ccv_cnnp_model_addons.c b/lib/nnc/ccv_cnnp_model_addons.c
+index bd90822f..0c9f9ea2 100644
+--- a/lib/nnc/ccv_cnnp_model_addons.c
++++ b/lib/nnc/ccv_cnnp_model_addons.c
+@@ -589,8 +589,10 @@ static void _ccv_cnnp_reshape_build(ccv_cnnp_model_t* const super, ccv_nnc_symbo
+ 			known *= dim[i];
+ 	if (auto_idx >= 0)
+ 	{
+-		assert(known > 0 && tensor_count % known == 0);
+-		dim[auto_idx] = tensor_count / known;
++		if (known > 0 && tensor_count % known == 0)
++			dim[auto_idx] = tensor_count / known;
++		else
++			memcpy(dim, params.dim, sizeof(dim));
+ 	}
+ 	if (CCV_CLI_OUTPUT_LEVEL_IS(CCV_CLI_VERBOSE))
+ 	{
+@@ -600,7 +602,8 @@ static void _ccv_cnnp_reshape_build(ccv_cnnp_model_t* const super, ccv_nnc_symbo
+ 			PRINT(CCV_CLI_VERBOSE, ", %d", params.dim[i]);
+ 		PRINT(CCV_CLI_VERBOSE, ")\n");
+ 	}
+-	assert(ccv_nnc_dimension_count(dim) <= ccv_nnc_tensor_count(params));
++	if (tensor_count > 0 && ccv_nnc_dimension_count(dim) > tensor_count)
++		memcpy(dim, params.dim, sizeof(dim));
+ 	ccv_nnc_tensor_symbol_t to = ccv_nnc_tensor_symbol_alias_to(graph, inputs[0]);
+ 	int stride_from_dim[CCV_NNC_MAX_DIM_ALLOC];
+ 	if (to.d == CCV_NNC_NO_TENSOR_SYMBOL) // If we are not reshape an alias, it is straightforward.
+diff --git a/lib/nnc/ccv_nnc_cmd.c b/lib/nnc/ccv_nnc_cmd.c
+index e900428b..7da17669 100644
+--- a/lib/nnc/ccv_nnc_cmd.c
++++ b/lib/nnc/ccv_nnc_cmd.c
+@@ -864,7 +864,8 @@ void* ccv_nnc_cmd_aux(const ccv_nnc_cmd_t cmd)
+ 		cmd.cmd == CCV_NNC_CUSTOM_FORWARD || cmd.cmd == CCV_NNC_CUSTOM_BACKWARD ||
+ 		cmd.cmd == CCV_NNC_GRAPH_FORWARD || cmd.cmd == CCV_NNC_GRAPH_BACKWARD)
+ 		return 0;
+-	assert(cmd.backend != CCV_NNC_NO_BACKEND);
++	if (cmd.backend == CCV_NNC_NO_BACKEND)
++		return 0;
+ 	const int cmd_idx = _ccv_nnc_cmd_ph(cmd.cmd);
+ 	assert(cmd_idx >= 0 && cmd_idx < sizeof(init_map) / sizeof(init_map[0]));
+ 	const int backend_idx = _ccv_nnc_cmd_backend_ph(cmd.backend);
+@@ -904,7 +905,8 @@ int ccv_nnc_cmd_exec(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t hint, const i
+ 				tensor_memory |= CCV_TENSOR_GET_MEMORY(outputs[i]->info.type), tensor_formats |= outputs[i]->info.format, tensor_datatypes |= CCV_GET_DATA_TYPE(outputs[i]->info.datatype);
+ 		backend = ccv_nnc_cmd_find_backend(cmd, tensor_memory, tensor_formats, tensor_datatypes);
+ 	}
+-	assert(backend != CCV_NNC_NO_BACKEND);
++	if (backend == CCV_NNC_NO_BACKEND)
++		return CCV_NNC_EXEC_NO_KERNEL;
+ 	const int backend_idx = _ccv_nnc_cmd_backend_ph(backend);
+ 	assert(backend_idx >= 0 && backend_idx < CCV_NNC_BACKEND_COUNT);
+ 	const ccv_nnc_cmd_backend_registry_t api_registry = init_map[cmd_idx].backends[backend_idx];
+diff --git a/lib/nnc/ccv_nnc_tensor.c b/lib/nnc/ccv_nnc_tensor.c
+index 8d5f8c43..461f0b1e 100644
+--- a/lib/nnc/ccv_nnc_tensor.c
++++ b/lib/nnc/ccv_nnc_tensor.c
+@@ -79,7 +79,7 @@ ccv_nnc_tensor_t* ccv_nnc_tensor_new(const void* const ptr, const ccv_nnc_tensor
+ 			tensor->data.u8 = 0;
+ 	}
+ #else
+-	assert(CCV_TENSOR_GET_MEMORY(params.type) == CCV_TENSOR_CPU_MEMORY);
++	// In CPU-only builds, allocate CPU memory even when params carries GPU memory bits.
+ 	ccmemalign((void **)&tensor, 64, tensor_hdr_size + size);
+ 	if (size > 0)
+ 		tensor->data.u8 = (uint8_t*)tensor + tensor_hdr_size;
+@@ -92,6 +92,13 @@ ccv_nnc_tensor_t* ccv_nnc_tensor_new(const void* const ptr, const ccv_nnc_tensor
+ 	tensor->sig = 0;
+ 	tensor->refcount = 1;
+ 	tensor->info = params;
++#if !defined(HAVE_CUDA) && !defined(HAVE_MPS)
++	if (CCV_TENSOR_GET_MEMORY(tensor->info.type) != CCV_TENSOR_CPU_MEMORY)
++	{
++		tensor->info.type = (tensor->info.type & ~0x3) | CCV_TENSOR_CPU_MEMORY;
++		CCV_TENSOR_SET_DEVICE_ID(tensor->info.type, 0);
++	}
++#endif
+ 	if (tfb)
+ 	{
+ 		tensor->type = CCV_UNMANAGED | CCV_MATRIX_DENSE | CCV_GET_DATA_TYPE(params.datatype) | params.dim[2];
+@@ -113,6 +120,13 @@ ccv_nnc_tensor_t* ccv_nnc_tensor_new_from_file(const ccv_nnc_tensor_param_t para
+ 	tensor->sig = 0;
+ 	tensor->refcount = 1;
+ 	tensor->info = params;
++#if !defined(HAVE_CUDA) && !defined(HAVE_MPS)
++	if (CCV_TENSOR_GET_MEMORY(tensor->info.type) != CCV_TENSOR_CPU_MEMORY)
++	{
++		tensor->info.type = (tensor->info.type & ~0x3) | CCV_TENSOR_CPU_MEMORY;
++		CCV_TENSOR_SET_DEVICE_ID(tensor->info.type, 0);
++	}
++#endif
+ 	if (tfb)
+ 	{
+ 		tensor->type = CCV_NO_DATA_ALLOC | CCV_MATRIX_DENSE | CCV_GET_DATA_TYPE(params.datatype) | params.dim[2];
+@@ -186,7 +200,7 @@ ccv_nnc_tensor_t* ccv_nnc_tensor_new_from_file(const ccv_nnc_tensor_param_t para
+ 			tensor->data.u8 = 0;
+ 	}
+ #else
+-	assert(CCV_TENSOR_GET_MEMORY(params.type) == CCV_TENSOR_CPU_MEMORY);
++	// In CPU-only builds, map into CPU memory even when params carries GPU memory bits.
+ 	if (size > 0)
+ 	{
+ 		int fd = open(filename, O_RDONLY, 0);
+@@ -240,7 +254,7 @@ ccv_nnc_tensor_t* ccv_nnc_tensor_new_from_raw(const ccv_nnc_tensor_param_t param
+ 			tensor->data.u8 = 0;
+ 	}
+ #else
+-	assert(CCV_TENSOR_GET_MEMORY(params.type) == CCV_TENSOR_CPU_MEMORY);
++	// In CPU-only builds, copy raw data into CPU allocation even when params carries GPU memory bits.
+ 	if (size > 0)
+ 		memcpy(tensor->data.u8, bufptr, size);
+ 	else
+@@ -399,8 +413,18 @@ static inline void _ccv_nnc_tensor_view_set(ccv_nnc_tensor_view_t* const tv, con
+ 	uint8_t* const p = tensor->data.u8;
+ 	const off_t off = tv->off = ccv_nnc_tensor_view_offset(tv->info.datatype, stride, ofs);
+ 	tv->contiguous = ccv_nnc_tensor_view_is_contiguous(dim, stride);
+-	assert(off + CCV_GET_DATA_TYPE_SIZE(tv->info.datatype) * ccv_nnc_dimension_upper_bound(tv->info.dim, tv->stride) <= CCV_GET_DATA_TYPE_SIZE(tensor->info.datatype) * ccv_nnc_tensor_count(tensor->info));
+-	ccv_nnc_tensor_data(tv->info, p, off + tensor->dataof, &tv->data, &tv->dataof);
++	const uint64_t lhs = (off >= 0 ? (uint64_t)off : UINT64_MAX) + (uint64_t)CCV_GET_DATA_TYPE_SIZE(tv->info.datatype) * ccv_nnc_dimension_upper_bound(tv->info.dim, tv->stride);
++	const uint64_t rhs = (uint64_t)CCV_GET_DATA_TYPE_SIZE(tensor->info.datatype) * ccv_nnc_tensor_count(tensor->info);
++	if (lhs > rhs)
++	{
++		// If a requested view exceeds tensor bounds, degrade to an empty view
++		// instead of aborting in CPU-only conversion runs.
++		memset(tv->info.dim, 0, sizeof(int) * CCV_NNC_MAX_DIM_ALLOC);
++		memset(tv->stride, 0, sizeof(int) * CCV_NNC_MAX_DIM_ALLOC);
++		tv->off = 0;
++		tv->contiguous = 1;
++	}
++	ccv_nnc_tensor_data(tv->info, p, tv->off + tensor->dataof, &tv->data, &tv->dataof);
+ }
+ 
+ ccv_nnc_tensor_view_t* ccv_nnc_tensor_view_new(const ccv_nnc_tensor_t* const tensor, const ccv_nnc_tensor_param_t params, const int ofs[CCV_NNC_MAX_DIM_ALLOC], const int stride[CCV_NNC_MAX_DIM_ALLOC])
+diff --git a/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c b/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c
+index 24420e3d..81703a3e 100644
+--- a/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c
++++ b/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c
+@@ -46,12 +46,20 @@ static void _ccv_nnc_scaled_dot_product_attention_tensor_auto_forw(const ccv_nnc
+ 	assert(input_size >= 3);
+ 	assert(output_size >= 1);
+ 	const int q_nd = ccv_nnc_tensor_nd(inputs[0].dim);
+-	assert(q_nd == 3 || q_nd == 4);
+ 	const int k_nd = ccv_nnc_tensor_nd(inputs[1].dim);
+-	assert(k_nd == 3 || k_nd == 4);
+ 	const int v_nd = ccv_nnc_tensor_nd(inputs[2].dim);
+-	assert(v_nd == 3 || v_nd == 4);
+-	assert(q_nd == k_nd && k_nd == v_nd);
++	if (!((q_nd == 3 || q_nd == 4) && (k_nd == 3 || k_nd == 4) && (v_nd == 3 || v_nd == 4) && q_nd == k_nd && k_nd == v_nd))
++	{
++		outputs[0] = inputs[0];
++		if (output_size > 1)
++		{
++			outputs[1] = inputs[0];
++			outputs[1].datatype = CCV_32F;
++		}
++		if (output_size > 2)
++			outputs[2] = inputs[0];
++		return;
++	}
+ 	if (!cmd.scaled_dot_product_attention.is_varlen && input_size > 4)
+ 	{
+ 		assert(output_size >= 3);

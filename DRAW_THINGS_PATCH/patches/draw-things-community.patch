@@ -1192,6 +1192,21 @@ index 8435d2f1..b18ff344 100644
        fatalError()
      case .kandinsky21, .wurstchenStageB:
        fatalError()
+diff --git a/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift b/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
+index b4193b91..e5aea5ef 100644
+--- a/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
++++ b/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
+@@ -71,7 +71,9 @@ public final class SafeTensors {
+   public let bufferStart: Int
+   public let states: [String: TensorDescriptor]
+   public init?(url: URL) {
+-    guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
++    // Force mmap for large checkpoints. `mappedIfSafe` can fall back to eager reads and fail on very
++    // large files in containerized/overlay filesystems.
++    guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return nil }
+     guard data.count >= 8 else { return nil }
+     let headerSize = data.withUnsafeBytes { $0.load(as: UInt64.self) }
+     // It doesn't make sense for my use-case has more than 10MiB header.
 diff --git a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift b/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
 index d2a5d9f6..bced744a 100644
 --- a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
