@@ -119,7 +119,9 @@ public final class ModelImporter {
         }
       }
     } else {
-      throw UnpickleError.dataNotFound
+      throw Error.unsupportedSourceFormat(
+        "Source checkpoint is neither a readable safetensors file nor a PyTorch zip archive: \(filePath)"
+      )
     }
     let isSvdI2v = stateDict.keys.contains { $0.contains("time_mixer") }
     var isWurstchenStageC = stateDict.keys.contains { $0.contains("clip_txt_mapper.") }
@@ -631,7 +633,9 @@ public final class ModelImporter {
                 textEncoderStateDict[key] = value
               }
             } else {
-              throw UnpickleError.dataNotFound
+              throw Error.unsupportedSourceFormat(
+                "Unable to read text encoder checkpoint: \(textEncoderFilePath)"
+              )
             }
           }
           switch modelVersion {
@@ -755,7 +759,9 @@ public final class ModelImporter {
                   textEncoder2StateDict[key] = value
                 }
               } else {
-                throw UnpickleError.dataNotFound
+                throw Error.unsupportedSourceFormat(
+                  "Unable to read second text encoder checkpoint: \(textEncoder2FilePath)"
+                )
               }
             }
             for (key, value) in textEncoder2StateDict {
@@ -1895,14 +1901,18 @@ public final class ModelImporter {
           }
           let reverseUNetMapping = reverseMapping(original: UNetMapping)
           let reverseUNetMappingFixed = reverseMapping(original: UNetMappingFixed)
-          try store.withTransaction {
+          var lastArchiveReadContext = "initial UNet transaction setup"
+          do {
+            try store.withTransaction {
             if let encoderHidProjWeightDescriptor = stateDict["encoder_hid_proj.weight"],
               let encoderHidProjBiasDescriptor = stateDict["encoder_hid_proj.bias"]
             {
+              lastArchiveReadContext = "encoder_hid_proj.weight"
               try archive.with(encoderHidProjWeightDescriptor) { tensor in
                 let tensor = Tensor<FloatType>(from: tensor)
                 store.write("__encoder_hid_proj__[t-0-0]", tensor: tensor)
               }
+              lastArchiveReadContext = "encoder_hid_proj.bias"
               try archive.with(encoderHidProjBiasDescriptor) { tensor in
                 let tensor = Tensor<FloatType>(from: tensor)
                 store.write("__encoder_hid_proj__[t-0-1]", tensor: tensor)
@@ -1911,10 +1921,12 @@ public final class ModelImporter {
             if modelVersion == .zImage, let xPadTokenDescriptor = stateDict["x_pad_token"],
               let capPadTokenDescriptor = stateDict["cap_pad_token"]
             {
+              lastArchiveReadContext = "x_pad_token"
               try archive.with(xPadTokenDescriptor) { tensor in
                 let tensor = Tensor<FloatType>(from: tensor)
                 store.write("x_pad_token", tensor: tensor)
               }
+              lastArchiveReadContext = "cap_pad_token"
               try archive.with(capPadTokenDescriptor) { tensor in
                 let tensor = Tensor<FloatType>(from: tensor)
                 store.write("cap_pad_token", tensor: tensor)
@@ -1934,6 +1946,7 @@ public final class ModelImporter {
                 )
               }
               do {
+                lastArchiveReadContext = "connector register \(videoRegistersKey)"
                 try archive.with(videoRegistersDescriptor) { tensor in
                   let tensor = Tensor<FloatType>(from: tensor)
                   store.write("text_video_connector_learnable_registers", tensor: tensor)
@@ -1944,6 +1957,7 @@ public final class ModelImporter {
                 )
               }
               do {
+                lastArchiveReadContext = "connector register \(audioRegistersKey)"
                 try archive.with(audioRegistersDescriptor) { tensor in
                   let tensor = Tensor<FloatType>(from: tensor)
                   store.write("text_audio_connector_learnable_registers", tensor: tensor)
@@ -1962,6 +1976,8 @@ public final class ModelImporter {
               let values = value.count == 1 ? (reverseUNetMapping[value[0]] ?? [key]) : [key]
               consumed.formUnion(values)
               let tensorDescriptors = values.compactMap { stateDict[$0] }
+              lastArchiveReadContext =
+                "UNet mapping key \(key) from source names [\(values.joined(separator: ", "))]"
               do {
                 try archive.with(tensorDescriptors) { tensors in
                   guard !tensors.isEmpty else { return }
@@ -2046,6 +2062,8 @@ public final class ModelImporter {
               let values = value.count == 1 ? (reverseUNetMappingFixed[value[0]] ?? [key]) : [key]
               consumed.formUnion(values)
               let tensorDescriptors = values.compactMap { stateDict[$0] }
+              lastArchiveReadContext =
+                "UNet fixed mapping key \(key) from source names [\(values.joined(separator: ", "))]"
               do {
                 try archive.with(tensorDescriptors) { tensors in
                   guard !tensors.isEmpty else { return }
@@ -2057,7 +2075,7 @@ public final class ModelImporter {
                     var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
                     for (i, tensor) in tensors.enumerated() {
                       let shape = tensor.shape
-                        if shape.count == 4 {
+                      if shape.count == 4 {
                         combined[
                           i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
                           Tensor<FloatType>(from: tensor).reshaped(
@@ -2119,6 +2137,8 @@ public final class ModelImporter {
                   ]
                 consumed.formUnion(values)
                 let tensorDescriptors = values.compactMap { stateDict[$0] }
+                lastArchiveReadContext =
+                  "Additional mapping \(additionalMapping.prefix) key \(key) from source names [\(values.joined(separator: ", "))]"
                 do {
                   try archive.with(tensorDescriptors) { tensors in
                     guard !tensors.isEmpty else { return }
@@ -2168,6 +2188,14 @@ public final class ModelImporter {
                 }
               }
             }
+            }
+          } catch {
+            if let unpickleError = error as? UnpickleError {
+              throw Error.unsupportedSourceFormat(
+                "Unhandled archive read failure while processing \(lastArchiveReadContext): \(unpickleError)"
+              )
+            }
+            throw error
           }
         }
       }
@@ -2314,7 +2342,9 @@ public final class ModelImporter {
                 (rootObject["state_dict"] as? Interpreter.Dictionary ?? rootObject["module"]
                   as? Interpreter.Dictionary)
             else {
-              throw UnpickleError.dataNotFound
+              throw Error.unsupportedSourceFormat(
+                "Autoencoder checkpoint is missing state_dict/module payload: \(autoencoderFilePath)"
+              )
             }
             originalStateDict.forEach { key, value in
               guard let value = value as? TensorDescriptor else { return }
@@ -2326,7 +2356,9 @@ public final class ModelImporter {
               }
             }
           } else {
-            throw UnpickleError.dataNotFound
+            throw Error.unsupportedSourceFormat(
+              "Unable to read autoencoder checkpoint: \(autoencoderFilePath)"
+            )
           }
         }
         try graph.withNoGrad {

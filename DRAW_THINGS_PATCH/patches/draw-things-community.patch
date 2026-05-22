@@ -335,7 +335,7 @@ index 7f3969b1..ddbf58d8 100644
              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
                $0.write(key, tensor: fp16)
 diff --git a/Libraries/ModelOp/Sources/ModelImporter.swift b/Libraries/ModelOp/Sources/ModelImporter.swift
-index 8435d2f1..c3ab2f22 100644
+index 8435d2f1..b18ff344 100644
 --- a/Libraries/ModelOp/Sources/ModelImporter.swift
 +++ b/Libraries/ModelOp/Sources/ModelImporter.swift
 @@ -13,6 +13,7 @@ public final class ModelImporter {
@@ -346,7 +346,18 @@ index 8435d2f1..c3ab2f22 100644
    }
    private let filePath: String
    private let modelName: String
-@@ -132,8 +133,27 @@ public final class ModelImporter {
+@@ -118,7 +119,9 @@ public final class ModelImporter {
+         }
+       }
+     } else {
+-      throw UnpickleError.dataNotFound
++      throw Error.unsupportedSourceFormat(
++        "Source checkpoint is neither a readable safetensors file nor a PyTorch zip archive: \(filePath)"
++      )
+     }
+     let isSvdI2v = stateDict.keys.contains { $0.contains("time_mixer") }
+     var isWurstchenStageC = stateDict.keys.contains { $0.contains("clip_txt_mapper.") }
+@@ -132,8 +135,27 @@ public final class ModelImporter {
          ($0.contains("joint_blocks.23.context_block.")
            || $0.contains("transformer_blocks.22.ff_context."))
        }
@@ -375,7 +386,7 @@ index 8435d2f1..c3ab2f22 100644
        && stateDict.keys.contains {
          $0.contains("blocks.27.cross_attn.kv_") || $0.contains("transformer_blocks.27.attn2.to_")
        }
-@@ -173,12 +193,14 @@ public final class ModelImporter {
+@@ -173,12 +195,14 @@ public final class ModelImporter {
            || $0.contains("single_transformer_blocks.37.proj_mlp.")
        }
      var isWan21_14B = stateDict.keys.contains {
@@ -392,7 +403,7 @@ index 8435d2f1..c3ab2f22 100644
        }
      var isHiDream = stateDict.keys.contains {
        $0.contains("double_stream_blocks.15.block.ff_i.experts.0.")
-@@ -275,12 +297,35 @@ public final class ModelImporter {
+@@ -275,12 +299,35 @@ public final class ModelImporter {
        isFlux2 = false
        isFlux2_9B = false
        isFlux2_4B = false
@@ -428,7 +439,7 @@ index 8435d2f1..c3ab2f22 100644
      } else if isPixArtSigmaXL {
        modelVersion = .pixart
        modifier = .none
-@@ -451,6 +496,53 @@ public final class ModelImporter {
+@@ -451,6 +498,53 @@ public final class ModelImporter {
      )
    }
  
@@ -482,7 +493,7 @@ index 8435d2f1..c3ab2f22 100644
    private func internalImport(versionCheck: @escaping (ModelVersion) -> Void) throws -> (
      [String], ModelVersion, SamplerModifier, InspectionResult
    ) {
-@@ -466,6 +558,7 @@ public final class ModelImporter {
+@@ -466,6 +560,7 @@ public final class ModelImporter {
      let dualAttentionLayers = inspectionResult.dualAttentionLayers
      let distilledGuidanceLayers = inspectionResult.distilledGuidanceLayers
      expectedTotalAccess = inspectionResult.numberOfTensors
@@ -490,7 +501,29 @@ index 8435d2f1..c3ab2f22 100644
      versionCheck(modelVersion)
      progress?(0.05)
      if isTextEncoderCustomized {
-@@ -767,7 +860,13 @@ public final class ModelImporter {
+@@ -538,7 +633,9 @@ public final class ModelImporter {
+                 textEncoderStateDict[key] = value
+               }
+             } else {
+-              throw UnpickleError.dataNotFound
++              throw Error.unsupportedSourceFormat(
++                "Unable to read text encoder checkpoint: \(textEncoderFilePath)"
++              )
+             }
+           }
+           switch modelVersion {
+@@ -662,7 +759,9 @@ public final class ModelImporter {
+                   textEncoder2StateDict[key] = value
+                 }
+               } else {
+-                throw UnpickleError.dataNotFound
++                throw Error.unsupportedSourceFormat(
++                  "Unable to read second text encoder checkpoint: \(textEncoder2FilePath)"
++                )
+               }
+             }
+             for (key, value) in textEncoder2StateDict {
+@@ -767,7 +866,13 @@ public final class ModelImporter {
      case .flux2_4b:
        conditionalLength = 7680
        batchSize = 1
@@ -505,7 +538,7 @@ index 8435d2f1..c3ab2f22 100644
        fatalError()
      case .kandinsky21, .wurstchenStageB:
        fatalError()
-@@ -780,7 +879,7 @@ public final class ModelImporter {
+@@ -780,7 +885,7 @@ public final class ModelImporter {
              embeddingSize: modelVersion == .sdxlRefiner ? 384 : 320,
              maxPeriod: 10_000)
          ))
@@ -514,7 +547,7 @@ index 8435d2f1..c3ab2f22 100644
        let cTensor = graph.variable(.CPU, .HWC(batchSize, 77, conditionalLength), of: FloatType.self)
        var cArr = [cTensor]
        let unet: Model
-@@ -1014,7 +1113,73 @@ public final class ModelImporter {
+@@ -1014,7 +1119,73 @@ public final class ModelImporter {
            ).map {
              graph.variable(.CPU, format: .NHWC, shape: $0, of: FloatType.self)
            }
@@ -589,7 +622,7 @@ index 8435d2f1..c3ab2f22 100644
          fatalError()
        case .kandinsky21, .v1, .v2:
          break
-@@ -1271,7 +1436,55 @@ public final class ModelImporter {
+@@ -1271,7 +1442,55 @@ public final class ModelImporter {
            timesteps: 1,
            channels: 3072, layers: (5, 20), numberOfReferenceImages: 0, guidanceEmbed: true,
            usesFlashAttention: .scale1, kvCache: false)
@@ -646,7 +679,7 @@ index 8435d2f1..c3ab2f22 100644
          fatalError()
        case .kandinsky21, .wurstchenStageB:
          fatalError()
-@@ -1422,7 +1635,19 @@ public final class ModelImporter {
+@@ -1422,7 +1641,19 @@ public final class ModelImporter {
            graph.variable(.CPU, .WC(1, 256), of: FloatType.self),
          ]
          tEmb = nil
@@ -667,7 +700,7 @@ index 8435d2f1..c3ab2f22 100644
          fatalError()
        case .v1, .v2, .kandinsky21, .wurstchenStageB:
          crossattn = []
-@@ -1558,6 +1783,15 @@ public final class ModelImporter {
+@@ -1558,6 +1789,15 @@ public final class ModelImporter {
              stateDict[String(key.dropFirst(4))] = value
            }
          }
@@ -683,7 +716,38 @@ index 8435d2f1..c3ab2f22 100644
        }
        // In case it is not on high performance device and it is SDXL model, read the parameters directly from the mapping.
        if let unetReader = unetReader {
-@@ -1686,6 +1920,40 @@ public final class ModelImporter {
+@@ -1661,14 +1901,18 @@ public final class ModelImporter {
+           }
+           let reverseUNetMapping = reverseMapping(original: UNetMapping)
+           let reverseUNetMappingFixed = reverseMapping(original: UNetMappingFixed)
+-          try store.withTransaction {
++          var lastArchiveReadContext = "initial UNet transaction setup"
++          do {
++            try store.withTransaction {
+             if let encoderHidProjWeightDescriptor = stateDict["encoder_hid_proj.weight"],
+               let encoderHidProjBiasDescriptor = stateDict["encoder_hid_proj.bias"]
+             {
++              lastArchiveReadContext = "encoder_hid_proj.weight"
+               try archive.with(encoderHidProjWeightDescriptor) { tensor in
+                 let tensor = Tensor<FloatType>(from: tensor)
+                 store.write("__encoder_hid_proj__[t-0-0]", tensor: tensor)
+               }
++              lastArchiveReadContext = "encoder_hid_proj.bias"
+               try archive.with(encoderHidProjBiasDescriptor) { tensor in
+                 let tensor = Tensor<FloatType>(from: tensor)
+                 store.write("__encoder_hid_proj__[t-0-1]", tensor: tensor)
+@@ -1677,15 +1921,53 @@ public final class ModelImporter {
+             if modelVersion == .zImage, let xPadTokenDescriptor = stateDict["x_pad_token"],
+               let capPadTokenDescriptor = stateDict["cap_pad_token"]
+             {
++              lastArchiveReadContext = "x_pad_token"
+               try archive.with(xPadTokenDescriptor) { tensor in
+                 let tensor = Tensor<FloatType>(from: tensor)
+                 store.write("x_pad_token", tensor: tensor)
+               }
++              lastArchiveReadContext = "cap_pad_token"
+               try archive.with(capPadTokenDescriptor) { tensor in
+                 let tensor = Tensor<FloatType>(from: tensor)
                  store.write("cap_pad_token", tensor: tensor)
                }
              }
@@ -701,6 +765,7 @@ index 8435d2f1..c3ab2f22 100644
 +                )
 +              }
 +              do {
++                lastArchiveReadContext = "connector register \(videoRegistersKey)"
 +                try archive.with(videoRegistersDescriptor) { tensor in
 +                  let tensor = Tensor<FloatType>(from: tensor)
 +                  store.write("text_video_connector_learnable_registers", tensor: tensor)
@@ -711,6 +776,7 @@ index 8435d2f1..c3ab2f22 100644
 +                )
 +              }
 +              do {
++                lastArchiveReadContext = "connector register \(audioRegistersKey)"
 +                try archive.with(audioRegistersDescriptor) { tensor in
 +                  let tensor = Tensor<FloatType>(from: tensor)
 +                  store.write("text_audio_connector_learnable_registers", tensor: tensor)
@@ -724,7 +790,7 @@ index 8435d2f1..c3ab2f22 100644
              var consumed = Set<String>()
              for (key, value) in UNetMapping.sorted(by: { $0.key < $1.key }) {
                guard let _ = stateDict[key], !consumed.contains(key) else {
-@@ -1694,64 +1962,39 @@ public final class ModelImporter {
+@@ -1694,64 +1976,41 @@ public final class ModelImporter {
                let values = value.count == 1 ? (reverseUNetMapping[value[0]] ?? [key]) : [key]
                consumed.formUnion(values)
                let tensorDescriptors = values.compactMap { stateDict[$0] }
@@ -742,6 +808,8 @@ index 8435d2f1..c3ab2f22 100644
 -                      combined[
 -                        i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
 -                        Tensor<FloatType>(from: tensor).reshaped(
++              lastArchiveReadContext =
++                "UNet mapping key \(key) from source names [\(values.joined(separator: ", "))]"
 +              do {
 +                try archive.with(tensorDescriptors) { tensors in
 +                  guard !tensors.isEmpty else { return }
@@ -819,7 +887,7 @@ index 8435d2f1..c3ab2f22 100644
                      value.write(
                        graph: graph,
                        to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
-@@ -1760,9 +2003,40 @@ public final class ModelImporter {
+@@ -1760,9 +2019,40 @@ public final class ModelImporter {
                        let _ = interrupt()
                        return "__\(modelPrefix)__[\($0)]"
                      }
@@ -861,7 +929,7 @@ index 8435d2f1..c3ab2f22 100644
                }
              }
              for (key, value) in UNetMappingFixed.sorted(by: { $0.key < $1.key }) {
-@@ -1772,73 +2046,7 @@ public final class ModelImporter {
+@@ -1772,73 +2062,9 @@ public final class ModelImporter {
                let values = value.count == 1 ? (reverseUNetMappingFixed[value[0]] ?? [key]) : [key]
                consumed.formUnion(values)
                let tensorDescriptors = values.compactMap { stateDict[$0] }
@@ -932,20 +1000,13 @@ index 8435d2f1..c3ab2f22 100644
 -                  ]
 -                consumed.formUnion(values)
 -                let tensorDescriptors = values.compactMap { stateDict[$0] }
++              lastArchiveReadContext =
++                "UNet fixed mapping key \(key) from source names [\(values.joined(separator: ", "))]"
 +              do {
                  try archive.with(tensorDescriptors) { tensors in
                    guard !tensors.isEmpty else { return }
                    let tensor: Tensor<FloatType>
-@@ -1849,7 +2057,7 @@ public final class ModelImporter {
-                     var combined = Tensor<FloatType>(.CPU, format: .NCHW, shape: TensorShape(shape))
-                     for (i, tensor) in tensors.enumerated() {
-                       let shape = tensor.shape
--                      if shape.count == 4 {
-+                        if shape.count == 4 {
-                         combined[
-                           i..<(i + 1), 0..<shape[0], 0..<shape[1], 0..<shape[2], 0..<shape[3]] =
-                           Tensor<FloatType>(from: tensor).reshaped(
-@@ -1870,15 +2078,93 @@ public final class ModelImporter {
+@@ -1870,18 +2096,106 @@ public final class ModelImporter {
                      }
                      tensor = combined
                    }
@@ -976,13 +1037,13 @@ index 8435d2f1..c3ab2f22 100644
 -                    return "__\(additionalMapping.prefix)__[\($0)]"
                    }
 -                  let _ = interrupt()
-+                }
+                 }
 +              } catch {
 +                throw Error.unsupportedSourceFormat(
 +                  "Failed reading fixed tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
 +                )
-+              }
-+            }
+               }
+             }
 +            for additionalMapping in additionalMappings {
 +              let reverseAdditionalMapping = reverseMapping(original: additionalMapping.mapping)
 +              for (key, value) in additionalMapping.mapping.sorted(by: { $0.key < $1.key }) {
@@ -997,6 +1058,8 @@ index 8435d2f1..c3ab2f22 100644
 +                  ]
 +                consumed.formUnion(values)
 +                let tensorDescriptors = values.compactMap { stateDict[$0] }
++                lastArchiveReadContext =
++                  "Additional mapping \(additionalMapping.prefix) key \(key) from source names [\(values.joined(separator: ", "))]"
 +                do {
 +                  try archive.with(tensorDescriptors) { tensors in
 +                    guard !tensors.isEmpty else { return }
@@ -1043,10 +1106,21 @@ index 8435d2f1..c3ab2f22 100644
 +                  throw Error.unsupportedSourceFormat(
 +                    "Failed reading additional mapping tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
 +                  )
-                 }
-               }
-             }
-@@ -1986,7 +2272,15 @@ public final class ModelImporter {
++                }
++              }
++            }
++            }
++          } catch {
++            if let unpickleError = error as? UnpickleError {
++              throw Error.unsupportedSourceFormat(
++                "Unhandled archive read failure while processing \(lastArchiveReadContext): \(unpickleError)"
++              )
++            }
++            throw error
+           }
+         }
+       }
+@@ -1986,7 +2300,15 @@ public final class ModelImporter {
            if $0.keys.count != 292 && $0.keys.count != 294 {
              throw Error.tensorWritesFailed
            }
@@ -1063,7 +1137,29 @@ index 8435d2f1..c3ab2f22 100644
            fatalError()
          case .kandinsky21, .wurstchenStageB:
            fatalError()
-@@ -2565,7 +2859,31 @@ extension ModelImporter {
+@@ -2020,7 +2342,9 @@ public final class ModelImporter {
+                 (rootObject["state_dict"] as? Interpreter.Dictionary ?? rootObject["module"]
+                   as? Interpreter.Dictionary)
+             else {
+-              throw UnpickleError.dataNotFound
++              throw Error.unsupportedSourceFormat(
++                "Autoencoder checkpoint is missing state_dict/module payload: \(autoencoderFilePath)"
++              )
+             }
+             originalStateDict.forEach { key, value in
+               guard let value = value as? TensorDescriptor else { return }
+@@ -2032,7 +2356,9 @@ public final class ModelImporter {
+               }
+             }
+           } else {
+-            throw UnpickleError.dataNotFound
++            throw Error.unsupportedSourceFormat(
++              "Unable to read autoencoder checkpoint: \(autoencoderFilePath)"
++            )
+           }
+         }
+         try graph.withNoGrad {
+@@ -2565,7 +2891,31 @@ extension ModelImporter {
        }
        // For FLUX.2, the hires fix trigger scale is 2 of the finetune scale.
        specification.hiresFixScale = finetuneScale * 2
