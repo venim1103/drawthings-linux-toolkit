@@ -36,6 +36,9 @@ When the container is created, .devcontainer/post-create.sh performs:
 - Shell aliases in ~/.bashrc:
   - drawthings-start
   - dt-venv
+- drawthings-start defaults:
+  - address 127.0.0.1, port 7861, GPU 0
+  - no TLS, model browser enabled, no response compression
 
 After opening a new terminal:
 

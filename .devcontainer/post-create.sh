@@ -222,8 +222,11 @@ cat >> "$tmp_bashrc" <<EOF
 $DRAWTHINGS_BASHRC_BLOCK_START
 export DRAWTHINGS_MODEL_DIR="$DRAWTHINGS_MODEL_DIR"
 export DRAWTHINGS_WORKSPACE_ROOT="$WORKSPACE_ROOT"
+export DRAWTHINGS_ADDRESS="127.0.0.1"
+export DRAWTHINGS_PORT="7861"
+export DRAWTHINGS_GPU="0"
 export PATH="$HOME/.local/bin:$VENV_DIR/bin:\$PATH"
-# Starts gRPCServerCLI using DRAWTHINGS_MODEL_DIR as the model location.
+# Starts gRPCServerCLI with stable local defaults and DRAWTHINGS_MODEL_DIR.
 alias drawthings-start='drawthings-grpc'
 alias dt-venv='source "$VENV_DIR/bin/activate"'
 $DRAWTHINGS_BASHRC_BLOCK_END

@@ -6,8 +6,8 @@ ARG USER_GID=1000
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DRAWTHINGS_IMAGE=docker.io/drawthingsai/draw-things-grpc-server-cli:latest
-ENV DRAWTHINGS_MODEL_DIR=/workspaces/LTX2_3/dt-models
-ENV DRAWTHINGS_PORT=7860
+ENV DRAWTHINGS_MODEL_DIR=/workspaces/drawthings-linux-toolkit/dt-models
+ENV DRAWTHINGS_PORT=7861
 
 RUN set -eux; \
     apt-get update; \
@@ -71,12 +71,22 @@ RUN set -eux; \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     '' \
-    'MODEL_DIR="${DRAWTHINGS_MODEL_DIR:-/workspaces/LTX2_3/dt-models}"' \
+    'MODEL_DIR="${DRAWTHINGS_MODEL_DIR:-/workspaces/drawthings-linux-toolkit/dt-models}"' \
+    'ADDRESS="${DRAWTHINGS_ADDRESS:-127.0.0.1}"' \
+    'PORT="${DRAWTHINGS_PORT:-7861}"' \
+    'GPU="${DRAWTHINGS_GPU:-0}"' \
     '' \
     'mkdir -p "$MODEL_DIR"' \
     '' \
     'if [ "$#" -eq 0 ]; then' \
-    '    exec gRPCServerCLI "$MODEL_DIR"' \
+    '    exec gRPCServerCLI \' \
+    '        --address "$ADDRESS" \' \
+    '        --port "$PORT" \' \
+    '        --gpu "$GPU" \' \
+    '        --no-tls \' \
+    '        --model-browser \' \
+    '        --no-response-compression \' \
+    '        "$MODEL_DIR"' \
     'fi' \
     '' \
     'exec gRPCServerCLI "$@"' \
