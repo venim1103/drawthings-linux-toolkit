@@ -12,11 +12,25 @@ NUM_FRAMES="${DT_NUM_FRAMES:-81}"
 FPS_ID="${DT_FPS_ID:-5}"
 SAMPLER="${DT_SAMPLER:-19}"
 GUIDANCE="${DT_GUIDANCE:-1.0}"
+SHIFT="${DT_SHIFT:-3.0}"
+HIRES_FIX="${DT_HIRES_FIX:-false}"
+HIRES_FIX_WIDTH="${DT_HIRES_FIX_WIDTH:-0}"
+HIRES_FIX_HEIGHT="${DT_HIRES_FIX_HEIGHT:-0}"
 SEED="${DT_SEED:--1}"
 TEST_ONE_FRAME="${DT_TEST_ONE_FRAME:-0}"
 ONE_FRAME_SECONDS="${DT_ONE_FRAME_SECONDS:-1.0}"
 OUTPUT_ROOT="${DT_OUTPUT_ROOT:-${ROOT_DIR}/output}"
 TOOLS_REQ_FILE="${ROOT_DIR}/requirements-drawthings-tools.txt"
+
+HAS_DT_SHIFT=0
+if [[ -n "${DT_SHIFT+x}" ]]; then
+  HAS_DT_SHIFT=1
+fi
+
+HAS_DT_HIRES_FIX=0
+if [[ -n "${DT_HIRES_FIX+x}" ]]; then
+  HAS_DT_HIRES_FIX=1
+fi
 
 now_epoch() {
   date +%s
@@ -77,9 +91,29 @@ if ! [[ "${SAMPLER}" =~ ^[0-9]+$ ]] || (( SAMPLER < 0 )); then
   exit 1
 fi
 
+if ! [[ "${WIDTH}" =~ ^[0-9]+$ ]] || (( WIDTH < 64 )) || (( WIDTH % 64 != 0 )); then
+  echo "DT_WIDTH must be a positive multiple of 64, got: ${WIDTH}"
+  exit 1
+fi
+
+if ! [[ "${HEIGHT}" =~ ^[0-9]+$ ]] || (( HEIGHT < 64 )) || (( HEIGHT % 64 != 0 )); then
+  echo "DT_HEIGHT must be a positive multiple of 64, got: ${HEIGHT}"
+  exit 1
+fi
+
 if [[ "${TEST_ONE_FRAME}" == "1" ]]; then
   NUM_FRAMES="1"
   echo "Testing mode enabled: forcing NUM_FRAMES=1"
+fi
+
+# LTX-2.3 profiles use model-specific defaults in Draw Things presets.
+if [[ "${MODEL}" == ltx_2.3_* ]]; then
+  if [[ "${HAS_DT_SHIFT}" == "0" ]]; then
+    SHIFT="5.0"
+  fi
+  if [[ "${HAS_DT_HIRES_FIX}" == "0" ]]; then
+    HIRES_FIX="true"
+  fi
 fi
 
 # LTX-2.3 distilled checkpoints are sensitive to guidance / step settings.
@@ -132,7 +166,7 @@ if ! "${PYTHON_BIN}" "${ROOT_DIR}/tools/dt_api_client.py" --host "${HOST}" echo 
 fi
 
 echo "Phase 1/3: building generation config..."
-echo "Config: model=${MODEL} sampler=${SAMPLER} steps=${STEPS} guidance=${GUIDANCE} frames=${NUM_FRAMES} size=${WIDTH}x${HEIGHT}"
+echo "Config: model=${MODEL} sampler=${SAMPLER} steps=${STEPS} guidance=${GUIDANCE} shift=${SHIFT} hiresFix=${HIRES_FIX} frames=${NUM_FRAMES} size=${WIDTH}x${HEIGHT}"
 CONFIG_START="$(now_epoch)"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/tools/dt_make_config.py" \
@@ -143,6 +177,10 @@ CONFIG_START="$(now_epoch)"
   --steps "${STEPS}" \
   --sampler "${SAMPLER}" \
   --guidance-scale "${GUIDANCE}" \
+  --shift "${SHIFT}" \
+  --hires-fix "${HIRES_FIX}" \
+  --hires-fix-width "${HIRES_FIX_WIDTH}" \
+  --hires-fix-height "${HIRES_FIX_HEIGHT}" \
   --num-frames "${NUM_FRAMES}" \
   --fps-id "${FPS_ID}" \
   --seed "${SEED}"

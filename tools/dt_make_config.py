@@ -33,6 +33,13 @@ def _load_generated_modules(bindings_dir: Path):
     return GC
 
 
+def _optional_string_offset(builder: flatbuffers.Builder, value: str):
+    txt = value.strip()
+    if not txt:
+        return None
+    return builder.CreateString(txt)
+
+
 def build_config(args) -> bytes:
     GC = _load_generated_modules(Path(args.bindings_dir))
 
@@ -40,16 +47,40 @@ def build_config(args) -> bytes:
     start_width = max(1, args.width // 64)
     start_height = max(1, args.height // 64)
 
+    hires_fix_start_width = int(args.hires_fix_start_width)
+    hires_fix_start_height = int(args.hires_fix_start_height)
+
+    # Pixel-space overrides are converted to 64x latent blocks.
+    if hires_fix_start_width <= 0 and args.hires_fix_width > 0:
+        hires_fix_start_width = max(1, args.hires_fix_width // 64)
+    if hires_fix_start_height <= 0 and args.hires_fix_height > 0:
+        hires_fix_start_height = max(1, args.hires_fix_height // 64)
+
+    if args.hires_fix:
+        # If hires-fix is enabled but no explicit start size is provided,
+        # default to a half-resolution first pass.
+        if hires_fix_start_width <= 0:
+            hires_fix_start_width = max(1, (start_width + 1) // 2)
+        if hires_fix_start_height <= 0:
+            hires_fix_start_height = max(1, (start_height + 1) // 2)
+
+        # Runtime requires hires-fix start sizes to be strictly smaller than start size.
+        hires_fix_start_width = min(hires_fix_start_width, max(1, start_width - 1))
+        hires_fix_start_height = min(hires_fix_start_height, max(1, start_height - 1))
+    else:
+        hires_fix_start_width = 0
+        hires_fix_start_height = 0
+
     builder = flatbuffers.Builder(4096)
 
     model = builder.CreateString(args.model)
-    upscaler = builder.CreateString(args.upscaler)
-    face_restoration = builder.CreateString(args.face_restoration)
-    refiner_model = builder.CreateString(args.refiner_model)
+    upscaler = _optional_string_offset(builder, args.upscaler)
+    face_restoration = _optional_string_offset(builder, args.face_restoration)
+    refiner_model = _optional_string_offset(builder, args.refiner_model)
     name = builder.CreateString(args.name)
-    clip_l_text = builder.CreateString(args.clip_l_text)
-    open_clip_g_text = builder.CreateString(args.open_clip_g_text)
-    t5_text = builder.CreateString(args.t5_text)
+    clip_l_text = _optional_string_offset(builder, args.clip_l_text)
+    open_clip_g_text = _optional_string_offset(builder, args.open_clip_g_text)
+    t5_text = _optional_string_offset(builder, args.t5_text)
 
     GC.GenerationConfigurationStart(builder)
     GC.GenerationConfigurationAddId(builder, 0)
@@ -64,12 +95,18 @@ def build_config(args) -> bytes:
     GC.GenerationConfigurationAddBatchCount(builder, args.batch_count)
     GC.GenerationConfigurationAddBatchSize(builder, args.batch_size)
     GC.GenerationConfigurationAddHiresFix(builder, args.hires_fix)
-    GC.GenerationConfigurationAddUpscaler(builder, upscaler)
+    GC.GenerationConfigurationAddHiresFixStartWidth(builder, hires_fix_start_width)
+    GC.GenerationConfigurationAddHiresFixStartHeight(builder, hires_fix_start_height)
+    GC.GenerationConfigurationAddHiresFixStrength(builder, args.hires_fix_strength)
+    if upscaler is not None:
+        GC.GenerationConfigurationAddUpscaler(builder, upscaler)
     GC.GenerationConfigurationAddSeedMode(builder, args.seed_mode)
     GC.GenerationConfigurationAddClipSkip(builder, args.clip_skip)
     GC.GenerationConfigurationAddMaskBlur(builder, args.mask_blur)
-    GC.GenerationConfigurationAddFaceRestoration(builder, face_restoration)
-    GC.GenerationConfigurationAddRefinerModel(builder, refiner_model)
+    if face_restoration is not None:
+        GC.GenerationConfigurationAddFaceRestoration(builder, face_restoration)
+    if refiner_model is not None:
+        GC.GenerationConfigurationAddRefinerModel(builder, refiner_model)
     GC.GenerationConfigurationAddTargetImageHeight(builder, args.height)
     GC.GenerationConfigurationAddTargetImageWidth(builder, args.width)
     GC.GenerationConfigurationAddName(builder, name)
@@ -88,9 +125,11 @@ def build_config(args) -> bytes:
     )
     GC.GenerationConfigurationAddUpscalerScaleFactor(builder, args.upscaler_scale_factor)
     GC.GenerationConfigurationAddSeparateClipL(builder, args.separate_clip_l)
-    GC.GenerationConfigurationAddClipLText(builder, clip_l_text)
+    if clip_l_text is not None:
+        GC.GenerationConfigurationAddClipLText(builder, clip_l_text)
     GC.GenerationConfigurationAddSeparateOpenClipG(builder, args.separate_open_clip_g)
-    GC.GenerationConfigurationAddOpenClipGText(builder, open_clip_g_text)
+    if open_clip_g_text is not None:
+        GC.GenerationConfigurationAddOpenClipGText(builder, open_clip_g_text)
     GC.GenerationConfigurationAddResolutionDependentShift(
         builder, args.resolution_dependent_shift
     )
@@ -101,11 +140,19 @@ def build_config(args) -> bytes:
     GC.GenerationConfigurationAddTeaCacheMaxSkipSteps(builder, args.tea_cache_max_skip_steps)
     GC.GenerationConfigurationAddCausalInference(builder, args.causal_inference)
     GC.GenerationConfigurationAddSeparateT5(builder, args.separate_t5)
-    GC.GenerationConfigurationAddT5Text(builder, t5_text)
+    if t5_text is not None:
+        GC.GenerationConfigurationAddT5Text(builder, t5_text)
 
     config = GC.GenerationConfigurationEnd(builder)
     builder.Finish(config)
-    return bytes(builder.Output()), seed, start_width, start_height
+    return (
+        bytes(builder.Output()),
+        seed,
+        start_width,
+        start_height,
+        hires_fix_start_width,
+        hires_fix_start_height,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -129,6 +176,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--clip-skip", type=int, default=1)
 
     p.add_argument("--hires-fix", type=_parse_bool, default=False)
+    p.add_argument("--hires-fix-start-width", type=int, default=0, help="Hires-fix start width in 64x blocks")
+    p.add_argument("--hires-fix-start-height", type=int, default=0, help="Hires-fix start height in 64x blocks")
+    p.add_argument("--hires-fix-width", type=int, default=0, help="Hires-fix start width in pixels")
+    p.add_argument("--hires-fix-height", type=int, default=0, help="Hires-fix start height in pixels")
+    p.add_argument("--hires-fix-strength", type=float, default=0.7)
     p.add_argument("--upscaler", default="")
     p.add_argument("--upscaler-scale-factor", type=int, default=0)
 
@@ -137,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sharpness", type=float, default=0.0)
 
     p.add_argument("--shift", type=float, default=3.0)
-    p.add_argument("--resolution-dependent-shift", type=_parse_bool, default=False)
+    p.add_argument("--resolution-dependent-shift", type=_parse_bool, default=True)
 
     p.add_argument("--tiled-decoding", type=_parse_bool, default=False)
     p.add_argument("--tiled-diffusion", type=_parse_bool, default=False)
@@ -173,7 +225,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    blob, seed, start_w, start_h = build_config(args)
+
+    if args.width < 64 or args.width % 64 != 0:
+        raise ValueError(f"--width must be a positive multiple of 64, got: {args.width}")
+    if args.height < 64 or args.height % 64 != 0:
+        raise ValueError(f"--height must be a positive multiple of 64, got: {args.height}")
+    if args.hires_fix_width > 0 and args.hires_fix_width % 64 != 0:
+        raise ValueError(
+            f"--hires-fix-width must be a multiple of 64 when set, got: {args.hires_fix_width}"
+        )
+    if args.hires_fix_height > 0 and args.hires_fix_height % 64 != 0:
+        raise ValueError(
+            f"--hires-fix-height must be a multiple of 64 when set, got: {args.hires_fix_height}"
+        )
+
+    blob, seed, start_w, start_h, hires_fix_start_w, hires_fix_start_h = build_config(args)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(blob)
@@ -184,6 +250,13 @@ def main() -> int:
     print(f"seed: {seed}")
     print(f"start_width/start_height (64x blocks): {start_w}/{start_h}")
     print(f"pixel size: {start_w * 64}x{start_h * 64}")
+    print(f"hires_fix: {args.hires_fix}")
+    if args.hires_fix:
+        print(
+            "hires_fix_start_width/start_height (64x blocks): "
+            f"{hires_fix_start_w}/{hires_fix_start_h}"
+        )
+        print(f"hires_fix pixel size: {hires_fix_start_w * 64}x{hires_fix_start_h * 64}")
     return 0
 
 

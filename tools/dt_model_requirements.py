@@ -392,6 +392,15 @@ def download_file(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(out_path.suffix + ".part")
 
+    # Symlink aliases are not safe resume sources (they can point to another model file).
+    if out_path.is_symlink():
+        out_path.unlink(missing_ok=True)
+        existed_before = False
+
+    # A stale .part symlink can append bytes into an unrelated target; always drop it.
+    if tmp.is_symlink():
+        tmp.unlink(missing_ok=True)
+
     # If we are replacing an existing file, preserve current bytes in .part so resume can continue.
     if existed_before and out_path.exists() and not tmp.exists():
         os.replace(out_path, tmp)
