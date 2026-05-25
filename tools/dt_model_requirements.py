@@ -401,9 +401,12 @@ def download_file(
     if tmp.is_symlink():
         tmp.unlink(missing_ok=True)
 
-    # If we are replacing an existing file, preserve current bytes in .part so resume can continue.
-    if existed_before and out_path.exists() and not tmp.exists():
-        os.replace(out_path, tmp)
+    # For overwrite flows, start from a clean file.
+    # Reusing previous full-file bytes can corrupt the result if upstream content layout changed.
+    if existed_before and out_path.exists():
+        out_path.unlink(missing_ok=True)
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
 
     attempts = retries + 1
     action = "overwritten" if existed_before else "downloaded"

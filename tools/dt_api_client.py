@@ -147,7 +147,7 @@ def cmd_files_exist(stub, pb2, args):
     _print_message(stub.FilesExist(req))
 
 
-def cmd_generate_raw(stub, pb2, args):
+def cmd_generate_raw(stub, pb2, args) -> int:
     config_bytes, materialized_path = _resolve_config_bytes(args)
     req = pb2.ImageGenerationRequest(
         scaleFactor=args.scale_factor,
@@ -271,7 +271,7 @@ def cmd_generate_raw(stub, pb2, args):
                 print("chunk state: LAST_CHUNK")
     except grpc.RpcError as exc:
         print(f"gRPC error: {exc.code().name}: {exc.details()}")
-        return
+        return 1
 
     print("generation stream finished")
     print(f"responses: {response_count}")
@@ -282,6 +282,14 @@ def cmd_generate_raw(stub, pb2, args):
         print(f"warning: leftover partial image chunk bytes: {len(pending_image_chunk)}")
     if pending_audio_chunk:
         print(f"warning: leftover partial audio chunk bytes: {len(pending_audio_chunk)}")
+
+    if image_count == 0 and preview_count > 0:
+        print(
+            "warning: stream ended without final generatedImages payloads; "
+            "only preview frames were received"
+        )
+
+    return 0
 
 
 def main() -> int:
@@ -361,7 +369,7 @@ def main() -> int:
         elif args.command == "files-exist":
             cmd_files_exist(stub, pb2, args)
         elif args.command == "generate-raw":
-            cmd_generate_raw(stub, pb2, args)
+            return cmd_generate_raw(stub, pb2, args)
         else:
             raise ValueError(f"Unsupported command: {args.command}")
 

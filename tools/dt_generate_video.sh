@@ -21,6 +21,7 @@ TEST_ONE_FRAME="${DT_TEST_ONE_FRAME:-0}"
 ONE_FRAME_SECONDS="${DT_ONE_FRAME_SECONDS:-1.0}"
 OUTPUT_ROOT="${DT_OUTPUT_ROOT:-${ROOT_DIR}/output}"
 TOOLS_REQ_FILE="${ROOT_DIR}/requirements-drawthings-tools.txt"
+ALLOW_PREVIEW_FALLBACK="${DT_ALLOW_PREVIEW_FALLBACK:-1}"
 
 HAS_DT_SHIFT=0
 if [[ -n "${DT_SHIFT+x}" ]]; then
@@ -191,24 +192,70 @@ print_timer "config" "${CONFIG_ELAPSED}"
 echo "Phase 2/3: generating tensors via Draw Things gRPC..."
 GEN_START="$(now_epoch)"
 
-"${PYTHON_BIN}" "${ROOT_DIR}/tools/dt_api_client.py" \
-  --host "${HOST}" \
-  --max-recv-bytes 134217728 \
-  generate-raw \
-  --config-bin "${OUT_DIR}/config.bin" \
-  --prompt "${PROMPT}" \
-  --negative-prompt "${NEG_PROMPT}" \
-  --output-dir "${OUT_DIR}" \
+CLIENT_CMD=(
+  "${PYTHON_BIN}" "${ROOT_DIR}/tools/dt_api_client.py"
+  --host "${HOST}"
+  --max-recv-bytes 134217728
+  generate-raw
+  --config-bin "${OUT_DIR}/config.bin"
+  --prompt "${PROMPT}"
+  --negative-prompt "${NEG_PROMPT}"
+  --output-dir "${OUT_DIR}"
   --chunked
+)
+
+if [[ "${ALLOW_PREVIEW_FALLBACK}" == "1" ]]; then
+  CLIENT_CMD+=(--save-preview)
+fi
+
+"${CLIENT_CMD[@]}"
 
 GEN_ELAPSED=$(( $(now_epoch) - GEN_START ))
 print_timer "generation" "${GEN_ELAPSED}"
 
 AUDIO_BIN="$(ls -1 "${OUT_DIR}"/audio_*.bin 2>/dev/null | tail -n1 || true)"
 mapfile -t IMAGE_BINS < <(ls -1 "${OUT_DIR}"/image_*.bin 2>/dev/null | sort || true)
+mapfile -t PREVIEW_FILES < <(ls -1 "${OUT_DIR}"/preview_* 2>/dev/null | sort || true)
 
 if [[ "${#IMAGE_BINS[@]}" -eq 0 ]]; then
-  echo "No generated image tensor found in ${OUT_DIR}."
+  if [[ "${TEST_ONE_FRAME}" == "1" && "${ALLOW_PREVIEW_FALLBACK}" == "1" && "${#PREVIEW_FILES[@]}" -gt 0 ]]; then
+    last_preview_index=$(( ${#PREVIEW_FILES[@]} - 1 ))
+    latest_preview="${PREVIEW_FILES[$last_preview_index]}"
+
+    PREVIEW_CONVERT_CMD=(
+      "${PYTHON_BIN}" "${ROOT_DIR}/tools/dt_tensor_to_playable.py"
+      --image-bin "${latest_preview}"
+      --out-dir "${OUT_DIR}"
+      --base-name playable
+      --gif-fps "${FPS_ID}"
+      --mp4-fps "${FPS_ID}"
+      --gif-seconds "${ONE_FRAME_SECONDS}"
+      --mp4-seconds "${ONE_FRAME_SECONDS}"
+    )
+
+    echo "No generated image tensor found; converting latest preview frame fallback."
+    if "${PREVIEW_CONVERT_CMD[@]}"; then
+      TOTAL_ELAPSED=$(( $(now_epoch) - TOTAL_START ))
+      if [[ -f "${OUT_DIR}/playable.png" ]]; then
+        echo "Preview image: ${OUT_DIR}/playable.png"
+      fi
+      if [[ -f "${OUT_DIR}/playable.mp4" ]]; then
+        echo "Preview video: ${OUT_DIR}/playable.mp4"
+      fi
+      print_timer "total" "${TOTAL_ELAPSED}"
+      echo "Output folder: ${OUT_DIR}"
+      exit 0
+    fi
+
+    echo "Preview fallback conversion failed for ${latest_preview}."
+  fi
+
+  if [[ "${#PREVIEW_FILES[@]}" -gt 0 ]]; then
+    echo "No generated image tensor found in ${OUT_DIR}."
+    echo "Preview frames were received (${#PREVIEW_FILES[@]}), but no final tensor payload was returned."
+  else
+    echo "No generated image tensor found in ${OUT_DIR}."
+  fi
   exit 1
 fi
 
