@@ -20,6 +20,7 @@ PKG_PATH="$ROOT/draw-things-community"
 BUILD_CONFIG="${DRAWTHINGS_BUILD_CONFIG:-release}"
 AUTOBUILD="${DRAWTHINGS_CONVERTER_AUTOBUILD:-1}"
 MONITOR_ENABLED="${DRAWTHINGS_CONVERTER_MONITOR:-1}"
+LOCK_FILE="${DRAWTHINGS_CONVERTER_LOCK_FILE:-$ROOT/.cache/dt_convert_model.lock}"
 
 usage() {
   cat <<'EOF'
@@ -33,6 +34,8 @@ Environment:
                                      Default: nproc (all detected CPU cores).
   DRAWTHINGS_CONVERTER_MONITOR       Set to 0 to disable live /proc monitor output.
   DRAWTHINGS_CONVERTER_AUTOBUILD     Set to 0 to disable auto-build when missing.
+  DRAWTHINGS_CONVERTER_LOCK_FILE     Lock path used to enforce one active conversion
+                                     wrapper run at a time.
   DRAWTHINGS_BUILD_CONFIG            release (default) or debug.
 
 Examples:
@@ -41,6 +44,10 @@ Examples:
     --file dt-models/model.safetensors \
     --name my-model \
     --output-directory dt-models
+
+Notes:
+  - Do not run multiple conversions to the same output at once.
+  - Converter import progress can hit 100% before final output flush is done.
 EOF
 }
 
@@ -50,6 +57,21 @@ if [[ $# -lt 1 ]]; then
 fi
 
 converter_args=("$@")
+
+acquire_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo "error: another conversion wrapper is already running (lock: $LOCK_FILE)" >&2
+    echo "       wait for it to finish or set DRAWTHINGS_CONVERTER_LOCK_FILE to a different path" >&2
+    return 1
+  fi
+  return 0
+}
 
 resolve_converter_bin() {
   local primary="$PKG_PATH/.build/$BUILD_CONFIG/model-converter"
@@ -216,6 +238,7 @@ if ! has_math_threads_arg "${converter_args[@]}"; then
 fi
 
 input_file="$(detect_input_file "${converter_args[@]}")"
+acquire_lock
 converter_bin="$(resolve_converter_bin)"
 
 echo "==> Using converter: $converter_bin" >&2
