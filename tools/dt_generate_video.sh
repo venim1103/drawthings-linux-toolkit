@@ -107,8 +107,54 @@ if [[ "${TEST_ONE_FRAME}" == "1" ]]; then
   echo "Testing mode enabled: forcing NUM_FRAMES=1"
 fi
 
+is_ltx23_model() {
+  local model_name="$1"
+  local custom_json="${ROOT_DIR}/dt-models/custom.json"
+
+  if [[ "${model_name}" == ltx_2.3_* ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "${custom_json}" ]]; then
+    return 1
+  fi
+
+  "${PYTHON_BIN}" - "${model_name}" "${custom_json}" <<'PY' >/dev/null 2>&1
+import json
+import sys
+
+model_name = sys.argv[1]
+json_path = sys.argv[2]
+
+try:
+    payload = json.load(open(json_path, "r", encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+if not isinstance(payload, list):
+    sys.exit(1)
+
+for entry in payload:
+    if not isinstance(entry, dict):
+        continue
+    if entry.get("file") != model_name and entry.get("name") != model_name:
+        continue
+
+    version = str(entry.get("version", "")).replace("_", ".").lower()
+    if version == "ltx2.3":
+        sys.exit(0)
+
+sys.exit(1)
+PY
+}
+
+IS_LTX23_MODEL=0
+if is_ltx23_model "${MODEL}"; then
+  IS_LTX23_MODEL=1
+fi
+
 # LTX-2.3 profiles use model-specific defaults in Draw Things presets.
-if [[ "${MODEL}" == ltx_2.3_* ]]; then
+if [[ "${IS_LTX23_MODEL}" == "1" ]]; then
   if [[ "${HAS_DT_SHIFT}" == "0" ]]; then
     SHIFT="5.0"
   fi
