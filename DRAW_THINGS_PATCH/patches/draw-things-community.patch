@@ -335,7 +335,7 @@ index 7f3969b1..ddbf58d8 100644
              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
                $0.write(key, tensor: fp16)
 diff --git a/Libraries/ModelOp/Sources/ModelImporter.swift b/Libraries/ModelOp/Sources/ModelImporter.swift
-index 8435d2f1..b18ff344 100644
+index 8435d2f1..5db6f222 100644
 --- a/Libraries/ModelOp/Sources/ModelImporter.swift
 +++ b/Libraries/ModelOp/Sources/ModelImporter.swift
 @@ -13,6 +13,7 @@ public final class ModelImporter {
@@ -403,7 +403,7 @@ index 8435d2f1..b18ff344 100644
        }
      var isHiDream = stateDict.keys.contains {
        $0.contains("double_stream_blocks.15.block.ff_i.experts.0.")
-@@ -275,12 +299,35 @@ public final class ModelImporter {
+@@ -275,12 +299,37 @@ public final class ModelImporter {
        isFlux2 = false
        isFlux2_9B = false
        isFlux2_4B = false
@@ -423,6 +423,7 @@ index 8435d2f1..b18ff344 100644
 +      expectedTotalAccess = 1800
 +      isDiffusersFormat = stateDict.keys.contains {
 +        $0.contains("model.diffusion_model.video_embeddings_connector.")
++          || $0.contains("diffusion_model.video_embeddings_connector.")
 +      }
 +    } else if isLTX2 {
 +      modelVersion = .ltx2
@@ -431,6 +432,7 @@ index 8435d2f1..b18ff344 100644
 +      expectedTotalAccess = 1500
 +      isDiffusersFormat = stateDict.keys.contains {
 +        $0.contains("model.diffusion_model.embeddings_connector.")
++          || $0.contains("diffusion_model.embeddings_connector.")
 +      }
 +    } else if isLTXCandidate {
 +      throw Error.unsupportedSourceFormat(
@@ -439,12 +441,15 @@ index 8435d2f1..b18ff344 100644
      } else if isPixArtSigmaXL {
        modelVersion = .pixart
        modifier = .none
-@@ -451,6 +498,53 @@ public final class ModelImporter {
+@@ -451,6 +500,56 @@ public final class ModelImporter {
      )
    }
  
 +  private static func hasStateKey(_ stateDict: [String: TensorDescriptor], key: String) -> Bool {
 +    if stateDict[key] != nil {
++      return true
++    }
++    if stateDict["diffusion_model.\(key)"] != nil {
 +      return true
 +    }
 +    if stateDict["model.diffusion_model.\(key)"] != nil {
@@ -493,7 +498,7 @@ index 8435d2f1..b18ff344 100644
    private func internalImport(versionCheck: @escaping (ModelVersion) -> Void) throws -> (
      [String], ModelVersion, SamplerModifier, InspectionResult
    ) {
-@@ -466,6 +560,7 @@ public final class ModelImporter {
+@@ -466,6 +565,7 @@ public final class ModelImporter {
      let dualAttentionLayers = inspectionResult.dualAttentionLayers
      let distilledGuidanceLayers = inspectionResult.distilledGuidanceLayers
      expectedTotalAccess = inspectionResult.numberOfTensors
@@ -501,7 +506,7 @@ index 8435d2f1..b18ff344 100644
      versionCheck(modelVersion)
      progress?(0.05)
      if isTextEncoderCustomized {
-@@ -538,7 +633,9 @@ public final class ModelImporter {
+@@ -538,7 +638,9 @@ public final class ModelImporter {
                  textEncoderStateDict[key] = value
                }
              } else {
@@ -512,7 +517,7 @@ index 8435d2f1..b18ff344 100644
              }
            }
            switch modelVersion {
-@@ -662,7 +759,9 @@ public final class ModelImporter {
+@@ -662,7 +764,9 @@ public final class ModelImporter {
                    textEncoder2StateDict[key] = value
                  }
                } else {
@@ -523,7 +528,7 @@ index 8435d2f1..b18ff344 100644
                }
              }
              for (key, value) in textEncoder2StateDict {
-@@ -767,7 +866,13 @@ public final class ModelImporter {
+@@ -767,7 +871,13 @@ public final class ModelImporter {
      case .flux2_4b:
        conditionalLength = 7680
        batchSize = 1
@@ -538,7 +543,7 @@ index 8435d2f1..b18ff344 100644
        fatalError()
      case .kandinsky21, .wurstchenStageB:
        fatalError()
-@@ -780,7 +885,7 @@ public final class ModelImporter {
+@@ -780,7 +890,7 @@ public final class ModelImporter {
              embeddingSize: modelVersion == .sdxlRefiner ? 384 : 320,
              maxPeriod: 10_000)
          ))
@@ -547,7 +552,7 @@ index 8435d2f1..b18ff344 100644
        let cTensor = graph.variable(.CPU, .HWC(batchSize, 77, conditionalLength), of: FloatType.self)
        var cArr = [cTensor]
        let unet: Model
-@@ -1014,7 +1119,73 @@ public final class ModelImporter {
+@@ -1014,7 +1124,73 @@ public final class ModelImporter {
            ).map {
              graph.variable(.CPU, format: .NHWC, shape: $0, of: FloatType.self)
            }
@@ -622,7 +627,47 @@ index 8435d2f1..b18ff344 100644
          fatalError()
        case .kandinsky21, .v1, .v2:
          break
-@@ -1271,7 +1442,55 @@ public final class ModelImporter {
+@@ -1022,6 +1198,39 @@ public final class ModelImporter {
+       let unetFixed: Model?
+       let unetFixedMapper: ModelWeightMapper?
+       var additionalMappings = [(prefix: String, mapping: ModelWeightMapping)]()
++      func makeLTX23ConnectorMapping(
++        sourcePrefix: String, headDimension: Int, numberOfHeads: Int
++      ) -> ModelWeightMapping {
++        var mapping = ModelWeightMapping()
++        for i in 0..<8 {
++          let base = "\(sourcePrefix).transformer_1d_blocks.\(i)"
++          mapping["\(base).attn1.to_q.weight"] = ModelWeightElement(
++            ["t-to_q-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
++            headDimension: headDimension)
++          mapping["\(base).attn1.to_q.bias"] = ModelWeightElement(
++            ["t-to_q-\(i)-1"], interleaved: true, numberOfHeads: numberOfHeads,
++            headDimension: headDimension)
++          mapping["\(base).attn1.to_k.weight"] = ModelWeightElement(
++            ["t-to_k-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
++            headDimension: headDimension)
++          mapping["\(base).attn1.to_k.bias"] = ModelWeightElement(
++            ["t-to_k-\(i)-1"], interleaved: true, numberOfHeads: numberOfHeads,
++            headDimension: headDimension)
++          mapping["\(base).attn1.to_v.weight"] = ["t-to_v-\(i)-0"]
++          mapping["\(base).attn1.to_v.bias"] = ["t-to_v-\(i)-1"]
++          mapping["\(base).attn1.to_gate_logits.weight"] = ["t-to_gate-\(i)-0"]
++          mapping["\(base).attn1.to_gate_logits.bias"] = ["t-to_gate-\(i)-1"]
++          mapping["\(base).attn1.to_out.0.weight"] = ["t-to_o-\(i)-0"]
++          mapping["\(base).attn1.to_out.0.bias"] = ["t-to_o-\(i)-1"]
++          mapping["\(base).attn1.k_norm.weight"] = ["t-norm_k-\(i)-0"]
++          mapping["\(base).attn1.q_norm.weight"] = ["t-norm_q-\(i)-0"]
++          mapping["\(base).ff.net.0.proj.weight"] = ["t-up_proj-\(i)-0"]
++          mapping["\(base).ff.net.0.proj.bias"] = ["t-up_proj-\(i)-1"]
++          mapping["\(base).ff.net.2.weight"] = ["t-down_proj-\(i)-0"]
++          mapping["\(base).ff.net.2.bias"] = ["t-down_proj-\(i)-1"]
++        }
++        return mapping
++      }
+       switch modelVersion {
+       case .v1:
+         (unet, unetReader) = UNet(
+@@ -1271,7 +1480,77 @@ public final class ModelImporter {
            timesteps: 1,
            channels: 3072, layers: (5, 20), numberOfReferenceImages: 0, guidanceEmbed: true,
            usesFlashAttention: .scale1, kvCache: false)
@@ -647,10 +692,12 @@ index 8435d2f1..b18ff344 100644
 +          prefix: "audio_embeddings_connector", layers: 2, batchSize: 1,
 +          tokenLength: 1024, headDimension: 128, numberOfHeads: 30,
 +          usesFlashAttention: true, useGatedAttention: false)
++        let connectorMappingFormat: ModelWeightFormat =
++          isDiffusersFormat ? .diffusers : .generativeModels
 +        additionalMappings.append(
-+          (prefix: "text_video_connector", mapping: videoConnectorMapper(.generativeModels)))
++          (prefix: "text_video_connector", mapping: videoConnectorMapper(connectorMappingFormat)))
 +        additionalMappings.append(
-+          (prefix: "text_audio_connector", mapping: audioConnectorMapper(.generativeModels)))
++          (prefix: "text_audio_connector", mapping: audioConnectorMapper(connectorMappingFormat)))
 +      case .ltx2_3:
 +        (unetMapper, unet) = LTX2(
 +          time: 1, h: 63, w: 64, textLength: 1024, audioFrames: 1, channels: (4096, 2048),
@@ -663,23 +710,43 @@ index 8435d2f1..b18ff344 100644
 +          layers: 48,
 +          contextProjection: false, textCrossAttentionAdaLN: true, KV: false,
 +          usesFlashAttention: .scale1)
-+        let (_, videoConnectorMapper) = Embedding1DConnector(
-+          prefix: "video_embeddings_connector", layers: 8, batchSize: 1,
-+          tokenLength: 1024, headDimension: 128, numberOfHeads: 32,
-+          usesFlashAttention: true, useGatedAttention: true)
-+        let (_, audioConnectorMapper) = Embedding1DConnector(
-+          prefix: "audio_embeddings_connector", layers: 8, batchSize: 1,
-+          tokenLength: 1024, headDimension: 64, numberOfHeads: 32,
-+          usesFlashAttention: true, useGatedAttention: true)
 +        additionalMappings.append(
-+          (prefix: "text_video_connector", mapping: videoConnectorMapper(.generativeModels)))
++          (
++            prefix: "text_video_connector",
++            mapping: makeLTX23ConnectorMapping(
++              sourcePrefix: "video_embeddings_connector", headDimension: 128, numberOfHeads: 32)
++          ))
 +        additionalMappings.append(
-+          (prefix: "text_audio_connector", mapping: audioConnectorMapper(.generativeModels)))
++          (
++            prefix: "text_audio_connector",
++            mapping: makeLTX23ConnectorMapping(
++              sourcePrefix: "audio_embeddings_connector", headDimension: 64, numberOfHeads: 32)
++          ))
++        var ltx23EmbedderAliases = ModelWeightMapping()
++        ltx23EmbedderAliases["patchify_proj.weight"] = ["t-x_embedder-0-0"]
++        ltx23EmbedderAliases["patchify_proj.bias"] = ["t-x_embedder-0-1"]
++        ltx23EmbedderAliases["audio_patchify_proj.weight"] = ["t-a_embedder-0-0"]
++        ltx23EmbedderAliases["audio_patchify_proj.bias"] = ["t-a_embedder-0-1"]
++        additionalMappings.append((prefix: "dit", mapping: ltx23EmbedderAliases))
++        var ltx23TextFeatureAliases = ModelWeightMapping()
++        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.weight"] = [
++          "t-video_aggregate_embed-0-0"
++        ]
++        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.bias"] = [
++          "t-video_aggregate_embed-0-1"
++        ]
++        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.weight"] = [
++          "t-audio_aggregate_embed-0-0"
++        ]
++        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.bias"] = [
++          "t-audio_aggregate_embed-0-1"
++        ]
++        additionalMappings.append((prefix: "text_feature_extractor", mapping: ltx23TextFeatureAliases))
 +      case .seedvr2_3b, .seedvr2_7b:
          fatalError()
        case .kandinsky21, .wurstchenStageB:
          fatalError()
-@@ -1422,7 +1641,19 @@ public final class ModelImporter {
+@@ -1422,7 +1701,19 @@ public final class ModelImporter {
            graph.variable(.CPU, .WC(1, 256), of: FloatType.self),
          ]
          tEmb = nil
@@ -700,15 +767,17 @@ index 8435d2f1..b18ff344 100644
          fatalError()
        case .v1, .v2, .kandinsky21, .wurstchenStageB:
          crossattn = []
-@@ -1558,6 +1789,15 @@ public final class ModelImporter {
+@@ -1558,6 +1849,17 @@ public final class ModelImporter {
              stateDict[String(key.dropFirst(4))] = value
            }
          }
 +      } else if modelVersion == .ltx2 || modelVersion == .ltx2_3 {
-+        // Remove the model.diffusion_model / model prefix.
++        // Remove the model.diffusion_model / diffusion_model / model prefix.
 +        for (key, value) in stateDict {
 +          if key.hasPrefix("model.diffusion_model.") {
 +            stateDict[String(key.dropFirst(22))] = value
++          } else if key.hasPrefix("diffusion_model.") {
++            stateDict[String(key.dropFirst(16))] = value
 +          } else if key.hasPrefix("model.") {
 +            stateDict[String(key.dropFirst(6))] = value
 +          }
@@ -716,7 +785,7 @@ index 8435d2f1..b18ff344 100644
        }
        // In case it is not on high performance device and it is SDXL model, read the parameters directly from the mapping.
        if let unetReader = unetReader {
-@@ -1661,14 +1901,18 @@ public final class ModelImporter {
+@@ -1661,14 +1963,18 @@ public final class ModelImporter {
            }
            let reverseUNetMapping = reverseMapping(original: UNetMapping)
            let reverseUNetMappingFixed = reverseMapping(original: UNetMappingFixed)
@@ -736,7 +805,7 @@ index 8435d2f1..b18ff344 100644
                try archive.with(encoderHidProjBiasDescriptor) { tensor in
                  let tensor = Tensor<FloatType>(from: tensor)
                  store.write("__encoder_hid_proj__[t-0-1]", tensor: tensor)
-@@ -1677,15 +1921,53 @@ public final class ModelImporter {
+@@ -1677,81 +1983,99 @@ public final class ModelImporter {
              if modelVersion == .zImage, let xPadTokenDescriptor = stateDict["x_pad_token"],
                let capPadTokenDescriptor = stateDict["cap_pad_token"]
              {
@@ -790,7 +859,11 @@ index 8435d2f1..b18ff344 100644
              var consumed = Set<String>()
              for (key, value) in UNetMapping.sorted(by: { $0.key < $1.key }) {
                guard let _ = stateDict[key], !consumed.contains(key) else {
-@@ -1694,64 +1976,41 @@ public final class ModelImporter {
+                 continue
+               }
++              if value.contains(where: { $0.isEmpty }) {
++                continue
++              }
                let values = value.count == 1 ? (reverseUNetMapping[value[0]] ?? [key]) : [key]
                consumed.formUnion(values)
                let tensorDescriptors = values.compactMap { stateDict[$0] }
@@ -887,7 +960,7 @@ index 8435d2f1..b18ff344 100644
                      value.write(
                        graph: graph,
                        to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
-@@ -1760,9 +2019,40 @@ public final class ModelImporter {
+@@ -1760,85 +2084,55 @@ public final class ModelImporter {
                        let _ = interrupt()
                        return "__\(modelPrefix)__[\($0)]"
                      }
@@ -929,7 +1002,12 @@ index 8435d2f1..b18ff344 100644
                }
              }
              for (key, value) in UNetMappingFixed.sorted(by: { $0.key < $1.key }) {
-@@ -1772,73 +2062,9 @@ public final class ModelImporter {
+               guard let _ = stateDict[key], !consumed.contains(key) else {
+                 continue
+               }
++              if value.contains(where: { $0.isEmpty }) {
++                continue
++              }
                let values = value.count == 1 ? (reverseUNetMappingFixed[value[0]] ?? [key]) : [key]
                consumed.formUnion(values)
                let tensorDescriptors = values.compactMap { stateDict[$0] }
@@ -1006,7 +1084,7 @@ index 8435d2f1..b18ff344 100644
                  try archive.with(tensorDescriptors) { tensors in
                    guard !tensors.isEmpty else { return }
                    let tensor: Tensor<FloatType>
-@@ -1870,18 +2096,106 @@ public final class ModelImporter {
+@@ -1870,18 +2164,109 @@ public final class ModelImporter {
                      }
                      tensor = combined
                    }
@@ -1033,21 +1111,22 @@ index 8435d2f1..b18ff344 100644
 +                      let _ = interrupt()
 +                      return "__\(modelPrefixFixed)__[\($0)]"
 +                    }
-                     let _ = interrupt()
--                    return "__\(additionalMapping.prefix)__[\($0)]"
-                   }
--                  let _ = interrupt()
-                 }
++                    let _ = interrupt()
++                  }
++                }
 +              } catch {
 +                throw Error.unsupportedSourceFormat(
 +                  "Failed reading fixed tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
 +                )
-               }
-             }
++              }
++            }
 +            for additionalMapping in additionalMappings {
 +              let reverseAdditionalMapping = reverseMapping(original: additionalMapping.mapping)
 +              for (key, value) in additionalMapping.mapping.sorted(by: { $0.key < $1.key }) {
-+                guard let _ = stateDict[key], !consumed.contains(key) else {
++                guard let _ = stateDict[key] else {
++                  continue
++                }
++                if value.contains(where: { $0.isEmpty }) {
 +                  continue
 +                }
 +                let values =
@@ -1100,15 +1179,17 @@ index 8435d2f1..b18ff344 100644
 +                      let _ = interrupt()
 +                      return "__\(additionalMapping.prefix)__[\($0)]"
 +                    }
-+                    let _ = interrupt()
-+                  }
+                     let _ = interrupt()
+-                    return "__\(additionalMapping.prefix)__[\($0)]"
+                   }
+-                  let _ = interrupt()
 +                } catch {
 +                  throw Error.unsupportedSourceFormat(
 +                    "Failed reading additional mapping tensors for key \(key) from source names [\(values.joined(separator: ", "))]: \(error)"
 +                  )
-+                }
-+              }
-+            }
+                 }
+               }
+             }
 +            }
 +          } catch {
 +            if let unpickleError = error as? UnpickleError {
@@ -1120,7 +1201,7 @@ index 8435d2f1..b18ff344 100644
            }
          }
        }
-@@ -1986,7 +2300,15 @@ public final class ModelImporter {
+@@ -1986,7 +2371,15 @@ public final class ModelImporter {
            if $0.keys.count != 292 && $0.keys.count != 294 {
              throw Error.tensorWritesFailed
            }
@@ -1137,7 +1218,7 @@ index 8435d2f1..b18ff344 100644
            fatalError()
          case .kandinsky21, .wurstchenStageB:
            fatalError()
-@@ -2020,7 +2342,9 @@ public final class ModelImporter {
+@@ -2020,7 +2413,9 @@ public final class ModelImporter {
                  (rootObject["state_dict"] as? Interpreter.Dictionary ?? rootObject["module"]
                    as? Interpreter.Dictionary)
              else {
@@ -1148,7 +1229,7 @@ index 8435d2f1..b18ff344 100644
              }
              originalStateDict.forEach { key, value in
                guard let value = value as? TensorDescriptor else { return }
-@@ -2032,7 +2356,9 @@ public final class ModelImporter {
+@@ -2032,7 +2427,9 @@ public final class ModelImporter {
                }
              }
            } else {
@@ -1159,7 +1240,7 @@ index 8435d2f1..b18ff344 100644
            }
          }
          try graph.withNoGrad {
-@@ -2565,7 +2891,31 @@ extension ModelImporter {
+@@ -2565,7 +2962,31 @@ extension ModelImporter {
        }
        // For FLUX.2, the hires fix trigger scale is 2 of the finetune scale.
        specification.hiresFixScale = finetuneScale * 2
@@ -1464,41 +1545,3 @@ index 7c261ab7..de36fd54 100644
          let stubs = cookie_io_functions_t(
            read: readStub, write: writeStub, seek: seekStub, close: closeStub)
          let result = fopencookie(cookie.toOpaque(), mode, stubs)
-diff --git a/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift b/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
-new file mode 100644
-index 00000000..a8801b7a
---- /dev/null
-+++ b/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
-@@ -0,0 +1,31 @@
-+import NNC
-+
-+extension Functional {
-+  public static func swishMul(
-+    value: Model.IO,
-+    gate: Model.IO,
-+    beta: Float = 1,
-+    scale: Float = 1,
-+    streamContext: StreamContext? = nil
-+  ) -> Model.IO {
-+    let activated = gate.swish(beta: beta)
-+    if scale == 1 {
-+      return value .* activated
-+    }
-+    return scale * (value .* activated)
-+  }
-+
-+  public static func swishMul<T: DynamicGraph.TensorGroup>(
-+    value: T,
-+    gate: T,
-+    beta: Float = 1,
-+    scale: Float = 1,
-+    streamContext: StreamContext? = nil
-+  ) -> T {
-+    let activated = Functional.swish(gate, beta: beta, streamContext: streamContext)
-+    if scale == 1 {
-+      return value .* activated
-+    }
-+    return scale * (value .* activated)
-+  }
-+}
-\ No newline at end of file

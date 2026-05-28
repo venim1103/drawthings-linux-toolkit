@@ -20,6 +20,8 @@ PKG_PATH="$ROOT/draw-things-community"
 BUILD_CONFIG="${DRAWTHINGS_BUILD_CONFIG:-release}"
 AUTOBUILD="${DRAWTHINGS_CONVERTER_AUTOBUILD:-1}"
 MONITOR_ENABLED="${DRAWTHINGS_CONVERTER_MONITOR:-1}"
+VALIDATE_ENABLED="${DRAWTHINGS_CONVERTER_VALIDATE:-1}"
+VALIDATE_PROFILE="${DRAWTHINGS_CONVERTER_VALIDATE_PROFILE:-auto}"
 LOCK_FILE="${DRAWTHINGS_CONVERTER_LOCK_FILE:-$ROOT/.cache/dt_convert_model.lock}"
 
 usage() {
@@ -34,6 +36,11 @@ Environment:
                                      Default: nproc (all detected CPU cores).
   DRAWTHINGS_CONVERTER_MONITOR       Set to 0 to disable live /proc monitor output.
   DRAWTHINGS_CONVERTER_AUTOBUILD     Set to 0 to disable auto-build when missing.
+  DRAWTHINGS_CONVERTER_VALIDATE      Set to 0 to skip post-conversion checkpoint
+                                     integrity validation.
+  DRAWTHINGS_CONVERTER_VALIDATE_PROFILE
+                                     Validation profile: auto (default), none,
+                                     or ltx2_3.
   DRAWTHINGS_CONVERTER_LOCK_FILE     Lock path used to enforce one active conversion
                                      wrapper run at a time.
   DRAWTHINGS_BUILD_CONFIG            release (default) or debug.
@@ -129,12 +136,82 @@ detect_input_file() {
   echo "$input_file"
 }
 
+detect_output_directory() {
+  local args=("$@")
+  local output_dir=""
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      --output-directory|-o)
+        if ((i + 1 < ${#args[@]})); then
+          output_dir="${args[$((i + 1))]}"
+        fi
+        ;;
+      --output-directory=*)
+        output_dir="${args[$i]#--output-directory=}"
+        ;;
+      -o=*)
+        output_dir="${args[$i]#-o=}"
+        ;;
+    esac
+  done
+  echo "$output_dir"
+}
+
+resolve_python_bin() {
+  if [[ -n "${DT_PYTHON:-}" ]] && command -v "$DT_PYTHON" >/dev/null 2>&1; then
+    echo "$DT_PYTHON"
+    return 0
+  fi
+
+  local venv_python="$ROOT/.venv/bin/python"
+  if [[ -x "$venv_python" ]]; then
+    echo "$venv_python"
+    return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+
+  echo "error: python3 not found for post-conversion validation" >&2
+  return 1
+}
+
+detect_output_ckpt() {
+  local output_dir="$1"
+  local conversion_start_ts="$2"
+  local candidate=""
+
+  candidate="$(find "$output_dir" -maxdepth 1 -type f -name '*_f16.ckpt' -printf '%T@ %s %p\n' 2>/dev/null \
+    | awk -v start="$conversion_start_ts" '$1 >= start {print}' \
+    | sort -nr -k2,2 -k1,1 \
+    | head -n1 \
+    | cut -d' ' -f3-)"
+
+  echo "$candidate"
+}
+
 has_math_threads_arg() {
   local args=("$@")
   local i
   for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[$i]}" in
       --math-threads|--math-threads=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+has_help_arg() {
+  local args=("$@")
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      -h|--help)
         return 0
         ;;
     esac
@@ -238,10 +315,20 @@ if ! has_math_threads_arg "${converter_args[@]}"; then
 fi
 
 input_file="$(detect_input_file "${converter_args[@]}")"
+output_dir="$(detect_output_directory "${converter_args[@]}")"
+
+if [[ -n "$input_file" ]] && [[ "$input_file" != /* ]]; then
+  input_file="$PWD/$input_file"
+fi
+if [[ -n "$output_dir" ]] && [[ "$output_dir" != /* ]]; then
+  output_dir="$PWD/$output_dir"
+fi
+
 acquire_lock
 converter_bin="$(resolve_converter_bin)"
 
 echo "==> Using converter: $converter_bin" >&2
+conversion_start_ts="$(date +%s)"
 "$converter_bin" "${converter_args[@]}" &
 converter_pid="$!"
 monitor_pid=""
@@ -259,6 +346,40 @@ set -e
 if [[ -n "$monitor_pid" ]]; then
   kill "$monitor_pid" >/dev/null 2>&1 || true
   wait "$monitor_pid" >/dev/null 2>&1 || true
+fi
+
+if [[ "$exit_code" -eq 0 && "$VALIDATE_ENABLED" == "1" ]] && ! has_help_arg "${converter_args[@]}"; then
+  validator_script="$ROOT/tools/dt_validate_converted_ckpt.py"
+  if [[ ! -f "$validator_script" ]]; then
+    echo "error: validation requested but missing validator script: $validator_script" >&2
+    exit_code=1
+  elif [[ -z "$output_dir" ]]; then
+    echo "error: validation requested but --output-directory was not provided" >&2
+    exit_code=1
+  else
+    converted_ckpt="$(detect_output_ckpt "$output_dir" "$conversion_start_ts")"
+    if [[ -z "$converted_ckpt" ]]; then
+      echo "error: validation requested but no *_f16.ckpt output found in $output_dir" >&2
+      exit_code=1
+    else
+      python_bin="$(resolve_python_bin)"
+      validator_args=(
+        "$python_bin"
+        "$validator_script"
+        --file "$converted_ckpt"
+        --profile "$VALIDATE_PROFILE"
+      )
+      if [[ -n "$input_file" ]] && [[ "${input_file,,}" == *.safetensors ]]; then
+        validator_args+=(--source-safetensors "$input_file")
+      fi
+
+      echo "==> Validating converted checkpoint: $converted_ckpt" >&2
+      if ! "${validator_args[@]}"; then
+        echo "error: converted checkpoint failed integrity validation" >&2
+        exit_code=1
+      fi
+    fi
+  fi
 fi
 
 exit "$exit_code"

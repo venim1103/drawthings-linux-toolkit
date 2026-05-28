@@ -315,6 +315,7 @@ public final class ModelImporter {
       expectedTotalAccess = 1800
       isDiffusersFormat = stateDict.keys.contains {
         $0.contains("model.diffusion_model.video_embeddings_connector.")
+          || $0.contains("diffusion_model.video_embeddings_connector.")
       }
     } else if isLTX2 {
       modelVersion = .ltx2
@@ -323,6 +324,7 @@ public final class ModelImporter {
       expectedTotalAccess = 1500
       isDiffusersFormat = stateDict.keys.contains {
         $0.contains("model.diffusion_model.embeddings_connector.")
+          || $0.contains("diffusion_model.embeddings_connector.")
       }
     } else if isLTXCandidate {
       throw Error.unsupportedSourceFormat(
@@ -500,6 +502,9 @@ public final class ModelImporter {
 
   private static func hasStateKey(_ stateDict: [String: TensorDescriptor], key: String) -> Bool {
     if stateDict[key] != nil {
+      return true
+    }
+    if stateDict["diffusion_model.\(key)"] != nil {
       return true
     }
     if stateDict["model.diffusion_model.\(key)"] != nil {
@@ -1193,6 +1198,39 @@ public final class ModelImporter {
       let unetFixed: Model?
       let unetFixedMapper: ModelWeightMapper?
       var additionalMappings = [(prefix: String, mapping: ModelWeightMapping)]()
+      func makeLTX23ConnectorMapping(
+        sourcePrefix: String, headDimension: Int, numberOfHeads: Int
+      ) -> ModelWeightMapping {
+        var mapping = ModelWeightMapping()
+        for i in 0..<8 {
+          let base = "\(sourcePrefix).transformer_1d_blocks.\(i)"
+          mapping["\(base).attn1.to_q.weight"] = ModelWeightElement(
+            ["t-to_q-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
+            headDimension: headDimension)
+          mapping["\(base).attn1.to_q.bias"] = ModelWeightElement(
+            ["t-to_q-\(i)-1"], interleaved: true, numberOfHeads: numberOfHeads,
+            headDimension: headDimension)
+          mapping["\(base).attn1.to_k.weight"] = ModelWeightElement(
+            ["t-to_k-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
+            headDimension: headDimension)
+          mapping["\(base).attn1.to_k.bias"] = ModelWeightElement(
+            ["t-to_k-\(i)-1"], interleaved: true, numberOfHeads: numberOfHeads,
+            headDimension: headDimension)
+          mapping["\(base).attn1.to_v.weight"] = ["t-to_v-\(i)-0"]
+          mapping["\(base).attn1.to_v.bias"] = ["t-to_v-\(i)-1"]
+          mapping["\(base).attn1.to_gate_logits.weight"] = ["t-to_gate-\(i)-0"]
+          mapping["\(base).attn1.to_gate_logits.bias"] = ["t-to_gate-\(i)-1"]
+          mapping["\(base).attn1.to_out.0.weight"] = ["t-to_o-\(i)-0"]
+          mapping["\(base).attn1.to_out.0.bias"] = ["t-to_o-\(i)-1"]
+          mapping["\(base).attn1.k_norm.weight"] = ["t-norm_k-\(i)-0"]
+          mapping["\(base).attn1.q_norm.weight"] = ["t-norm_q-\(i)-0"]
+          mapping["\(base).ff.net.0.proj.weight"] = ["t-up_proj-\(i)-0"]
+          mapping["\(base).ff.net.0.proj.bias"] = ["t-up_proj-\(i)-1"]
+          mapping["\(base).ff.net.2.weight"] = ["t-down_proj-\(i)-0"]
+          mapping["\(base).ff.net.2.bias"] = ["t-down_proj-\(i)-1"]
+        }
+        return mapping
+      }
       switch modelVersion {
       case .v1:
         (unet, unetReader) = UNet(
@@ -1462,10 +1500,12 @@ public final class ModelImporter {
           prefix: "audio_embeddings_connector", layers: 2, batchSize: 1,
           tokenLength: 1024, headDimension: 128, numberOfHeads: 30,
           usesFlashAttention: true, useGatedAttention: false)
+        let connectorMappingFormat: ModelWeightFormat =
+          isDiffusersFormat ? .diffusers : .generativeModels
         additionalMappings.append(
-          (prefix: "text_video_connector", mapping: videoConnectorMapper(.generativeModels)))
+          (prefix: "text_video_connector", mapping: videoConnectorMapper(connectorMappingFormat)))
         additionalMappings.append(
-          (prefix: "text_audio_connector", mapping: audioConnectorMapper(.generativeModels)))
+          (prefix: "text_audio_connector", mapping: audioConnectorMapper(connectorMappingFormat)))
       case .ltx2_3:
         (unetMapper, unet) = LTX2(
           time: 1, h: 63, w: 64, textLength: 1024, audioFrames: 1, channels: (4096, 2048),
@@ -1478,18 +1518,38 @@ public final class ModelImporter {
           layers: 48,
           contextProjection: false, textCrossAttentionAdaLN: true, KV: false,
           usesFlashAttention: .scale1)
-        let (_, videoConnectorMapper) = Embedding1DConnector(
-          prefix: "video_embeddings_connector", layers: 8, batchSize: 1,
-          tokenLength: 1024, headDimension: 128, numberOfHeads: 32,
-          usesFlashAttention: true, useGatedAttention: true)
-        let (_, audioConnectorMapper) = Embedding1DConnector(
-          prefix: "audio_embeddings_connector", layers: 8, batchSize: 1,
-          tokenLength: 1024, headDimension: 64, numberOfHeads: 32,
-          usesFlashAttention: true, useGatedAttention: true)
         additionalMappings.append(
-          (prefix: "text_video_connector", mapping: videoConnectorMapper(.generativeModels)))
+          (
+            prefix: "text_video_connector",
+            mapping: makeLTX23ConnectorMapping(
+              sourcePrefix: "video_embeddings_connector", headDimension: 128, numberOfHeads: 32)
+          ))
         additionalMappings.append(
-          (prefix: "text_audio_connector", mapping: audioConnectorMapper(.generativeModels)))
+          (
+            prefix: "text_audio_connector",
+            mapping: makeLTX23ConnectorMapping(
+              sourcePrefix: "audio_embeddings_connector", headDimension: 64, numberOfHeads: 32)
+          ))
+        var ltx23EmbedderAliases = ModelWeightMapping()
+        ltx23EmbedderAliases["patchify_proj.weight"] = ["t-x_embedder-0-0"]
+        ltx23EmbedderAliases["patchify_proj.bias"] = ["t-x_embedder-0-1"]
+        ltx23EmbedderAliases["audio_patchify_proj.weight"] = ["t-a_embedder-0-0"]
+        ltx23EmbedderAliases["audio_patchify_proj.bias"] = ["t-a_embedder-0-1"]
+        additionalMappings.append((prefix: "dit", mapping: ltx23EmbedderAliases))
+        var ltx23TextFeatureAliases = ModelWeightMapping()
+        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.weight"] = [
+          "t-video_aggregate_embed-0-0"
+        ]
+        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.bias"] = [
+          "t-video_aggregate_embed-0-1"
+        ]
+        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.weight"] = [
+          "t-audio_aggregate_embed-0-0"
+        ]
+        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.bias"] = [
+          "t-audio_aggregate_embed-0-1"
+        ]
+        additionalMappings.append((prefix: "text_feature_extractor", mapping: ltx23TextFeatureAliases))
       case .seedvr2_3b, .seedvr2_7b:
         fatalError()
       case .kandinsky21, .wurstchenStageB:
@@ -1790,10 +1850,12 @@ public final class ModelImporter {
           }
         }
       } else if modelVersion == .ltx2 || modelVersion == .ltx2_3 {
-        // Remove the model.diffusion_model / model prefix.
+        // Remove the model.diffusion_model / diffusion_model / model prefix.
         for (key, value) in stateDict {
           if key.hasPrefix("model.diffusion_model.") {
             stateDict[String(key.dropFirst(22))] = value
+          } else if key.hasPrefix("diffusion_model.") {
+            stateDict[String(key.dropFirst(16))] = value
           } else if key.hasPrefix("model.") {
             stateDict[String(key.dropFirst(6))] = value
           }
@@ -1973,6 +2035,9 @@ public final class ModelImporter {
               guard let _ = stateDict[key], !consumed.contains(key) else {
                 continue
               }
+              if value.contains(where: { $0.isEmpty }) {
+                continue
+              }
               let values = value.count == 1 ? (reverseUNetMapping[value[0]] ?? [key]) : [key]
               consumed.formUnion(values)
               let tensorDescriptors = values.compactMap { stateDict[$0] }
@@ -2059,6 +2124,9 @@ public final class ModelImporter {
               guard let _ = stateDict[key], !consumed.contains(key) else {
                 continue
               }
+              if value.contains(where: { $0.isEmpty }) {
+                continue
+              }
               let values = value.count == 1 ? (reverseUNetMappingFixed[value[0]] ?? [key]) : [key]
               consumed.formUnion(values)
               let tensorDescriptors = values.compactMap { stateDict[$0] }
@@ -2126,7 +2194,10 @@ public final class ModelImporter {
             for additionalMapping in additionalMappings {
               let reverseAdditionalMapping = reverseMapping(original: additionalMapping.mapping)
               for (key, value) in additionalMapping.mapping.sorted(by: { $0.key < $1.key }) {
-                guard let _ = stateDict[key], !consumed.contains(key) else {
+                guard let _ = stateDict[key] else {
+                  continue
+                }
+                if value.contains(where: { $0.isEmpty }) {
                   continue
                 }
                 let values =

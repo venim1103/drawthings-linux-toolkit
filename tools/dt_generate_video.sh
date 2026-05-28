@@ -148,6 +148,25 @@ sys.exit(1)
 PY
 }
 
+ltx23_upscalers_present() {
+  local model_dir="${ROOT_DIR}/dt-models"
+  local missing=0
+
+  for upscaler in \
+    "ltx_2.3_spatial_upscaler_x2_1.1_f16.ckpt" \
+    "ltx_2.3_spatial_upscaler_x1.5_f16.ckpt"
+  do
+    if [[ ! -f "${model_dir}/${upscaler}" ]]; then
+      missing=1
+    fi
+  done
+
+  if [[ "${missing}" == "1" ]]; then
+    return 1
+  fi
+  return 0
+}
+
 IS_LTX23_MODEL=0
 if is_ltx23_model "${MODEL}"; then
   IS_LTX23_MODEL=1
@@ -159,7 +178,16 @@ if [[ "${IS_LTX23_MODEL}" == "1" ]]; then
     SHIFT="5.0"
   fi
   if [[ "${HAS_DT_HIRES_FIX}" == "0" ]]; then
-    HIRES_FIX="true"
+    if ltx23_upscalers_present; then
+      HIRES_FIX="true"
+    else
+      HIRES_FIX="false"
+      echo "LTX-2.3 spatial upscalers not found; defaulting hires-fix to false."
+      echo "Install ltx_2.3_spatial_upscaler_x2_1.1_f16.ckpt and ltx_2.3_spatial_upscaler_x1.5_f16.ckpt to enable hires-fix."
+    fi
+  elif [[ "${HIRES_FIX}" == "true" ]] && ! ltx23_upscalers_present; then
+    echo "Warning: hires-fix is enabled but required LTX-2.3 spatial upscalers are missing."
+    echo "Generation may fail before final image decode."
   fi
 fi
 

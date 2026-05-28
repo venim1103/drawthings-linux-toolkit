@@ -8,6 +8,16 @@
     "modifier": "kontext",
     "default_scale": 12,
     "hires_fix_scale": 24,
+    "latents_upscalers": [
+      {
+        "file": "ltx_2.3_spatial_upscaler_x2_1.1_f16.ckpt",
+        "scale": "2"
+      },
+      {
+        "file": "ltx_2.3_spatial_upscaler_x1.5_f16.ckpt",
+        "scale": "1.5"
+      }
+    ],
     "file": "10_e_v1_bf16_q4p.ckpt",
     "upcast_attention": false,
     "text_encoder": "gemma_3_12b_it_qat_q8p.ckpt",
