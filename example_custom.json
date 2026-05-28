@@ -3,7 +3,7 @@
     "name": "10_e_v1_bf16 (LTX-2.3 custom)",
     "version": "ltx2.3",
     "autoencoder": "ltx_2.3_audio_video_vae_f16.ckpt",
-    "clip_encoder": "10_e_v1_bf16_q4p.ckpt",
+    "clip_encoder": "10_e_v1_bf16_q6p.ckpt",
     "prefix": "",
     "modifier": "kontext",
     "default_scale": 12,
@@ -18,7 +18,7 @@
         "scale": "1.5"
       }
     ],
-    "file": "10_e_v1_bf16_q4p.ckpt",
+    "file": "10_e_v1_bf16_q6p.ckpt",
     "upcast_attention": false,
     "text_encoder": "gemma_3_12b_it_qat_q8p.ckpt",
     "high_precision_autoencoder": false,
