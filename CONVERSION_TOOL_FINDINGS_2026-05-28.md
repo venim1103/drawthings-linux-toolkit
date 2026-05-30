@@ -8,18 +8,19 @@ This report captures the full investigation and patch work for converting custom
 
 - Converter-side structural defects for this custom LTX-2.3 source were fixed.
 - The fixed F16 and derived q6p checkpoints now match the official LTX-2.3 q6p keyset exactly (`5746` tensors, no missing/extra keys).
-- Runtime with custom q6p now returns final image payloads (not preview-only), but image quality remains noisy/unstable versus official q6p.
+- Controlled one-response probes show official q6/f16 controls reach `textEncoded`, while current custom F16/q6 checkpoints reproduce runtime failure (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`, server exit 139).
 - Runtime with custom q4p (quantized from fixed F16) caused Draw Things server crashes (`Bad pointer dereference` in ccv read path), so q4p is currently unsafe for this model.
+- Official exact F16 baseline file (`ltx_2.3_22b_distilled_f16.ckpt`) was downloaded and checksum-verified against the published value in-session.
 - Custom model metadata now points to q6p in `dt-models/custom.json`.
 
 ## Executive Summary
 
 - Initial failures were caused by importer mapping gaps (missing embedder/connector/feature tensors and placeholder keys).
 - After importer patching, converted outputs passed strict structural validation and reached key parity with official q6p.
-- Quantization behavior diverged by codec:
-  - q4p: server crash on inference start (`UNAVAILABLE: Socket closed` on client).
-  - q6p: inference runs and emits final image payloads.
-- Remaining issue is runtime quality mismatch (custom q6p output noisy vs official q6p), not missing key families.
+- Runtime behavior now diverges by artifact provenance, not by keyset parity:
+   - official q6/f16 controls: stable to first signpost in one-response probes.
+   - custom q4p/q6/f16: current runtime reader path crashes (`ccv_nnc_tensor_read` / `ccv_cnnp_model_read`).
+- Remaining blocker is serialization compatibility (type/format/datatype policy), not missing key families.
 
 ## Applied Patch Summary
 
@@ -198,7 +199,101 @@ Counts:
 Interpretation:
 
 - Structural/key-family compatibility has been achieved.
-- Remaining discrepancy is behavioral/runtime quality, not missing tensors.
+- Structural key parity is necessary but not sufficient for runtime compatibility.
+
+## Detailed Metadata / Serialization Diff (2026-05-29)
+
+### Reproduction update (post-structural-fix)
+
+Control (official q6) with one-response probe:
+
+- Reached first signpost (`textEncoded`) and remained stable.
+
+Custom probes:
+
+- `10_e_v1_bf16_q6p.ckpt`: server crashed in `ccv_nnc_tensor_read` / `ccv_cnnp_model_read`.
+- `10_e_v1_bf16_fix2_f16.ckpt`: same crash path.
+
+Implication:
+
+- The crash is not q6-only; current custom F16 and derived q6 are both incompatible with the active runtime reader path.
+
+### Controlled A/B update with official exact F16 (2026-05-30)
+
+Probe setup (single-frame, low-cost):
+
+- width/height: `384x704`
+- steps: `8`
+- sampler: `19`
+- shift: `5.0`
+- `--max-responses 1`
+
+Official exact F16 control (`ltx_2.3_22b_distilled_f16.ckpt`):
+
+- Probe returned `response #1` with signpost `textEncoded`.
+- Client exit: `PROBE_OFFICIAL_F16_EXIT=0`.
+
+Custom fixed F16 under same probe style (`10_e_v1_bf16_fix2_f16.ckpt`):
+
+- Request started, then client failed with `gRPC error: UNAVAILABLE: Socket closed`.
+- Client exit: `PROBE_CUSTOM_F16_AGAIN_EXIT=1`.
+- Server crashed with `Bad pointer dereference` and backtrace rooted at:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+   - process exit: `139` (`Segmentation fault`).
+
+Guidance confound check (custom F16, guidance forced to `1.0`):
+
+- Re-ran one-response probe with guidance matching official control.
+- Client again failed with `gRPC error: UNAVAILABLE: Socket closed`.
+- Client exit: `PROBE_CUSTOM_F16_G1_EXIT=1`.
+- Server again crashed in `ccv_nnc_tensor_read` / `ccv_cnnp_model_read`.
+
+Interpretation:
+
+- This session's official-vs-custom exact-F16 A/B confirms runtime instability is specific to custom serialization, not just q6 quantization or guidance-scale mismatch.
+
+### Metadata diff evidence (no regeneration)
+
+Report artifacts:
+
+- `output/probe_metadata_diff_20260529.json`
+- `output/probe_metadata_diff_20260529.md`
+
+Key counts from `custom_q6` vs `official_q6`:
+
+- `format_diff_cq6_vs_oq6 = 5743`
+- `type_diff_cq6_vs_oq6 = 1837`
+- `datatype_diff_cq6_vs_oq6 = 1545`
+- `large_data_len_delta_cq6_vs_oq6 = 1689`
+- `quantized_only_in_custom_q6_vs_cf16 = 260`
+
+Key counts from `custom_f16` vs `official_q6`:
+
+- `format_diff_cf16_vs_oq6 = 5743`
+- `type_diff_cf16_vs_oq6 = 3904`
+- `datatype_diff_cf16_vs_oq6 = 1545`
+
+Top mismatch families:
+
+- `__dit__`
+- `__text_video_connector__`
+- `__text_audio_connector__`
+- `__text_feature_extractor__`
+
+Representative mismatches:
+
+- Many custom tensors are stored with `format=1` where official q6 uses `format=2`.
+- Many custom tensors keep `datatype=131072` where official q6 uses `datatype=16384` or `datatype=524288`.
+- `custom_q6` quantizes 260 tensors that official q6 effectively keeps at F16-style metadata behavior (notably connector `down_proj` blocks and `proj_out` blocks).
+
+### Toolchain compatibility note
+
+Attempt to run a source-matched local `gRPCServerCLI` build was blocked in this Linux container:
+
+- Swift build for `gRPCServerCLI` failed with `no such module 'CoreML'` while resolving `LocalImageGenerator` dependencies.
+
+This prevented direct same-source runtime validation in the current environment.
 
 ## Runtime Numeric Snapshot (Image Tensor Distribution)
 
@@ -219,13 +314,15 @@ Interpretation:
 ## Conclusion
 
 1. Converter/importer structural issues were real and are now fixed.
-2. q6p conversion path is structurally sound and runtime-stable enough to emit final image payloads.
-3. q4p is currently unstable for this custom model (server crash).
-4. Current blocker is model/runtime quality parity (custom q6p output quality), not converter tensor-family completeness.
+2. Current runtime still crashes when loading custom checkpoints (both fixed F16 and derived q6) in `ccv_nnc_tensor_read` / `ccv_cnnp_model_read`.
+3. The blocker is now metadata/serialization compatibility (type/format/datatype policy divergence), not missing tensor key families.
+4. q4p remains unstable and should be treated as non-usable.
+5. No new long quantization/conversion run should be started until serialization compatibility checks are enforced.
 
 ## Immediate Operational Guidance
 
-- Use `10_e_v1_bf16_q6p.ckpt` as the current custom test artifact (q4p replaced).
-- Keep using official `ltx_2.3_22b_distilled_1.1_q6p.ckpt` as quality baseline.
-- Treat custom q4p as non-production for now due to reproducible server crash.
-- Next debugging focus should be runtime behavior/calibration differences (sampling/config/model semantics), not key mapping coverage.
+- Keep using official `ltx_2.3_22b_distilled_1.1_q6p.ckpt` as the runtime baseline for day-to-day generation.
+- Use official `ltx_2.3_22b_distilled_f16.ckpt` as a control when validating loader stability/signpost progression.
+- Treat custom `10_e_v1_bf16_fix2_f16.ckpt`, `10_e_v1_bf16_q6p.ckpt`, and `10_e_v1_bf16_q4p.ckpt` as non-runnable in the current runtime environment.
+- Before any new 4+ hour regeneration, require metadata diff checks against the official q6 baseline (see `output/probe_metadata_diff_20260529.*`).
+- Next fix target is serialization policy alignment (type/format/datatype decisions), not additional key-name mapping coverage.

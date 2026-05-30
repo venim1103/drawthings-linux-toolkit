@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate converted Draw Things checkpoint structure.
+"""Validate converted Draw Things checkpoint structure and serialization policy.
 
 This is intended as a fast post-conversion integrity check so the wrapper can
 fail early when converter output is structurally incompatible with runtime.
@@ -13,7 +13,7 @@ import sqlite3
 import struct
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 
 LTX23_SOURCE_REQUIRED_KEYS: Sequence[str] = (
@@ -37,6 +37,8 @@ KNOWN_INVALID_PLACEHOLDER_KEYS = {
     "__text_audio_connector__[]",
     "__text_video_connector__[]",
 }
+
+SERIALIZATION_FIELDS: Sequence[str] = ("type", "format", "datatype")
 
 
 def _parse_safetensors_header(path: Path) -> dict:
@@ -85,6 +87,180 @@ def load_tensor_keys(ckpt_path: Path) -> List[str]:
     return keys
 
 
+def load_tensor_metadata(
+    ckpt_path: Path,
+    keys: Sequence[str],
+) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
+    try:
+        con = sqlite3.connect(str(ckpt_path))
+        cur = con.cursor()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to read tensor metadata from {ckpt_path}: {exc}") from exc
+
+    metadata: Dict[str, Dict[str, str]] = {}
+    unreadable_keys: List[str] = []
+
+    for key in keys:
+        try:
+            row = cur.execute(
+                "SELECT CAST(type AS TEXT), CAST(format AS TEXT), CAST(datatype AS TEXT) FROM tensors WHERE name=?",
+                (key,),
+            ).fetchone()
+        except sqlite3.DataError:
+            unreadable_keys.append(key)
+            continue
+        except sqlite3.Error as exc:
+            con.close()
+            raise RuntimeError(
+                f"failed to read tensor metadata for key {key!r} from {ckpt_path}: {exc}"
+            ) from exc
+
+        if row is None:
+            continue
+
+        metadata[key] = {
+            "type": "NULL" if row[0] is None else str(row[0]),
+            "format": "NULL" if row[1] is None else str(row[1]),
+            "datatype": "NULL" if row[2] is None else str(row[2]),
+        }
+
+    con.close()
+    return metadata, unreadable_keys
+
+
+def _summarize_field_mismatches(
+    converted_meta: Dict[str, Dict[str, str]],
+    baseline_meta: Dict[str, Dict[str, str]],
+    names: Sequence[str],
+    field: str,
+    report_limit: int,
+) -> List[str]:
+    examples: List[str] = []
+    for name in names[:report_limit]:
+        expected = baseline_meta[name][field]
+        got = converted_meta[name][field]
+        examples.append(f"{name} expected={expected} got={got}")
+    return examples
+
+
+def validate_serialization_policy(
+    ckpt_path: Path,
+    baseline_path: Path,
+    report_limit: int,
+) -> List[str]:
+    failures: List[str] = []
+
+    try:
+        converted_keys = load_tensor_keys(ckpt_path)
+        baseline_keys = load_tensor_keys(baseline_path)
+    except Exception as exc:
+        return [str(exc)]
+
+    converted_names = set(converted_keys)
+    baseline_names = set(baseline_keys)
+    missing_from_converted = sorted(baseline_names - converted_names)
+    extra_in_converted = sorted(converted_names - baseline_names)
+
+    shared_names = sorted(converted_names & baseline_names)
+
+    try:
+        converted_meta, converted_unreadable = load_tensor_metadata(ckpt_path, shared_names)
+        baseline_meta, baseline_unreadable = load_tensor_metadata(baseline_path, shared_names)
+    except Exception as exc:
+        return [str(exc)]
+
+    converted_unreadable_set = set(converted_unreadable)
+    baseline_unreadable_set = set(baseline_unreadable)
+    unreadable_both = sorted(converted_unreadable_set & baseline_unreadable_set)
+    unreadable_only_converted = sorted(converted_unreadable_set - baseline_unreadable_set)
+    unreadable_only_baseline = sorted(baseline_unreadable_set - converted_unreadable_set)
+
+    print("== Serialization Policy Guard ==")
+    print(f"baseline={baseline_path}")
+    print(f"converted_tensors={len(converted_keys)} baseline_tensors={len(baseline_keys)}")
+
+    if missing_from_converted:
+        failures.append(
+            f"serialization baseline keys missing in converted checkpoint: {len(missing_from_converted)}"
+        )
+        print(f"missing_from_converted={len(missing_from_converted)}")
+        for name in missing_from_converted[:report_limit]:
+            print(f"  missing: {name}")
+    else:
+        print("missing_from_converted=0")
+
+    if extra_in_converted:
+        failures.append(
+            f"serialization baseline has no match for converted keys: {len(extra_in_converted)}"
+        )
+        print(f"extra_in_converted={len(extra_in_converted)}")
+        for name in extra_in_converted[:report_limit]:
+            print(f"  extra: {name}")
+    else:
+        print("extra_in_converted=0")
+
+    if unreadable_both:
+        print(f"unreadable_metadata_both={len(unreadable_both)}")
+        for name in unreadable_both[:report_limit]:
+            print(f"  unreadable_both: {name}")
+    else:
+        print("unreadable_metadata_both=0")
+
+    if unreadable_only_converted:
+        failures.append(
+            "metadata unreadable only in converted checkpoint: "
+            f"{len(unreadable_only_converted)}"
+        )
+        print(f"unreadable_metadata_only_converted={len(unreadable_only_converted)}")
+        for name in unreadable_only_converted[:report_limit]:
+            print(f"  unreadable_only_converted: {name}")
+    else:
+        print("unreadable_metadata_only_converted=0")
+
+    if unreadable_only_baseline:
+        failures.append(
+            "metadata unreadable only in serialization baseline: "
+            f"{len(unreadable_only_baseline)}"
+        )
+        print(f"unreadable_metadata_only_baseline={len(unreadable_only_baseline)}")
+        for name in unreadable_only_baseline[:report_limit]:
+            print(f"  unreadable_only_baseline: {name}")
+    else:
+        print("unreadable_metadata_only_baseline=0")
+
+    readable_shared_names = [
+        name
+        for name in shared_names
+        if name not in converted_unreadable_set and name not in baseline_unreadable_set
+    ]
+    print(f"readable_shared_tensors={len(readable_shared_names)}")
+
+    field_mismatch_names: Dict[str, List[str]] = {field: [] for field in SERIALIZATION_FIELDS}
+
+    for name in readable_shared_names:
+        converted_row = converted_meta[name]
+        baseline_row = baseline_meta[name]
+        for field in SERIALIZATION_FIELDS:
+            if converted_row[field] != baseline_row[field]:
+                field_mismatch_names[field].append(name)
+
+    for field in SERIALIZATION_FIELDS:
+        mismatches = field_mismatch_names[field]
+        print(f"{field}_mismatch_count={len(mismatches)}")
+        if mismatches:
+            failures.append(f"serialization {field} mismatches vs baseline: {len(mismatches)}")
+            for example in _summarize_field_mismatches(
+                converted_meta,
+                baseline_meta,
+                mismatches,
+                field,
+                report_limit,
+            ):
+                print(f"  {field}_mismatch: {example}")
+
+    return failures
+
+
 def count_prefix(keys: Iterable[str], prefix: str) -> int:
     return sum(1 for key in keys if key.startswith(prefix))
 
@@ -105,6 +281,9 @@ def validate_ckpt(
     ckpt_path: Path,
     profile: str,
     source_safetensors: Path | None,
+    serialization_baseline: Path | None,
+    serialization_guard_profile: str,
+    serialization_report_limit: int,
 ) -> int:
     if not ckpt_path.exists():
         print(f"RESULT=FAIL missing checkpoint file: {ckpt_path}")
@@ -152,6 +331,29 @@ def validate_ckpt(
                     f"missing required LTX2.3 tensor prefix: {prefix} (found {found}, expected >= {min_count})"
                 )
 
+    if serialization_baseline is not None:
+        apply_guard = True
+        if serialization_guard_profile != "any" and resolved_profile != serialization_guard_profile:
+            apply_guard = False
+
+        if not apply_guard:
+            print(
+                "== Serialization Policy Guard ==\n"
+                f"SKIPPED profile mismatch (required={serialization_guard_profile}, actual={resolved_profile})"
+            )
+        elif not serialization_baseline.exists():
+            failures.append(
+                f"serialization baseline file does not exist: {serialization_baseline}"
+            )
+        else:
+            failures.extend(
+                validate_serialization_policy(
+                    ckpt_path,
+                    serialization_baseline,
+                    serialization_report_limit,
+                )
+            )
+
     if failures:
         print("== Failures ==")
         for failure in failures:
@@ -177,12 +379,44 @@ def main() -> int:
         default="",
         help="Optional source safetensors path used for profile auto-detection",
     )
+    parser.add_argument(
+        "--serialization-baseline",
+        default="",
+        help="Optional baseline .ckpt used for strict type/format/datatype parity checks",
+    )
+    parser.add_argument(
+        "--serialization-guard-profile",
+        choices=["any", "none", "ltx2_3"],
+        default="any",
+        help="Only apply serialization parity guard when resolved profile matches (default: any)",
+    )
+    parser.add_argument(
+        "--serialization-report-limit",
+        type=int,
+        default=10,
+        help="Maximum mismatch examples printed per category (default: 10)",
+    )
     args = parser.parse_args()
+
+    if args.serialization_report_limit < 1:
+        parser.error("--serialization-report-limit must be >= 1")
 
     source = Path(args.source_safetensors).expanduser().resolve() if args.source_safetensors else None
     ckpt = Path(args.file).expanduser().resolve()
+    baseline = (
+        Path(args.serialization_baseline).expanduser().resolve()
+        if args.serialization_baseline
+        else None
+    )
 
-    return validate_ckpt(ckpt, args.profile, source)
+    return validate_ckpt(
+        ckpt,
+        args.profile,
+        source,
+        baseline,
+        args.serialization_guard_profile,
+        args.serialization_report_limit,
+    )
 
 
 if __name__ == "__main__":

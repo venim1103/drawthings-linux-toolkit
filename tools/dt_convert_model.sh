@@ -22,6 +22,10 @@ AUTOBUILD="${DRAWTHINGS_CONVERTER_AUTOBUILD:-1}"
 MONITOR_ENABLED="${DRAWTHINGS_CONVERTER_MONITOR:-1}"
 VALIDATE_ENABLED="${DRAWTHINGS_CONVERTER_VALIDATE:-1}"
 VALIDATE_PROFILE="${DRAWTHINGS_CONVERTER_VALIDATE_PROFILE:-auto}"
+VALIDATE_SERIALIZATION_GUARD="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD:-auto}"
+VALIDATE_SERIALIZATION_BASELINE="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_BASELINE:-$ROOT/dt-models/ltx_2.3_22b_distilled_f16.ckpt}"
+VALIDATE_SERIALIZATION_PROFILE="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_PROFILE:-ltx2_3}"
+VALIDATE_SERIALIZATION_REPORT_LIMIT="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_REPORT_LIMIT:-12}"
 LOCK_FILE="${DRAWTHINGS_CONVERTER_LOCK_FILE:-$ROOT/.cache/dt_convert_model.lock}"
 
 usage() {
@@ -41,6 +45,23 @@ Environment:
   DRAWTHINGS_CONVERTER_VALIDATE_PROFILE
                                      Validation profile: auto (default), none,
                                      or ltx2_3.
+  DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD
+                                     Serialization parity guard mode:
+                                     auto (default), 1, or 0.
+                                     - auto: enable only when baseline file exists
+                                     - 1: always enforce (fails if baseline missing)
+                                     - 0: disable serialization parity checks
+  DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_BASELINE
+                                     Baseline .ckpt used for strict type/format/
+                                     datatype parity checks. Relative paths are
+                                     resolved from workspace root.
+                                     Default: dt-models/ltx_2.3_22b_distilled_f16.ckpt
+  DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_PROFILE
+                                     Profile scope for parity guard: any, none,
+                                     or ltx2_3. Default: ltx2_3.
+  DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_REPORT_LIMIT
+                                     Max mismatch examples printed per category.
+                                     Default: 12.
   DRAWTHINGS_CONVERTER_LOCK_FILE     Lock path used to enforce one active conversion
                                      wrapper run at a time.
   DRAWTHINGS_BUILD_CONFIG            release (default) or debug.
@@ -177,6 +198,20 @@ resolve_python_bin() {
 
   echo "error: python3 not found for post-conversion validation" >&2
   return 1
+}
+
+resolve_path_from_root() {
+  local value="$1"
+  if [[ -z "$value" ]]; then
+    echo ""
+    return 0
+  fi
+
+  if [[ "$value" == /* ]]; then
+    echo "$value"
+  else
+    echo "$ROOT/$value"
+  fi
 }
 
 detect_output_ckpt() {
@@ -369,14 +404,75 @@ if [[ "$exit_code" -eq 0 && "$VALIDATE_ENABLED" == "1" ]] && ! has_help_arg "${c
         --file "$converted_ckpt"
         --profile "$VALIDATE_PROFILE"
       )
+
+      guard_mode="${VALIDATE_SERIALIZATION_GUARD,,}"
+      guard_enabled=""
+      case "$guard_mode" in
+        0|false|off|no)
+          guard_enabled="0"
+          ;;
+        1|true|on|yes)
+          guard_enabled="1"
+          ;;
+        auto)
+          guard_enabled="auto"
+          ;;
+        *)
+          echo "error: invalid DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD=$VALIDATE_SERIALIZATION_GUARD (expected auto/1/0)" >&2
+          exit_code=1
+          ;;
+      esac
+
+      if [[ "$exit_code" -eq 0 ]]; then
+        if ! [[ "$VALIDATE_SERIALIZATION_REPORT_LIMIT" =~ ^[0-9]+$ ]] || ((VALIDATE_SERIALIZATION_REPORT_LIMIT < 1)); then
+          echo "error: DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_REPORT_LIMIT must be >= 1" >&2
+          exit_code=1
+        fi
+      fi
+
+      if [[ "$exit_code" -eq 0 ]]; then
+        case "$VALIDATE_SERIALIZATION_PROFILE" in
+          any|none|ltx2_3)
+            ;;
+          *)
+            echo "error: invalid DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_PROFILE=$VALIDATE_SERIALIZATION_PROFILE (expected any/none/ltx2_3)" >&2
+            exit_code=1
+            ;;
+        esac
+      fi
+
+      if [[ "$exit_code" -eq 0 && "$guard_enabled" != "0" ]]; then
+        serialization_baseline="$(resolve_path_from_root "$VALIDATE_SERIALIZATION_BASELINE")"
+
+        if [[ "$guard_enabled" == "1" ]]; then
+          if [[ -z "$serialization_baseline" || ! -f "$serialization_baseline" ]]; then
+            echo "error: serialization parity guard enabled but baseline file is missing: $serialization_baseline" >&2
+            exit_code=1
+          fi
+        fi
+
+        if [[ "$exit_code" -eq 0 && -n "$serialization_baseline" && -f "$serialization_baseline" ]]; then
+          validator_args+=(
+            --serialization-baseline "$serialization_baseline"
+            --serialization-guard-profile "$VALIDATE_SERIALIZATION_PROFILE"
+            --serialization-report-limit "$VALIDATE_SERIALIZATION_REPORT_LIMIT"
+          )
+          echo "==> Serialization parity guard baseline: $serialization_baseline (profile=$VALIDATE_SERIALIZATION_PROFILE)" >&2
+        elif [[ "$guard_enabled" == "auto" ]]; then
+          echo "==> Serialization parity guard skipped (auto): baseline not found: $serialization_baseline" >&2
+        fi
+      fi
+
       if [[ -n "$input_file" ]] && [[ "${input_file,,}" == *.safetensors ]]; then
         validator_args+=(--source-safetensors "$input_file")
       fi
 
-      echo "==> Validating converted checkpoint: $converted_ckpt" >&2
-      if ! "${validator_args[@]}"; then
-        echo "error: converted checkpoint failed integrity validation" >&2
-        exit_code=1
+      if [[ "$exit_code" -eq 0 ]]; then
+        echo "==> Validating converted checkpoint: $converted_ckpt" >&2
+        if ! "${validator_args[@]}"; then
+          echo "error: converted checkpoint failed integrity validation" >&2
+          exit_code=1
+        fi
       fi
     fi
   fi

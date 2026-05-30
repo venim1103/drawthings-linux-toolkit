@@ -28,6 +28,11 @@ if [[ -n "${DT_SHIFT+x}" ]]; then
   HAS_DT_SHIFT=1
 fi
 
+HAS_DT_GUIDANCE=0
+if [[ -n "${DT_GUIDANCE+x}" ]]; then
+  HAS_DT_GUIDANCE=1
+fi
+
 HAS_DT_HIRES_FIX=0
 if [[ -n "${DT_HIRES_FIX+x}" ]]; then
   HAS_DT_HIRES_FIX=1
@@ -148,6 +153,56 @@ sys.exit(1)
 PY
 }
 
+get_custom_model_numeric_field() {
+  local model_name="$1"
+  local field_name="$2"
+  local custom_json="${ROOT_DIR}/dt-models/custom.json"
+
+  if [[ ! -f "${custom_json}" ]]; then
+  return 1
+  fi
+
+  "${PYTHON_BIN}" - "${model_name}" "${custom_json}" "${field_name}" <<'PY'
+import json
+import sys
+
+model_name = sys.argv[1]
+json_path = sys.argv[2]
+field_name = sys.argv[3]
+
+try:
+  payload = json.load(open(json_path, "r", encoding="utf-8"))
+except Exception:
+  sys.exit(1)
+
+if not isinstance(payload, list):
+  sys.exit(1)
+
+for entry in payload:
+  if not isinstance(entry, dict):
+    continue
+  if entry.get("file") != model_name and entry.get("name") != model_name:
+    continue
+
+  value = entry.get(field_name)
+  if isinstance(value, (int, float)):
+    print(value)
+    sys.exit(0)
+  if isinstance(value, str):
+    text = value.strip()
+    if not text:
+      sys.exit(1)
+    try:
+      float(text)
+    except ValueError:
+      sys.exit(1)
+    print(text)
+    sys.exit(0)
+
+sys.exit(1)
+PY
+}
+
 ltx23_upscalers_present() {
   local model_dir="${ROOT_DIR}/dt-models"
   local missing=0
@@ -174,6 +229,14 @@ fi
 
 # LTX-2.3 profiles use model-specific defaults in Draw Things presets.
 if [[ "${IS_LTX23_MODEL}" == "1" ]]; then
+  if [[ "${HAS_DT_GUIDANCE}" == "0" ]]; then
+    model_default_scale="$(get_custom_model_numeric_field "${MODEL}" "default_scale" || true)"
+    if [[ -n "${model_default_scale}" ]]; then
+      GUIDANCE="${model_default_scale}"
+      echo "Using model default guidance scale ${GUIDANCE} from dt-models/custom.json"
+    fi
+  fi
+
   if [[ "${HAS_DT_SHIFT}" == "0" ]]; then
     SHIFT="5.0"
   fi
