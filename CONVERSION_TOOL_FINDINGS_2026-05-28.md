@@ -934,6 +934,6 @@ All now support and default to:
 Operational policy going forward (space-constrained runs):
 
 1. Before any large apply step, verify `PRAGMA journal_mode` is `delete` for the target `.ckpt`.
-2. Run mutation scripts with conservative chunk sizes and a non-zero `--min-free-gb` threshold.
+2. Run mutation scripts with conservative chunk sizes and `--min-free-gb 180` (or higher) in this low-host-space setup.
 3. If WAL mode must be used for a special case, checkpoint-truncate immediately after each chunk and reset to `delete` at the end.
 4. Never run long single-transaction blob rewrite passes on low headroom.

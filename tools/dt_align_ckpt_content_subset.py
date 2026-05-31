@@ -329,8 +329,8 @@ def main() -> int:
     parser.add_argument(
         "--min-free-gb",
         type=float,
-        default=64.0,
-        help="Abort apply if free workspace disk drops below this GiB threshold (default: 64)",
+        default=180.0,
+        help="Abort apply if free workspace disk drops below this GiB threshold (default: 180)",
     )
     args = parser.parse_args()
 
