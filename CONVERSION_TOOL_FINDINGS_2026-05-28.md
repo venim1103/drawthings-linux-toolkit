@@ -658,6 +658,90 @@ Interpretation:
 - Targeted content parity remediation on the previously divergent domains succeeded at the measured signature level (`0` mismatch across `261 + 1248` selected rows), but runtime loading still crashes in the same reader path.
 - The remaining incompatibility is therefore deeper than metadata policy, length parity, and these targeted dim/data blob substitutions.
 
+### Tensor row-order parity probe (2026-05-31)
+
+Report artifacts:
+
+- `output/probe_row_order_diff_20260531.json`
+- `output/probe_row_order_diff_20260531.txt`
+
+Method:
+
+- row-order comparison by `rowid` between:
+   - custom: `dt-models/10_e_v1_bf16_fix2_f16.ckpt`
+   - baseline: `dt-models/ltx_2.3_22b_distilled_f16.ckpt`
+- robust per-rowid reads with DataError handling to avoid bulk-read failure on unreadable rows.
+
+Observed:
+
+- `custom_count=5746`
+- `baseline_count=5746`
+- `position_mismatch_count=5746`
+- `position_match_count=0`
+- `mismatch_ratio=1.000000`
+- unreadable row position differs:
+   - custom unreadable rowid: `5746`
+   - baseline unreadable rowid: `3`
+
+Representative ordering deltas:
+
+- position `1`:
+   - custom: `text_video_connector_learnable_registers`
+   - baseline: `__text_feature_extractor__[t-audio_aggregate_embed-0-0]`
+- position `2`:
+   - custom: `text_audio_connector_learnable_registers`
+   - baseline: `__text_feature_extractor__[t-audio_aggregate_embed-0-1]`
+- large absolute deltas exceed `5k` rows for multiple connector/feature-extractor tensors.
+
+Interpretation:
+
+- Beyond content parity metrics, table iteration order itself is fully divergent from baseline.
+- If runtime loader behavior depends on row order (even partially), this is a plausible crash vector independent of keyset/metadata/length checks.
+
+### Readable-row reorder experiment status (2026-05-31)
+
+Tooling:
+
+- `tools/dt_reorder_ckpt_readable_rows.py`
+
+Dry-run summary:
+
+- baseline readable names (`rowid`-scan excluding DataError rows): `5745`
+- baseline unreadable rowids: `[3]`
+- target missing names from baseline readable set: `0`
+- pre-reorder readable position mismatch: `5745`
+
+Apply attempt status:
+
+- Native/sqlite and Python single-shot apply attempts did hit repeated `D+` behavior earlier in this container.
+- A resumed micro-batch apply path was then executed successfully using:
+   - `python tools/dt_reorder_ckpt_readable_rows.py --file dt-models/10_e_v1_bf16_fix2_f16.ckpt --baseline dt-models/ltx_2.3_22b_distilled_f16.ckpt --mode apply --chunk-size 96 --sample-limit 5`
+- completed outcome:
+   - `post_position_mismatch=0`
+   - `RESULT=PASS`
+- unreadable-row constraint remains:
+   - baseline unreadable row at `rowid=3` and custom unreadable row at `rowid=5746` cannot be moved (`sqlite3` rowid-update attempts for those rows return `string or blob too big (18)`).
+
+Runtime probe after successful readable-row reorder (one-response, same low-cost settings):
+
+- server start:
+   - `drawthings-grpc --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression dt-models`
+- probe:
+   - `python tools/dt_api_client.py --host 127.0.0.1:7861 --max-recv-bytes 134217728 generate-raw --config-bin output/probe_custom_f16_aligned_config.bin --prompt "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" --negative-prompt "blurry, distorted, low quality, artifacts" --output-dir output/probe_custom_f16_after_roworder_20260531 --chunked --save-preview --max-responses 1`
+- observed server outcome:
+   - request accepted (`Received image processing request, begin.`)
+   - same crash root remained:
+      - `ccv_nnc_tensor_read`
+      - `ccv_cnnp_model_read`
+   - crash: `Bad pointer dereference` (process exit `139`)
+   - no emitted payload files (`output/probe_custom_f16_after_roworder_20260531` not created)
+
+Operational implication:
+
+- Readable-row order divergence was real and is now remediated (`5745` readable rows aligned to compressed baseline order).
+- Runtime crash persistence after reorder means row-order mismatch was not sufficient to explain the loader failure.
+- Remaining high-signal differentiator is the persistent unreadable tensor row path / deeper serialization invariants inside the loader.
+
 ### Metadata diff evidence (no regeneration)
 
 Report artifacts:
@@ -732,7 +816,7 @@ Interpretation:
 
 1. Converter/importer structural issues were real and are now fixed.
 2. Current runtime still crashes when loading custom checkpoints (both fixed F16 and derived q6) in `ccv_nnc_tensor_read` / `ccv_cnnp_model_read`.
-3. The blocker is deeper read-path compatibility beyond the fixes applied so far. Matching `type/format/datatype` policy and achieving `data` blob length parity (`0` mismatches on `5745` readable shared tensors) did not resolve the crash. Additional targeted content-copy remediation also reached measured parity on the previously divergent domains (`261/261` non-`__dit__` rows and `1248/1248` `__dit__` subset80 rows now full-match on the probe metrics), but runtime still crashed in the same loader path.
+3. The blocker is deeper read-path compatibility beyond the fixes applied so far. Matching `type/format/datatype` policy and achieving `data` blob length parity (`0` mismatches on `5745` readable shared tensors) did not resolve the crash. Additional targeted content-copy remediation also reached measured parity on the previously divergent domains (`261/261` non-`__dit__` rows and `1248/1248` `__dit__` subset80 rows now full-match on the probe metrics), and readable-row reorder was completed to `post_position_mismatch=0`, but runtime still crashed in the same loader path.
 4. q4p remains unstable and should be treated as non-usable.
 5. No new long quantization/conversion run should be started until serialization compatibility checks are enforced.
 
@@ -742,4 +826,4 @@ Interpretation:
 - Use official `ltx_2.3_22b_distilled_f16.ckpt` as a control when validating loader stability/signpost progression.
 - Treat custom `10_e_v1_bf16_fix2_f16.ckpt`, `10_e_v1_bf16_q6p.ckpt`, and `10_e_v1_bf16_q4p.ckpt` as non-runnable in the current runtime environment.
 - Before any new 4+ hour regeneration, require metadata diff checks against the official q6 baseline (see `output/probe_metadata_diff_20260529.*`) and keep targeted content-signature probes in the acceptance gate.
-- Since targeted content-copy parity did not clear runtime crash, prioritize deeper reader-path diagnostics next (row-encoding invariants, tensor record decoding assumptions, and focused investigation of the persistent unreadable row path).
+- Since targeted content-copy parity and readable-row reorder did not clear runtime crash, prioritize deeper reader-path diagnostics next (row-encoding invariants, tensor record decoding assumptions, and focused investigation of the persistent unreadable row path).
