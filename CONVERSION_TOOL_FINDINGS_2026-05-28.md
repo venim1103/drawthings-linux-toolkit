@@ -937,3 +937,47 @@ Operational policy going forward (space-constrained runs):
 2. Run mutation scripts with conservative chunk sizes and `--min-free-gb 180` (or higher) in this low-host-space setup.
 3. If WAL mode must be used for a special case, checkpoint-truncate immediately after each chunk and reset to `delete` at the end.
 4. Never run long single-transaction blob rewrite passes on low headroom.
+
+## Incremental Remediation Update (2026-05-31, pre-final-validation checkpoint)
+
+### Confirmed successful steps in this pass
+
+- Metadata alignment apply on regenerated artifact completed under `journal_mode=delete` and free-space guard rails.
+- Strict validator rerun after metadata alignment reached full serialization parity against official exact F16 baseline:
+   - `type_mismatch_count=0`
+   - `format_mismatch_count=0`
+   - `datatype_mismatch_count=0`
+   - `RESULT=PASS`
+- Payload subset alignment apply succeeded:
+   - `selected_tensor_names=1542`
+   - `rows_updated=1542`
+   - `post_selected_data_len_mismatch=0`
+   - `RESULT=PASS`
+- Content subset alignment apply succeeded:
+   - `dim_names_selected=1312`
+   - `data_names_selected=115`
+   - `union_selected=1363`
+   - `post_dim_head_mismatch=0`
+   - `post_data_head_mismatch=0`
+   - `RESULT=PASS`
+- Disk safety remained within guard rails across apply steps (observed free space about `320 GiB` with `--min-free-gb 180`).
+
+### Reorder status (completed)
+
+- Readable-row reorder apply completed on `dt-models/10_e_v1_bf16_regen_20260531_f16.ckpt`.
+- Confirmed preconditions:
+   - `baseline_readable_names=5745`
+   - `missing_names_in_target=0`
+- Recovery note:
+   - A fast restart with default `--rowid-offset 10000000` hit `sqlite3.IntegrityError: UNIQUE constraint failed: tensors.rowid` because partial phase2 state already occupied `>= 10000000` rowids.
+   - Resume strategy switched to `--rowid-offset 20000000` to avoid collisions while preserving data.
+- Final completion metrics:
+   - `phase1_chunk=23/23`
+   - `phase2_chunk=23/23`
+   - `post_position_mismatch=0`
+   - `RESULT=PASS`
+   - command exit status: `0`
+
+### Not yet rerun in this in-flight segment
+
+- Runtime one-response probe (`drawthings-grpc` + `tools/dt_api_client.py generate-raw`) has not been rerun yet after this reorder recovery attempt.
