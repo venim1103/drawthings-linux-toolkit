@@ -8,7 +8,13 @@ This report captures the full investigation and patch work for converting custom
 
 - Converter-side structural defects for this custom LTX-2.3 source were fixed.
 - The fixed F16 and derived q6p checkpoints now match the official LTX-2.3 q6p keyset exactly (`5746` tensors, no missing/extra keys).
-- Controlled one-response probes show official q6/f16 controls reach `textEncoded`, while current custom F16/q6 checkpoints reproduce runtime failure (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`, server exit 139).
+- Controlled one-response probes show official q6/f16 controls reach `textEncoded`, while custom F16/q6 checkpoints still reproduce runtime failure (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`, server exit 139).
+- Metadata-column alignment against official F16 now reaches strict guard parity (`type/format/datatype` mismatches reduced to `0` on readable shared tensors), but runtime crash persists on aligned custom F16.
+- Deep row-level probe after metadata alignment shows `1542` tensor `data` blob length mismatches vs official F16 (`1540` under `__dit__`), while metadata columns remain at parity on readable shared tensors.
+- Targeted payload alignment for the `80%` `__dit__` subgroup subset (`1248` tensors) reduced global `data` length mismatches from `1542` to `294`, but one-response runtime still crashed in the same reader path.
+- A second targeted payload pass on the remaining `294` tensor names reduced readable shared-tensor `data` length mismatches to `0` (`5745/5745` readable shared rows), but one-response runtime still crashed in the same read path.
+- Targeted non-`__dit__` content probe after length parity found `115/261` rows with `data` head-signature mismatch (zero metadata/length mismatches), concentrated in connector and feature-extractor families.
+- Micro-batched `__dit__` subgroup content probe over the prior 80% subset (`26` subgroups, `1248` rows) completed successfully and found `dim` head-signature mismatch on `1248/1248` rows, with zero metadata/length/data-head mismatches.
 - Runtime with custom q4p (quantized from fixed F16) caused Draw Things server crashes (`Bad pointer dereference` in ccv read path), so q4p is currently unsafe for this model.
 - Official exact F16 baseline file (`ltx_2.3_22b_distilled_f16.ckpt`) was downloaded and checksum-verified against the published value in-session.
 - Custom model metadata now points to q6p in `dt-models/custom.json`.
@@ -20,7 +26,8 @@ This report captures the full investigation and patch work for converting custom
 - Runtime behavior now diverges by artifact provenance, not by keyset parity:
    - official q6/f16 controls: stable to first signpost in one-response probes.
    - custom q4p/q6/f16: current runtime reader path crashes (`ccv_nnc_tensor_read` / `ccv_cnnp_model_read`).
-- Remaining blocker is serialization compatibility (type/format/datatype policy), not missing key families.
+- Remaining blocker is serialization compatibility beyond keyset parity and beyond `type/format/datatype` column parity.
+- New evidence narrows the remaining divergence to tensor payload content semantics (byte-level mismatch at equal lengths), not column metadata fields.
 
 ## Applied Patch Summary
 
@@ -253,6 +260,404 @@ Interpretation:
 
 - This session's official-vs-custom exact-F16 A/B confirms runtime instability is specific to custom serialization, not just q6 quantization or guidance-scale mismatch.
 
+### Metadata-column alignment apply test (2026-05-31)
+
+Alignment apply command:
+
+```bash
+python tools/dt_align_ckpt_metadata.py \
+   --file dt-models/10_e_v1_bf16_fix2_f16.ckpt \
+   --baseline dt-models/ltx_2.3_22b_distilled_f16.ckpt \
+   --mode apply \
+   --sample-limit 3
+```
+
+Observed:
+
+- `planned_updates=5745`
+- post-apply summary:
+   - `type_mismatch=0`
+   - `format_mismatch=0`
+   - `datatype_mismatch=0`
+   - `unreadable_metadata_only_target=0`
+   - `unreadable_metadata_only_baseline=0`
+- aligner exit: `RESULT=PASS`
+
+Strict guard re-validation command:
+
+```bash
+python tools/dt_validate_converted_ckpt.py \
+   --file dt-models/10_e_v1_bf16_fix2_f16.ckpt \
+   --profile auto \
+   --serialization-baseline dt-models/ltx_2.3_22b_distilled_f16.ckpt \
+   --serialization-guard-profile ltx2_3 \
+   --serialization-report-limit 5
+```
+
+Observed:
+
+- `type_mismatch_count=0`
+- `format_mismatch_count=0`
+- `datatype_mismatch_count=0`
+- `RESULT=PASS`
+
+Runtime probe after alignment (one-response, same low-cost settings):
+
+```bash
+python tools/dt_api_client.py \
+   --host 127.0.0.1:7861 \
+   --max-recv-bytes 134217728 \
+   generate-raw \
+   --config-bin output/probe_custom_f16_aligned_config.bin \
+   --prompt "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+   --negative-prompt "blurry, distorted, low quality, artifacts" \
+   --output-dir output/probe_custom_f16_aligned \
+   --chunked \
+   --save-preview \
+   --max-responses 1
+```
+
+Observed:
+
+- server accepted the request (`Received image processing request, begin.`)
+- server still crashed with the same backtrace root:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+- no successful `response #1` was emitted before crash.
+
+Interpretation:
+
+- Aligning the metadata columns (`type/format/datatype`) is necessary for diagnostics but not sufficient to make custom F16 runtime-loadable in the current server build.
+- Remaining incompatibility is now narrowed to deeper serialization/read-path differences outside these three metadata columns.
+
+### Deep row-length probe (2026-05-31)
+
+Report artifacts:
+
+- `output/probe_deep_diff_lengths_20260531.json`
+- `output/probe_deep_diff_lengths_20260531.md`
+
+Probe mode:
+
+- metadata and blob length parity checks only (`type/format/datatype`, `length(dim)`, `length(data)`)
+- per-key DataError-safe reads
+
+Observed:
+
+- `shared_tensors=5746`
+- `unreadable_both=1` (`__text_feature_extractor__[t-video_aggregate_embed-0-0]`)
+- readable shared tensors: `5745`
+- metadata mismatches on readable shared tensors:
+   - `metadata_mismatch_type=0`
+   - `metadata_mismatch_format=0`
+   - `metadata_mismatch_datatype=0`
+- dimensionality blob size mismatches:
+   - `dim_len_mismatch=0`
+- payload blob size mismatches:
+   - `data_len_mismatch=1542`
+
+Top affected families by `data_len_mismatch`:
+
+- `__dit__`: `1540`
+- `text_audio_connector_learnable_registers`: `1`
+- `text_video_connector_learnable_registers`: `1`
+
+Representative examples:
+
+- `__dit__[t-attn1_ada_ln_0-0-0]`: custom `8192`, official `16384`
+- `__dit__[t-attn1_ada_ln_0-1-0]`: custom `8192`, official `16384`
+
+Interpretation:
+
+- After metadata parity is enforced, large residual `data` blob length divergence remains across `1542` tensors.
+- This is strong evidence that crash persistence is tied to deeper tensor payload serialization/read-path expectations, not keyset or metadata-column mismatch.
+
+### DIT family-by-family mismatch map (2026-05-31)
+
+Report artifacts:
+
+- `output/probe_dit_family_map_20260531.json`
+- `output/probe_dit_family_map_20260531.md`
+- `output/probe_dit_subset_80pct_20260531.txt`
+- `output/probe_dit_subset_80pct_20260531.md`
+
+Key map findings:
+
+- `data_len_mismatch_total=1542`
+- `data_len_mismatch_dit=1540`
+- `data_len_mismatch_non_dit=2`
+- `dit_subgroup_count=36`
+
+Coverage summary over `__dit__` mismatches:
+
+- `50%` target: `17` subgroups cover `816/1540` (`52.987%`)
+- `80%` target: `26` subgroups cover `1248/1540` (`81.039%`)
+- `90%` target: `29` subgroups cover `1392/1540` (`90.3896%`)
+- `95%` target: `31` subgroups cover `1488/1540` (`96.6234%`)
+
+Dominant subgroup pattern:
+
+- Most top subgroups contribute exactly `48` mismatches each.
+- Repeating length-pair classes dominate:
+   - `8192 -> 16384`
+   - `4096 -> 8192`
+
+Representative top subgroups:
+
+- `t-attn1_ada_ln_0` through `t-attn1_ada_ln_8` (each `48`, mostly `8192 -> 16384`)
+- `t-audio_attn1_ada_ln_0` through `t-audio_attn1_ada_ln_8` (each `48`, mostly `4096 -> 8192`)
+- `t-audio_prompt_scale_shift_ada_ln_*`, `t-prompt_scale_shift_ada_ln_*`, and cross-attn `*_to_*_attn_ada_ln_*` families also dominate early coverage.
+
+Interpretation:
+
+- The mismatch distribution is broad but highly regular, with repeated subgroup motifs rather than isolated outliers.
+- The `80%` subset artifact (`probe_dit_subset_80pct_20260531.*`) provides a practical minimal candidate set for targeted payload-alignment experiments before attempting full-table rewrites.
+
+### Targeted payload alignment experiment (subset80, 2026-05-31)
+
+Tooling and artifacts:
+
+- `tools/dt_align_ckpt_payload_subset.py`
+- `output/probe_dit_subset_80pct_tensor_names_20260531.txt`
+- `output/probe_deep_diff_lengths_after_subset80_20260531.json`
+- `output/probe_deep_diff_lengths_after_subset80_20260531.md`
+
+Subset apply summary:
+
+- parsed subgroups: `26`
+- resolved tensor names: `1248`
+- pre-selected mismatch count: `1248`
+- rows updated: `1248`
+- post-selected mismatch count: `0`
+
+Post-apply global parity probe (`length_and_metadata_only`):
+
+- before subset80 apply: `data_len_mismatch=1542`
+- after subset80 apply: `data_len_mismatch=294`
+- metadata columns stayed aligned:
+   - `metadata_mismatch_type=0`
+   - `metadata_mismatch_format=0`
+   - `metadata_mismatch_datatype=0`
+
+Runtime probe after subset80 apply (same one-response settings):
+
+- request was accepted (`Received image processing request, begin.`)
+- server still crashed with:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+- crash signature remained unchanged from prior aligned-custom probes.
+
+Interpretation:
+
+- Large, targeted payload correction materially reduced mismatch volume, proving the subset selection/update path works as intended.
+- Crash persistence despite reducing mismatches from `1542` to `294` indicates either:
+   - the remaining `294` tensors include critical blockers, and/or
+   - at least one additional incompatibility dimension (beyond current metadata/length parity checks) is still present.
+
+### Targeted payload alignment experiment (remaining294, 2026-05-31)
+
+Tooling and artifacts:
+
+- `tools/dt_align_ckpt_payload_subset.py` (extended with `--tensor-list-file` mode)
+- `output/probe_remaining_mismatch_tensor_names_after_subset80_20260531.txt`
+- `output/probe_remaining_mismatch_selected_names_20260531.txt`
+- `output/probe_data_len_recount_after_remaining294_20260531.json`
+- `output/probe_data_len_recount_after_remaining294_20260531.md`
+
+Stage-2 apply summary:
+
+- parsed tensor names: `294`
+- selected tensor names: `294`
+- pre-selected mismatch count: `294`
+- rows updated: `294`
+- post-selected mismatch count: `0`
+
+Post-apply recount (`length(data)` row-wise, DataError-safe):
+
+- shared_tensors: `5746`
+- unreadable_both: `1`
+- readable_shared_tensors: `5745`
+- `data_len_mismatch=0` on readable shared tensors
+
+Runtime probe after remaining294 apply (same one-response settings):
+
+- request reached runtime (`Received image processing request, begin.`)
+- server still crashed with the same signature:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+
+Interpretation:
+
+- `data` blob length parity is now complete for every readable shared tensor row.
+- Crash persistence after length parity indicates the blocker is deeper than metadata columns and blob length parity, likely in one or more of:
+   - unreadable-row handling (`__text_feature_extractor__[t-video_aggregate_embed-0-0]` remains unreadable on both files),
+   - payload byte-content semantics at equal length,
+   - tensor layout/reader expectations not captured by current probes.
+
+### Targeted content parity map (non-`__dit__`, 2026-05-31)
+
+Tooling and artifacts:
+
+- `tools/dt_probe_ckpt_targeted_content.py`
+- `output/probe_targeted_content_family_map_non_dit_after_lenparity_20260531.json`
+- `output/probe_targeted_content_family_map_non_dit_after_lenparity_20260531.md`
+
+Scope and setup:
+
+- families included:
+   - `__text_audio_connector__`
+   - `__text_video_connector__`
+   - `__text_feature_extractor__`
+   - `text_audio_connector_learnable_registers`
+   - `text_video_connector_learnable_registers`
+- excluded known problematic row:
+   - `__text_feature_extractor__[t-video_aggregate_embed-0-0]`
+
+Probe result summary:
+
+- `selected_tensors=261`
+- `metadata_mismatch_type=0`
+- `metadata_mismatch_format=0`
+- `metadata_mismatch_datatype=0`
+- `dim_len_mismatch=0`
+- `data_len_mismatch=0`
+- `dim_head_mismatch=64`
+- `data_head_mismatch=115`
+- `data_small_sha256_compared=73`
+- `data_small_sha256_mismatch=41`
+- `mismatch_any=115`
+
+Top families by `mismatch_any`:
+
+- `__text_video_connector__`: `56/128`
+- `__text_audio_connector__`: `56/128`
+- `__text_feature_extractor__`: `3/3` (excluding unreadable row)
+
+Interpretation:
+
+- Even with metadata parity and `data_len` parity, connector/feature-extractor payload bytes remain divergent.
+- This provides a concrete, family-scoped next target for content-level parity fixes.
+
+### Targeted content parity map (`__dit__` subset80 micro-batch, 2026-05-31)
+
+Tooling and artifacts:
+
+- `tools/dt_probe_ckpt_targeted_content.py` (subgroup-window mode)
+- `output/probe_targeted_content_dit_subgroup_batch01_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_batch02_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_batch03_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_batch04_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_batch05_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_batch06_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_batch07_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_80pct_aggregate_20260531.json`
+- `output/probe_targeted_content_dit_subgroup_80pct_aggregate_20260531.md`
+
+Scope and setup:
+
+- source subgroup list: `output/probe_dit_subset_80pct_20260531.txt`
+- subgroup windows: `1-4`, `5-8`, `9-12`, `13-16`, `17-20`, `21-24`, `25-26`
+- total covered: `26` subgroups (`1248` tensor rows)
+
+Aggregate result summary:
+
+- `selected_tensors=1248`
+- `readable_selected=1248`
+- `metadata_mismatch_type=0`
+- `metadata_mismatch_format=0`
+- `metadata_mismatch_datatype=0`
+- `dim_len_mismatch=0`
+- `data_len_mismatch=0`
+- `dim_head_mismatch=1248`
+- `data_head_mismatch=0`
+- `mismatch_any=1248`
+- `full_match=0`
+
+Interpretation:
+
+- For the dominant `__dit__` subset already used in payload-length remediation, divergence now appears concentrated in `dim` content bytes (head signatures), not in metadata columns, not in `data` length, and not in `data` head signatures.
+- Combined with non-`__dit__` results, this indicates multi-family content-semantic divergence at equal lengths, split by tensor domain:
+   - connectors/feature-extractor: strong `data` content mismatch,
+   - `__dit__` subset: strong `dim` content mismatch.
+
+### Targeted content-copy apply test (2026-05-31)
+
+Tooling and input lists:
+
+- `tools/dt_align_ckpt_content_subset.py`
+- `output/probe_targeted_dim_copy_union_20260531.txt` (`1312` names; `__dit__` subset80 + non-`__dit__` dim-head mismatch names)
+- `output/probe_targeted_non_dit_data_head_mismatch_names_20260531.txt` (`115` names)
+
+Apply command mode and summary:
+
+- dry-run:
+   - `dim_names_selected=1312`
+   - `data_names_selected=115`
+   - `union_selected=1363`
+   - `pre_dim_head_mismatch=1312`
+   - `pre_data_head_mismatch=115`
+- apply:
+   - `rows_updated=1363`
+   - `dim_rows_updated=1312`
+   - `data_rows_updated=115`
+   - `rows_skipped_dataerror=0`
+   - `post_dim_head_mismatch=0`
+   - `post_data_head_mismatch=0`
+   - `RESULT=PASS`
+
+Post-apply targeted re-probes:
+
+- non-`__dit__` full selected set (`261` names, explicit names-file mode):
+   - artifacts:
+      - `output/probe_targeted_non_dit_names_all_20260531.txt`
+      - `output/probe_targeted_content_family_map_non_dit_fullsamples_after_contentcopy_20260531.json`
+      - `output/probe_targeted_content_family_map_non_dit_fullsamples_after_contentcopy_20260531.md`
+   - result:
+      - `selected_tensors=261`
+      - `dim_head_mismatch=0`
+      - `data_head_mismatch=0`
+      - `mismatch_any=0`
+      - `full_match=261`
+
+- `__dit__` subset80 names-file re-probe (`1248` names):
+   - artifacts:
+      - `output/probe_targeted_content_dit_subset80_after_contentcopy_20260531.json`
+      - `output/probe_targeted_content_dit_subset80_after_contentcopy_20260531.md`
+   - result:
+      - `selected_tensors=1248`
+      - `dim_head_mismatch=0`
+      - `data_head_mismatch=0`
+      - `mismatch_any=0`
+      - `full_match=1248`
+
+Strict guard re-validation after content-copy apply:
+
+- `python tools/dt_validate_converted_ckpt.py --file dt-models/10_e_v1_bf16_fix2_f16.ckpt --profile auto --source-safetensors dt-models/10_e_v1_bf16.safetensors --serialization-baseline dt-models/ltx_2.3_22b_distilled_f16.ckpt --serialization-guard-profile ltx2_3 --serialization-report-limit 5`
+- observed:
+   - `type_mismatch_count=0`
+   - `format_mismatch_count=0`
+   - `datatype_mismatch_count=0`
+   - `RESULT=PASS`
+
+Runtime probe after content-copy apply (one-response, same low-cost settings):
+
+- server start:
+   - `drawthings-grpc --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression dt-models`
+- probe:
+   - `python tools/dt_api_client.py --host 127.0.0.1:7861 --max-recv-bytes 134217728 generate-raw --config-bin output/probe_custom_f16_aligned_config.bin --prompt "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" --negative-prompt "blurry, distorted, low quality, artifacts" --output-dir output/probe_custom_f16_after_contentcopy_20260531 --chunked --save-preview --max-responses 1`
+- observed server outcome:
+   - request accepted (`Received image processing request, begin.`)
+   - same crash root remained:
+      - `ccv_nnc_tensor_read`
+      - `ccv_cnnp_model_read`
+   - crash: `Bad pointer dereference`
+   - no emitted payload files in `output/probe_custom_f16_after_contentcopy_20260531`
+
+Interpretation:
+
+- Targeted content parity remediation on the previously divergent domains succeeded at the measured signature level (`0` mismatch across `261 + 1248` selected rows), but runtime loading still crashes in the same reader path.
+- The remaining incompatibility is therefore deeper than metadata policy, length parity, and these targeted dim/data blob substitutions.
+
 ### Metadata diff evidence (no regeneration)
 
 Report artifacts:
@@ -295,6 +700,18 @@ Attempt to run a source-matched local `gRPCServerCLI` build was blocked in this 
 
 This prevented direct same-source runtime validation in the current environment.
 
+### Probe scalability note
+
+Attempts to run full-table content signature probes (head/tail byte extraction across all shared rows) in this container hit practical limits:
+
+- intermittent `sqlite3.DataError: string or blob too big` on broad SQL/head-signature passes,
+- process termination (`exit 137`) on heavier full-table signature loops.
+
+Operational implication:
+
+- Keep content-level analysis targeted (family-scoped or explicit tensor-name lists) with strict sampling, rather than all-row deep signature sweeps in one pass.
+- Micro-batched subgroup windows are currently the reliable execution pattern for `__dit__` content probes in this environment.
+
 ## Runtime Numeric Snapshot (Image Tensor Distribution)
 
 Custom q6 image tensor (`output/dt_video_20260528_171805/image_r0014_01.bin`):
@@ -315,7 +732,7 @@ Interpretation:
 
 1. Converter/importer structural issues were real and are now fixed.
 2. Current runtime still crashes when loading custom checkpoints (both fixed F16 and derived q6) in `ccv_nnc_tensor_read` / `ccv_cnnp_model_read`.
-3. The blocker is now metadata/serialization compatibility (type/format/datatype policy divergence), not missing tensor key families.
+3. The blocker is deeper read-path compatibility beyond the fixes applied so far. Matching `type/format/datatype` policy and achieving `data` blob length parity (`0` mismatches on `5745` readable shared tensors) did not resolve the crash. Additional targeted content-copy remediation also reached measured parity on the previously divergent domains (`261/261` non-`__dit__` rows and `1248/1248` `__dit__` subset80 rows now full-match on the probe metrics), but runtime still crashed in the same loader path.
 4. q4p remains unstable and should be treated as non-usable.
 5. No new long quantization/conversion run should be started until serialization compatibility checks are enforced.
 
@@ -324,5 +741,5 @@ Interpretation:
 - Keep using official `ltx_2.3_22b_distilled_1.1_q6p.ckpt` as the runtime baseline for day-to-day generation.
 - Use official `ltx_2.3_22b_distilled_f16.ckpt` as a control when validating loader stability/signpost progression.
 - Treat custom `10_e_v1_bf16_fix2_f16.ckpt`, `10_e_v1_bf16_q6p.ckpt`, and `10_e_v1_bf16_q4p.ckpt` as non-runnable in the current runtime environment.
-- Before any new 4+ hour regeneration, require metadata diff checks against the official q6 baseline (see `output/probe_metadata_diff_20260529.*`).
-- Next fix target is serialization policy alignment (type/format/datatype decisions), not additional key-name mapping coverage.
+- Before any new 4+ hour regeneration, require metadata diff checks against the official q6 baseline (see `output/probe_metadata_diff_20260529.*`) and keep targeted content-signature probes in the acceptance gate.
+- Since targeted content-copy parity did not clear runtime crash, prioritize deeper reader-path diagnostics next (row-encoding invariants, tensor record decoding assumptions, and focused investigation of the persistent unreadable row path).

@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Copy selected tensor content blobs (dim/data) from baseline checkpoint.
+
+This tool is intended for focused remediation experiments where specific tensor
+name lists should receive baseline `dim` and/or `data` blobs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sqlite3
+import sys
+from pathlib import Path
+from typing import Dict, List, Sequence
+
+
+def _parse_names_file(path: Path) -> List[str]:
+    names: List[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        names.append(line)
+
+    deduped: List[str] = []
+    seen = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append(name)
+    return deduped
+
+
+def _load_target_names(con: sqlite3.Connection) -> set[str]:
+    cur = con.cursor()
+    rows = cur.execute("SELECT name FROM tensors").fetchall()
+    return {str(row[0]) for row in rows if row and row[0] is not None}
+
+
+def _head_hex(con: sqlite3.Connection, name: str, column: str, head_bytes: int) -> str | None:
+    cur = con.cursor()
+    query = f"SELECT substr({column}, 1, ?) FROM tensors WHERE name=?"
+    try:
+        row = cur.execute(query, (head_bytes, name)).fetchone()
+    except sqlite3.DataError:
+        return None
+    if row is None:
+        return None
+    value = row[0]
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        return value.hex().upper()
+    if value is None:
+        return "NULL"
+    return str(value)
+
+
+def _count_head_mismatch(
+    target_con: sqlite3.Connection,
+    baseline_con: sqlite3.Connection,
+    names: Sequence[str],
+    column: str,
+    head_bytes: int,
+) -> int:
+    mismatch = 0
+    for name in names:
+        t = _head_hex(target_con, name, column, head_bytes)
+        b = _head_hex(baseline_con, name, column, head_bytes)
+        if t is None or b is None:
+            continue
+        if t != b:
+            mismatch += 1
+    return mismatch
+
+
+def _apply_updates(
+    target_con: sqlite3.Connection,
+    baseline_con: sqlite3.Connection,
+    dim_names: Sequence[str],
+    data_names: Sequence[str],
+) -> Dict[str, int]:
+    dim_set = set(dim_names)
+    data_set = set(data_names)
+    all_names = sorted(dim_set | data_set)
+
+    tcur = target_con.cursor()
+    bcur = baseline_con.cursor()
+
+    stats = {
+        "selected_union": len(all_names),
+        "rows_missing_baseline": 0,
+        "rows_missing_target": 0,
+        "rows_updated": 0,
+        "dim_rows_updated": 0,
+        "data_rows_updated": 0,
+        "rows_skipped_dataerror": 0,
+    }
+
+    target_con.execute("BEGIN IMMEDIATE")
+    try:
+        for name in all_names:
+            copy_dim = name in dim_set
+            copy_data = name in data_set
+
+            cols = []
+            if copy_dim:
+                cols.append("dim")
+            if copy_data:
+                cols.append("data")
+            select_cols = ", ".join(cols)
+
+            try:
+                brow = bcur.execute(f"SELECT {select_cols} FROM tensors WHERE name=?", (name,)).fetchone()
+            except sqlite3.DataError:
+                stats["rows_skipped_dataerror"] += 1
+                continue
+
+            if brow is None:
+                stats["rows_missing_baseline"] += 1
+                continue
+
+            if copy_dim and copy_data:
+                tcur.execute("UPDATE tensors SET dim=?, data=? WHERE name=?", (brow[0], brow[1], name))
+            elif copy_dim:
+                tcur.execute("UPDATE tensors SET dim=? WHERE name=?", (brow[0], name))
+            else:
+                tcur.execute("UPDATE tensors SET data=? WHERE name=?", (brow[0], name))
+
+            if tcur.rowcount > 0:
+                stats["rows_updated"] += 1
+                if copy_dim:
+                    stats["dim_rows_updated"] += 1
+                if copy_data:
+                    stats["data_rows_updated"] += 1
+            else:
+                stats["rows_missing_target"] += 1
+
+        target_con.commit()
+    except Exception:
+        target_con.rollback()
+        raise
+
+    return stats
+
+
+def run(
+    target_path: Path,
+    baseline_path: Path,
+    dim_names_file: Path | None,
+    data_names_file: Path | None,
+    mode: str,
+    head_bytes: int,
+) -> int:
+    if not target_path.exists():
+        print(f"RESULT=FAIL missing target file: {target_path}")
+        return 2
+    if not baseline_path.exists():
+        print(f"RESULT=FAIL missing baseline file: {baseline_path}")
+        return 2
+    if dim_names_file is None and data_names_file is None:
+        print("RESULT=FAIL at least one of --dim-names-file or --data-names-file is required")
+        return 2
+    if dim_names_file is not None and not dim_names_file.exists():
+        print(f"RESULT=FAIL missing dim names file: {dim_names_file}")
+        return 2
+    if data_names_file is not None and not data_names_file.exists():
+        print(f"RESULT=FAIL missing data names file: {data_names_file}")
+        return 2
+
+    dim_names = _parse_names_file(dim_names_file) if dim_names_file is not None else []
+    data_names = _parse_names_file(data_names_file) if data_names_file is not None else []
+
+    target_con = sqlite3.connect(str(target_path))
+    baseline_con = sqlite3.connect(str(baseline_path))
+    try:
+        target_names = _load_target_names(target_con)
+        dim_selected = sorted(name for name in dim_names if name in target_names)
+        data_selected = sorted(name for name in data_names if name in target_names)
+        union_selected = sorted(set(dim_selected) | set(data_selected))
+
+        pre_dim_mismatch = _count_head_mismatch(target_con, baseline_con, dim_selected, "dim", head_bytes)
+        pre_data_mismatch = _count_head_mismatch(target_con, baseline_con, data_selected, "data", head_bytes)
+
+        print("== Content Subset Alignment ==")
+        print(f"target={target_path}")
+        print(f"baseline={baseline_path}")
+        print(f"mode={mode}")
+        print(f"head_bytes={head_bytes}")
+        print(f"dim_names_file={dim_names_file if dim_names_file is not None else ''}")
+        print(f"data_names_file={data_names_file if data_names_file is not None else ''}")
+        print(f"dim_names_selected={len(dim_selected)}")
+        print(f"data_names_selected={len(data_selected)}")
+        print(f"union_selected={len(union_selected)}")
+        print(f"pre_dim_head_mismatch={pre_dim_mismatch}")
+        print(f"pre_data_head_mismatch={pre_data_mismatch}")
+
+        if mode == "dry-run":
+            print("RESULT=DRY_RUN")
+            return 0
+
+        apply_stats = _apply_updates(
+            target_con=target_con,
+            baseline_con=baseline_con,
+            dim_names=dim_selected,
+            data_names=data_selected,
+        )
+
+        post_dim_mismatch = _count_head_mismatch(target_con, baseline_con, dim_selected, "dim", head_bytes)
+        post_data_mismatch = _count_head_mismatch(target_con, baseline_con, data_selected, "data", head_bytes)
+
+        for key, value in apply_stats.items():
+            print(f"{key}={value}")
+        print(f"post_dim_head_mismatch={post_dim_mismatch}")
+        print(f"post_data_head_mismatch={post_data_mismatch}")
+        print("RESULT=PASS")
+        return 0
+    finally:
+        target_con.close()
+        baseline_con.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Align selected dim/data blobs from baseline")
+    parser.add_argument("--file", required=True, help="Target checkpoint path")
+    parser.add_argument("--baseline", required=True, help="Baseline checkpoint path")
+    parser.add_argument(
+        "--dim-names-file",
+        default="",
+        help="Optional tensor-name list for dim copy",
+    )
+    parser.add_argument(
+        "--data-names-file",
+        default="",
+        help="Optional tensor-name list for data copy",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("dry-run", "apply"),
+        default="dry-run",
+        help="Operation mode",
+    )
+    parser.add_argument(
+        "--head-bytes",
+        type=int,
+        default=32,
+        help="Head signature bytes for pre/post mismatch checks (default: 32)",
+    )
+    args = parser.parse_args()
+
+    if args.head_bytes < 1:
+        parser.error("--head-bytes must be >= 1")
+
+    target = Path(args.file).expanduser().resolve()
+    baseline = Path(args.baseline).expanduser().resolve()
+    dim_file = Path(args.dim_names_file).expanduser().resolve() if args.dim_names_file else None
+    data_file = Path(args.data_names_file).expanduser().resolve() if args.data_names_file else None
+
+    return run(
+        target_path=target,
+        baseline_path=baseline,
+        dim_names_file=dim_file,
+        data_names_file=data_file,
+        mode=args.mode,
+        head_bytes=args.head_bytes,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

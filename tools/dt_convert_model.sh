@@ -26,6 +26,10 @@ VALIDATE_SERIALIZATION_GUARD="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUAR
 VALIDATE_SERIALIZATION_BASELINE="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_BASELINE:-$ROOT/dt-models/ltx_2.3_22b_distilled_f16.ckpt}"
 VALIDATE_SERIALIZATION_PROFILE="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_PROFILE:-ltx2_3}"
 VALIDATE_SERIALIZATION_REPORT_LIMIT="${DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_REPORT_LIMIT:-12}"
+ALIGN_METADATA_MODE="${DRAWTHINGS_CONVERTER_ALIGN_METADATA_MODE:-0}"
+ALIGN_METADATA_BASELINE="${DRAWTHINGS_CONVERTER_ALIGN_METADATA_BASELINE:-$VALIDATE_SERIALIZATION_BASELINE}"
+ALIGN_METADATA_ALLOW_KEYSET_MISMATCH="${DRAWTHINGS_CONVERTER_ALIGN_METADATA_ALLOW_KEYSET_MISMATCH:-0}"
+ALIGN_METADATA_SAMPLE_LIMIT="${DRAWTHINGS_CONVERTER_ALIGN_METADATA_SAMPLE_LIMIT:-12}"
 LOCK_FILE="${DRAWTHINGS_CONVERTER_LOCK_FILE:-$ROOT/.cache/dt_convert_model.lock}"
 
 usage() {
@@ -61,6 +65,21 @@ Environment:
                                      or ltx2_3. Default: ltx2_3.
   DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_REPORT_LIMIT
                                      Max mismatch examples printed per category.
+                                     Default: 12.
+  DRAWTHINGS_CONVERTER_ALIGN_METADATA_MODE
+                                     Metadata alignment mode for converted ckpt:
+                                     0 (default), auto, or 1.
+                                     - 0: disable metadata alignment step
+                                     - auto: apply when baseline exists
+                                     - 1: require and apply (fails if baseline missing)
+  DRAWTHINGS_CONVERTER_ALIGN_METADATA_BASELINE
+                                     Baseline .ckpt used for metadata alignment.
+                                     Default: DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_BASELINE
+  DRAWTHINGS_CONVERTER_ALIGN_METADATA_ALLOW_KEYSET_MISMATCH
+                                     Set to 1 to allow alignment when keysets differ.
+                                     Default: 0 (strict keyset match required).
+  DRAWTHINGS_CONVERTER_ALIGN_METADATA_SAMPLE_LIMIT
+                                     Sample mismatch names printed by alignment tool.
                                      Default: 12.
   DRAWTHINGS_CONVERTER_LOCK_FILE     Lock path used to enforce one active conversion
                                      wrapper run at a time.
@@ -404,6 +423,83 @@ if [[ "$exit_code" -eq 0 && "$VALIDATE_ENABLED" == "1" ]] && ! has_help_arg "${c
         --file "$converted_ckpt"
         --profile "$VALIDATE_PROFILE"
       )
+
+      align_script="$ROOT/tools/dt_align_ckpt_metadata.py"
+      align_mode="${ALIGN_METADATA_MODE,,}"
+      align_enabled=""
+      case "$align_mode" in
+        0|false|off|no)
+          align_enabled="0"
+          ;;
+        1|true|on|yes)
+          align_enabled="1"
+          ;;
+        auto)
+          align_enabled="auto"
+          ;;
+        *)
+          echo "error: invalid DRAWTHINGS_CONVERTER_ALIGN_METADATA_MODE=$ALIGN_METADATA_MODE (expected auto/1/0)" >&2
+          exit_code=1
+          ;;
+      esac
+
+      align_allow_keyset="${ALIGN_METADATA_ALLOW_KEYSET_MISMATCH,,}"
+      case "$align_allow_keyset" in
+        0|false|off|no)
+          align_allow_keyset="0"
+          ;;
+        1|true|on|yes)
+          align_allow_keyset="1"
+          ;;
+        *)
+          echo "error: invalid DRAWTHINGS_CONVERTER_ALIGN_METADATA_ALLOW_KEYSET_MISMATCH=$ALIGN_METADATA_ALLOW_KEYSET_MISMATCH (expected 1/0)" >&2
+          exit_code=1
+          ;;
+      esac
+
+      if [[ "$exit_code" -eq 0 ]]; then
+        if ! [[ "$ALIGN_METADATA_SAMPLE_LIMIT" =~ ^[0-9]+$ ]] || ((ALIGN_METADATA_SAMPLE_LIMIT < 1)); then
+          echo "error: DRAWTHINGS_CONVERTER_ALIGN_METADATA_SAMPLE_LIMIT must be >= 1" >&2
+          exit_code=1
+        fi
+      fi
+
+      if [[ "$exit_code" -eq 0 && "$align_enabled" != "0" ]]; then
+        if [[ ! -f "$align_script" ]]; then
+          echo "error: metadata alignment requested but missing script: $align_script" >&2
+          exit_code=1
+        else
+          align_baseline="$(resolve_path_from_root "$ALIGN_METADATA_BASELINE")"
+          align_args=(
+            "$python_bin"
+            "$align_script"
+            --file "$converted_ckpt"
+            --baseline "$align_baseline"
+            --mode apply
+            --sample-limit "$ALIGN_METADATA_SAMPLE_LIMIT"
+          )
+          if [[ "$align_allow_keyset" == "1" ]]; then
+            align_args+=(--allow-keyset-mismatch)
+          fi
+
+          if [[ "$align_enabled" == "1" ]]; then
+            if [[ -z "$align_baseline" || ! -f "$align_baseline" ]]; then
+              echo "error: metadata alignment enabled but baseline file is missing: $align_baseline" >&2
+              exit_code=1
+            fi
+          fi
+
+          if [[ "$exit_code" -eq 0 && -n "$align_baseline" && -f "$align_baseline" ]]; then
+            echo "==> Aligning converted metadata to baseline: $align_baseline" >&2
+            if ! "${align_args[@]}"; then
+              echo "error: converted checkpoint metadata alignment failed" >&2
+              exit_code=1
+            fi
+          elif [[ "$align_enabled" == "auto" ]]; then
+            echo "==> Metadata alignment skipped (auto): baseline not found: $align_baseline" >&2
+          fi
+        fi
+      fi
 
       guard_mode="${VALIDATE_SERIALIZATION_GUARD,,}"
       guard_enabled=""
