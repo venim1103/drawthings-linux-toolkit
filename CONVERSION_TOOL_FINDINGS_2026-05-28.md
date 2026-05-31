@@ -978,6 +978,31 @@ Operational policy going forward (space-constrained runs):
    - `RESULT=PASS`
    - command exit status: `0`
 
-### Not yet rerun in this in-flight segment
+### Post-reorder validation and runtime retry (completed)
 
-- Runtime one-response probe (`drawthings-grpc` + `tools/dt_api_client.py generate-raw`) has not been rerun yet after this reorder recovery attempt.
+- Strict validator rerun after reorder remained clean vs official exact F16 baseline:
+   - `missing_from_converted=0`
+   - `extra_in_converted=0`
+   - `type_mismatch_count=0`
+   - `format_mismatch_count=0`
+   - `datatype_mismatch_count=0`
+   - `RESULT=PASS`
+- Runtime retry sequence on regenerated F16 model (`10_e_v1_bf16_regen_20260531_f16.ckpt`):
+   - server relaunched cleanly on `127.0.0.1:7861` via `gRPCServerCLI`
+   - probe config regenerated to explicitly target regen artifact:
+      - `output/probe_regen_f16_aligned_config.bin`
+      - embedded model string confirmed: `10_e_v1_bf16_regen_20260531_f16.ckpt`
+   - first retry with `--max-responses 1` intentionally cancelled stream early after `textEncoded` (server stayed healthy)
+   - full-stream retry with `--max-responses 0` completed successfully:
+      - responses: `15`
+      - preview frames: `5`
+      - images written: `1`
+      - output dir: `output/probe_regen_f16_after_reorder_20260531_retry2`
+   - server log outcome after full-stream retry:
+      - `Image processed`
+      - `Image processed successfully, should send in chunks? true`
+
+Operational implication at this checkpoint:
+
+- Regenerated/reordered F16 path now passes strict serialization guard and completes at least one end-to-end runtime generation request without reproducing the earlier immediate loader crash.
+- q6p fallback quantization is not required for this checkpoint validation gate.
