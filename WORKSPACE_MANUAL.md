@@ -1,4 +1,4 @@
-# LTX2_3 Workspace Manual
+# Workspace Manual
 
 Last updated: 2026-05-19
 
@@ -63,7 +63,7 @@ Snapshot fallback files are also kept under DRAW_THINGS_PATCH/ for hard fallback
 
 ### 3.1 Apply patches
 
-    bash /workspaces/LTX2_3/tools/apply_drawthings_quant_patch.sh
+    bash /workspaces/drawthings-linux-toolkit/tools/apply_drawthings_quant_patch.sh
 
 Behavior:
 
@@ -73,7 +73,7 @@ Behavior:
 
 ### 3.2 Regenerate patches after new edits
 
-    bash /workspaces/LTX2_3/tools/generate_drawthings_quant_patches.sh
+    bash /workspaces/drawthings-linux-toolkit/tools/generate_drawthings_quant_patches.sh
 
 Run this after changing any patched files so the patch bundle stays current.
 
@@ -81,7 +81,7 @@ Run this after changing any patched files so the patch bundle stays current.
 
 Build release binary:
 
-    cd /workspaces/LTX2_3/draw-things-community
+    cd /workspaces/drawthings-linux-toolkit/draw-things-community
     swift build -c release --product model-quantizer
 
 Show help:
@@ -91,14 +91,14 @@ Show help:
 Example quantization command:
 
     ./.build/release/model-quantizer \
-      -i /workspaces/LTX2_3/dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt \
+      -i /workspaces/drawthings-linux-toolkit/dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt \
       -m ltx2_3 \
-      -o /workspaces/LTX2_3/dt-models/ltx_2.3_22b_distilled_1.1_q4p.ckpt \
+      -o /workspaces/drawthings-linux-toolkit/dt-models/ltx_2.3_22b_distilled_1.1_q4p.ckpt \
       --target-codec q4p
 
 Progress + ETA wrapper (recommended for large files):
 
-    cd /workspaces/LTX2_3
+    cd /workspaces/drawthings-linux-toolkit
     bash tools/dt_quantize_model.sh \
       -i dt-models/ltx_2.3_22b_distilled_1.1_f16.ckpt \
       -m ltx2.3 \
@@ -123,10 +123,10 @@ Script:
 
 Examples:
 
-    cd /workspaces/LTX2_3
-    bash tools/dt_models_cli.sh list --models-dir /workspaces/LTX2_3/dt-models
-    bash tools/dt_models_cli.sh list --downloaded-only --models-dir /workspaces/LTX2_3/dt-models
-    bash tools/dt_models_cli.sh ensure ltx_2.3_22b_distilled_1.1_q6p.ckpt --models-dir /workspaces/LTX2_3/dt-models
+    cd /workspaces/drawthings-linux-toolkit
+    bash tools/dt_models_cli.sh list --models-dir /workspaces/drawthings-linux-toolkit/dt-models
+    bash tools/dt_models_cli.sh list --downloaded-only --models-dir /workspaces/drawthings-linux-toolkit/dt-models
+    bash tools/dt_models_cli.sh ensure ltx_2.3_22b_distilled_1.1_q6p.ckpt --models-dir /workspaces/drawthings-linux-toolkit/dt-models
 
 Note:
 
@@ -140,10 +140,10 @@ Script:
 
 Examples:
 
-    cd /workspaces/LTX2_3
+    cd /workspaces/drawthings-linux-toolkit
     python3 tools/dt_model_requirements.py --list --filter ltx
-    python3 tools/dt_model_requirements.py --model ltx_2.3_22b_distilled_1.1_q6p.ckpt --models-dir /workspaces/LTX2_3/dt-models
-    python3 tools/dt_model_requirements.py --model ltx_2.3_22b_distilled_1.1_q6p.ckpt --models-dir /workspaces/LTX2_3/dt-models --download-missing
+    python3 tools/dt_model_requirements.py --model ltx_2.3_22b_distilled_1.1_q6p.ckpt --models-dir /workspaces/drawthings-linux-toolkit/dt-models
+    python3 tools/dt_model_requirements.py --model ltx_2.3_22b_distilled_1.1_q6p.ckpt --models-dir /workspaces/drawthings-linux-toolkit/dt-models --download-missing
 
 ## 6) Generation pipeline tools
 
@@ -155,8 +155,8 @@ Script:
 
 Example:
 
-    python3 /workspaces/LTX2_3/tools/dt_make_config.py \
-      --out /workspaces/LTX2_3/output/config.bin \
+    python3 /workspaces/drawthings-linux-toolkit/tools/dt_make_config.py \
+      --out /workspaces/drawthings-linux-toolkit/output/config.bin \
       --model ltx_2.3_22b_distilled_1.1_q6p.ckpt \
       --width 704 \
       --height 384 \
@@ -171,7 +171,7 @@ Script:
 
 Quick server check:
 
-    python3 /workspaces/LTX2_3/tools/dt_api_client.py --host 127.0.0.1:7861 echo --name test
+    python3 /workspaces/drawthings-linux-toolkit/tools/dt_api_client.py --host 127.0.0.1:7861 echo --name test
 
 ## 6.3 Convert tensor outputs to playable files
 
@@ -181,9 +181,9 @@ Script:
 
 Example:
 
-    python3 /workspaces/LTX2_3/tools/dt_tensor_to_playable.py \
-      --image-bin /workspaces/LTX2_3/output/image_0001.bin \
-      --out-dir /workspaces/LTX2_3/output \
+    python3 /workspaces/drawthings-linux-toolkit/tools/dt_tensor_to_playable.py \
+      --image-bin /workspaces/drawthings-linux-toolkit/output/image_0001.bin \
+      --out-dir /workspaces/drawthings-linux-toolkit/output \
       --base-name playable
 
 ## 6.4 End-to-end helper
@@ -196,7 +196,7 @@ Example:
 
     DT_MODEL=ltx_2.3_22b_distilled_1.1_q6p.ckpt \
     DT_HOST=127.0.0.1:7861 \
-    bash /workspaces/LTX2_3/tools/dt_generate_video.sh "ocean waves at sunset"
+    bash /workspaces/drawthings-linux-toolkit/tools/dt_generate_video.sh "ocean waves at sunset"
 
 ## 7) Why builds seemed to happen repeatedly
 
@@ -215,15 +215,15 @@ Current mitigation in this workspace:
 
 Re-apply all quant patches:
 
-    bash /workspaces/LTX2_3/tools/apply_drawthings_quant_patch.sh
+    bash /workspaces/drawthings-linux-toolkit/tools/apply_drawthings_quant_patch.sh
 
 Regenerate patch bundle after edits:
 
-    bash /workspaces/LTX2_3/tools/generate_drawthings_quant_patches.sh
+    bash /workspaces/drawthings-linux-toolkit/tools/generate_drawthings_quant_patches.sh
 
 Rebuild quantizer only:
 
-    cd /workspaces/LTX2_3/draw-things-community
+    cd /workspaces/drawthings-linux-toolkit/draw-things-community
     swift build -c release --product model-quantizer
 
 ## 9) Recommended daily workflow

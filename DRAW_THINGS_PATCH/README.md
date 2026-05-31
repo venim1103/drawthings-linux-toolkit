@@ -24,18 +24,18 @@ We keep two patch representations:
 ## Apply patches
 
 ```bash
-bash /workspaces/LTX2_3/tools/apply_drawthings_quant_patch.sh
+bash /workspaces/drawthings-linux-toolkit/tools/apply_drawthings_quant_patch.sh
 ```
 
 ## Regenerate patches after edits
 
 ```bash
-bash /workspaces/LTX2_3/tools/generate_drawthings_quant_patches.sh
+bash /workspaces/drawthings-linux-toolkit/tools/generate_drawthings_quant_patches.sh
 ```
 
 ## Build quantizer
 
 ```bash
-cd /workspaces/LTX2_3/draw-things-community
+cd /workspaces/drawthings-linux-toolkit/draw-things-community
 swift build -c release --product model-quantizer
 ```
