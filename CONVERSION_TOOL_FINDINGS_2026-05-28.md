@@ -812,6 +812,38 @@ Interpretation:
 
 - Custom output distribution remains wider and inconsistent with official behavior, matching observed noisy decode.
 
+## Fresh Regenerated F16 Attempt (2026-05-31)
+
+Command:
+
+```bash
+tools/dt_convert_model.sh \
+   --file dt-models/10_e_v1_bf16.safetensors \
+   --name 10_e_v1_bf16_regen_20260531 \
+   --output-directory dt-models
+```
+
+Observed conversion status:
+
+- converter import/encode completed successfully in-session (`elapsed=264s`)
+- generated file: `dt-models/10_e_v1_bf16_regen_20260531_f16.ckpt` (about `42G`)
+
+Post-conversion validation status (serialization parity guard vs official exact F16 baseline):
+
+- `missing_from_converted=0`
+- `extra_in_converted=0`
+- `unreadable_metadata_both=1` (`__text_feature_extractor__[t-video_aggregate_embed-0-0]`)
+- `type_mismatch_count=5745`
+- `format_mismatch_count=5743`
+- `datatype_mismatch_count=1545`
+- `RESULT=FAIL`
+- wrapper exit status: `1` (`error: converted checkpoint failed integrity validation`)
+
+Interpretation:
+
+- This regenerated checkpoint does not preserve the previously achieved serialization metadata parity and is not a runtime candidate.
+- The run confirms that a direct fresh conversion from safetensors (with current converter state) currently regresses to broad serialization-policy mismatch against the official exact F16 baseline.
+
 ## Conclusion
 
 1. Converter/importer structural issues were real and are now fixed.
@@ -827,3 +859,81 @@ Interpretation:
 - Treat custom `10_e_v1_bf16_fix2_f16.ckpt`, `10_e_v1_bf16_q6p.ckpt`, and `10_e_v1_bf16_q4p.ckpt` as non-runnable in the current runtime environment.
 - Before any new 4+ hour regeneration, require metadata diff checks against the official q6 baseline (see `output/probe_metadata_diff_20260529.*`) and keep targeted content-signature probes in the acceptance gate.
 - Since targeted content-copy parity and readable-row reorder did not clear runtime crash, prioritize deeper reader-path diagnostics next (row-encoding invariants, tensor record decoding assumptions, and focused investigation of the persistent unreadable row path).
+
+## Detailed Analysis and Next Working Plan (2026-05-31)
+
+### Current snapshot
+
+- Fresh regenerated artifact (`dt-models/10_e_v1_bf16_regen_20260531_f16.ckpt`) completes converter import/encode, but fails integrity guard with broad serialization mismatches:
+   - `type_mismatch_count=5745`
+   - `format_mismatch_count=5743`
+   - `datatype_mismatch_count=1545`
+- Existing remediated artifact (`dt-models/10_e_v1_bf16_fix2_f16.ckpt`) still validates with strict metadata parity vs official exact F16 baseline:
+   - `type_mismatch_count=0`
+   - `format_mismatch_count=0`
+   - `datatype_mismatch_count=0`
+   - `unreadable_metadata_both=1` (`__text_feature_extractor__[t-video_aggregate_embed-0-0]`)
+- Runtime crash signature remains unchanged on custom artifacts in one-response probes:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+   - server exit `139`
+
+### What prior experiments proved
+
+1. Importer/mapping structural defects were real and were fixed (keyset parity reached `5746` with no missing/extra keys).
+2. Metadata-column parity (`type/format/datatype`) can be enforced to zero mismatch on readable shared tensors.
+3. Blob-length parity can be forced to zero mismatch on readable shared tensors.
+4. Targeted content-copy parity can be achieved for measured non-`__dit__` and dominant `__dit__` subset domains.
+5. Readable-row order can be aligned to baseline (`post_position_mismatch=0`).
+6. Despite 2-5, runtime still crashes in the same loader path, narrowing blocker to deeper read-path invariants.
+7. Fresh direct conversion regresses immediately to broad metadata mismatch profile, so converter output is still not directly runtime-compatible with current strict baseline policy.
+
+### Most likely remaining blockers (ranked)
+
+1. Residual full-scope content semantic divergence outside previously targeted subsets.
+2. Unreadable-row handling/ordering edge case around `__text_feature_extractor__[t-video_aggregate_embed-0-0]`.
+3. Converter write-path serialization invariants not yet matching official baseline conventions (hence repeated fresh-output metadata mismatch profile).
+
+### Immediate plan before any new conversion run
+
+1. Do not start another long conversion yet.
+2. Use current regenerated file (`10_e_v1_bf16_regen_20260531_f16.ckpt`) as remediation substrate.
+3. Apply deterministic metadata alignment to baseline (`dt_align_ckpt_metadata.py --mode apply`), then re-validate.
+4. Apply broader content-alignment pass (not only prior subset windows), then re-probe mismatch families.
+5. Rebuild tensors table in exact baseline order via copy/reinsert strategy (instead of rowid-only moves) to include the unreadable-row position case.
+6. Re-run the same low-cost one-response runtime probe harness.
+7. Only if this stabilized path still crashes, prioritize deeper reader-path diagnostics over launching another fresh conversion.
+
+### WAL incident root cause and prevention (2026-05-31)
+
+Observed root cause from tooling audit:
+
+- `tools/dt_reorder_ckpt_readable_rows.py` previously forced `PRAGMA journal_mode=WAL` on target checkpoints.
+- This journal mode persists per SQLite database file, so later large write operations on the same `.ckpt` can append very large `-wal` sidecars.
+- The earlier disk spike (about `40G` WAL sidecar on `10_e_v1_bf16_fix2_f16.ckpt`) is consistent with this behavior under large write transactions.
+
+Confirmed state after cleanup:
+
+- `dt-models/10_e_v1_bf16_fix2_f16.ckpt` was checkpoint-truncated and reset to `journal_mode=delete`.
+- No active `-wal` sidecar remains for current model files.
+
+Preventive controls now added to mutation tools:
+
+- `tools/dt_reorder_ckpt_readable_rows.py`
+- `tools/dt_align_ckpt_metadata.py`
+- `tools/dt_align_ckpt_content_subset.py`
+- `tools/dt_align_ckpt_payload_subset.py`
+
+All now support and default to:
+
+- `--journal-mode delete` (safe default; no persistent WAL requirement)
+- chunked write transactions (`--chunk-size ...`) instead of single huge transactions
+- disk guard rail (`--min-free-gb ...`) with abort on low free space
+- WAL checkpoint+truncate per chunk only when WAL mode is explicitly active
+
+Operational policy going forward (space-constrained runs):
+
+1. Before any large apply step, verify `PRAGMA journal_mode` is `delete` for the target `.ckpt`.
+2. Run mutation scripts with conservative chunk sizes and a non-zero `--min-free-gb` threshold.
+3. If WAL mode must be used for a special case, checkpoint-truncate immediately after each chunk and reset to `delete` at the end.
+4. Never run long single-transaction blob rewrite passes on low headroom.

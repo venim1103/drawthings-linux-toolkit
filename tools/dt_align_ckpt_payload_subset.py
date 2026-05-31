@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -98,6 +99,31 @@ def _chunks(values: Sequence[str], size: int) -> Iterable[Sequence[str]]:
         yield values[i : i + size]
 
 
+def _free_gb(path: Path) -> float:
+    usage = shutil.disk_usage(str(path))
+    return usage.free / (1024**3)
+
+
+def _enforce_min_free(path: Path, min_free_gb: float) -> float:
+    free_gb = _free_gb(path)
+    if free_gb < min_free_gb:
+        raise RuntimeError(
+            f"free space below threshold: {free_gb:.2f} GiB < {min_free_gb:.2f} GiB"
+        )
+    return free_gb
+
+
+def _configure_journal_mode(cur: sqlite3.Cursor, journal_mode: str) -> str:
+    if journal_mode == "preserve":
+        row = cur.execute("PRAGMA journal_mode").fetchone()
+    else:
+        row = cur.execute(f"PRAGMA journal_mode={journal_mode.upper()}").fetchone()
+
+    if row and row[0] is not None:
+        return str(row[0]).lower()
+    return "unknown"
+
+
 def _count_data_len_mismatch(
     target_con: sqlite3.Connection,
     baseline_con: sqlite3.Connection,
@@ -137,6 +163,10 @@ def _apply_payload_updates(
     target_con: sqlite3.Connection,
     baseline_con: sqlite3.Connection,
     names: Sequence[str],
+    chunk_size: int,
+    journal_mode: str,
+    min_free_gb: float,
+    disk_guard_path: Path,
 ) -> tuple[int, int]:
     """Copy baseline data blobs for selected names.
 
@@ -150,22 +180,35 @@ def _apply_payload_updates(
     updated = 0
     missing_baseline = 0
 
-    target_con.execute("BEGIN IMMEDIATE")
-    try:
-        for name in names:
-            row = bcur.execute("SELECT data FROM tensors WHERE name=?", (name,)).fetchone()
-            if row is None:
-                missing_baseline += 1
-                continue
+    tcur.execute("PRAGMA busy_timeout=15000")
+    actual_journal_mode = _configure_journal_mode(tcur, journal_mode)
+    print(f"mutation_journal_mode={actual_journal_mode}")
 
-            tcur.execute("UPDATE tensors SET data=? WHERE name=?", (row[0], name))
-            if tcur.rowcount > 0:
-                updated += 1
+    start_free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
+    print(f"start_free_gb={start_free_gb:.2f}")
 
-        target_con.commit()
-    except Exception:
-        target_con.rollback()
-        raise
+    total_chunks = (len(names) + chunk_size - 1) // chunk_size
+    for idx, chunk in enumerate(_chunks(names, chunk_size), start=1):
+        free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
+        target_con.execute("BEGIN IMMEDIATE")
+        try:
+            for name in chunk:
+                row = bcur.execute("SELECT data FROM tensors WHERE name=?", (name,)).fetchone()
+                if row is None:
+                    missing_baseline += 1
+                    continue
+
+                tcur.execute("UPDATE tensors SET data=? WHERE name=?", (row[0], name))
+                if tcur.rowcount > 0:
+                    updated += 1
+
+            target_con.commit()
+            if actual_journal_mode == "wal":
+                tcur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            print(f"apply_chunk={idx}/{total_chunks} rows={len(chunk)} free_gb={free_gb:.2f}")
+        except Exception:
+            target_con.rollback()
+            raise
 
     return updated, missing_baseline
 
@@ -177,6 +220,9 @@ def run(
     tensor_list_file: Path | None,
     mode: str,
     dump_selected_names_path: Path | None,
+    chunk_size: int,
+    journal_mode: str,
+    min_free_gb: float,
 ) -> int:
     if not target_path.exists():
         print(f"RESULT=FAIL missing target file: {target_path}")
@@ -230,6 +276,9 @@ def run(
         print(f"target={target_path}")
         print(f"baseline={baseline_path}")
         print(f"mode={mode}")
+        print(f"chunk_size={chunk_size}")
+        print(f"journal_mode_request={journal_mode}")
+        print(f"min_free_gb={min_free_gb}")
         if subgroup_file is not None:
             print(f"subgroup_file={subgroup_file}")
             print(f"subgroups_parsed={len(subgroups)}")
@@ -256,7 +305,19 @@ def run(
             print("RESULT=DRY_RUN")
             return 0
 
-        updated, missing_baseline = _apply_payload_updates(target_con, baseline_con, selected_names)
+        try:
+            updated, missing_baseline = _apply_payload_updates(
+                target_con=target_con,
+                baseline_con=baseline_con,
+                names=selected_names,
+                chunk_size=chunk_size,
+                journal_mode=journal_mode,
+                min_free_gb=min_free_gb,
+                disk_guard_path=target_path.parent,
+            )
+        except RuntimeError as exc:
+            print(f"RESULT=FAIL {exc}")
+            return 1
         print(f"rows_updated={updated}")
         print(f"rows_missing_baseline={missing_baseline}")
 
@@ -303,6 +364,24 @@ def main() -> int:
         default="",
         help="Optional path to write resolved selected tensor names",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=8,
+        help="Rows per write transaction during apply mode (default: 8)",
+    )
+    parser.add_argument(
+        "--journal-mode",
+        choices=("delete", "wal", "preserve"),
+        default="delete",
+        help="SQLite journal mode for write phase (default: delete)",
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=64.0,
+        help="Abort apply if free workspace disk drops below this GiB threshold (default: 64)",
+    )
 
     args = parser.parse_args()
 
@@ -311,6 +390,10 @@ def main() -> int:
     subgroup_file = Path(args.subgroup_file).expanduser().resolve() if args.subgroup_file else None
     tensor_list_file = Path(args.tensor_list_file).expanduser().resolve() if args.tensor_list_file else None
     dump_selected = Path(args.dump_selected_names).expanduser().resolve() if args.dump_selected_names else None
+    if args.chunk_size < 1:
+        parser.error("--chunk-size must be >= 1")
+    if args.min_free_gb < 0:
+        parser.error("--min-free-gb must be >= 0")
 
     return run(
         target_path=target_path,
@@ -319,6 +402,9 @@ def main() -> int:
         tensor_list_file=tensor_list_file,
         mode=args.mode,
         dump_selected_names_path=dump_selected,
+        chunk_size=args.chunk_size,
+        journal_mode=args.journal_mode,
+        min_free_gb=args.min_free_gb,
     )
 
 

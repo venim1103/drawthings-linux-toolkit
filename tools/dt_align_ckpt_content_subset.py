@@ -8,6 +8,7 @@ name lists should receive baseline `dim` and/or `data` blobs.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -38,6 +39,36 @@ def _load_target_names(con: sqlite3.Connection) -> set[str]:
     cur = con.cursor()
     rows = cur.execute("SELECT name FROM tensors").fetchall()
     return {str(row[0]) for row in rows if row and row[0] is not None}
+
+
+def _free_gb(path: Path) -> float:
+    usage = shutil.disk_usage(str(path))
+    return usage.free / (1024**3)
+
+
+def _enforce_min_free(path: Path, min_free_gb: float) -> float:
+    free_gb = _free_gb(path)
+    if free_gb < min_free_gb:
+        raise RuntimeError(
+            f"free space below threshold: {free_gb:.2f} GiB < {min_free_gb:.2f} GiB"
+        )
+    return free_gb
+
+
+def _configure_journal_mode(cur: sqlite3.Cursor, journal_mode: str) -> str:
+    if journal_mode == "preserve":
+        row = cur.execute("PRAGMA journal_mode").fetchone()
+    else:
+        row = cur.execute(f"PRAGMA journal_mode={journal_mode.upper()}").fetchone()
+
+    if row and row[0] is not None:
+        return str(row[0]).lower()
+    return "unknown"
+
+
+def _chunks(values: Sequence[str], size: int) -> Sequence[str]:
+    for i in range(0, len(values), size):
+        yield values[i : i + size]
 
 
 def _head_hex(con: sqlite3.Connection, name: str, column: str, head_bytes: int) -> str | None:
@@ -82,6 +113,10 @@ def _apply_updates(
     baseline_con: sqlite3.Connection,
     dim_names: Sequence[str],
     data_names: Sequence[str],
+    chunk_size: int,
+    journal_mode: str,
+    min_free_gb: float,
+    disk_guard_path: Path,
 ) -> Dict[str, int]:
     dim_set = set(dim_names)
     data_set = set(data_names)
@@ -100,49 +135,65 @@ def _apply_updates(
         "rows_skipped_dataerror": 0,
     }
 
-    target_con.execute("BEGIN IMMEDIATE")
-    try:
-        for name in all_names:
-            copy_dim = name in dim_set
-            copy_data = name in data_set
+    tcur.execute("PRAGMA busy_timeout=15000")
+    actual_journal_mode = _configure_journal_mode(tcur, journal_mode)
+    print(f"mutation_journal_mode={actual_journal_mode}")
 
-            cols = []
-            if copy_dim:
-                cols.append("dim")
-            if copy_data:
-                cols.append("data")
-            select_cols = ", ".join(cols)
+    start_free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
+    print(f"start_free_gb={start_free_gb:.2f}")
 
-            try:
-                brow = bcur.execute(f"SELECT {select_cols} FROM tensors WHERE name=?", (name,)).fetchone()
-            except sqlite3.DataError:
-                stats["rows_skipped_dataerror"] += 1
-                continue
+    total_chunks = (len(all_names) + chunk_size - 1) // chunk_size
+    for idx, chunk in enumerate(_chunks(all_names, chunk_size), start=1):
+        free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
+        target_con.execute("BEGIN IMMEDIATE")
+        try:
+            for name in chunk:
+                copy_dim = name in dim_set
+                copy_data = name in data_set
 
-            if brow is None:
-                stats["rows_missing_baseline"] += 1
-                continue
-
-            if copy_dim and copy_data:
-                tcur.execute("UPDATE tensors SET dim=?, data=? WHERE name=?", (brow[0], brow[1], name))
-            elif copy_dim:
-                tcur.execute("UPDATE tensors SET dim=? WHERE name=?", (brow[0], name))
-            else:
-                tcur.execute("UPDATE tensors SET data=? WHERE name=?", (brow[0], name))
-
-            if tcur.rowcount > 0:
-                stats["rows_updated"] += 1
+                cols = []
                 if copy_dim:
-                    stats["dim_rows_updated"] += 1
+                    cols.append("dim")
                 if copy_data:
-                    stats["data_rows_updated"] += 1
-            else:
-                stats["rows_missing_target"] += 1
+                    cols.append("data")
+                select_cols = ", ".join(cols)
 
-        target_con.commit()
-    except Exception:
-        target_con.rollback()
-        raise
+                try:
+                    brow = bcur.execute(
+                        f"SELECT {select_cols} FROM tensors WHERE name=?",
+                        (name,),
+                    ).fetchone()
+                except sqlite3.DataError:
+                    stats["rows_skipped_dataerror"] += 1
+                    continue
+
+                if brow is None:
+                    stats["rows_missing_baseline"] += 1
+                    continue
+
+                if copy_dim and copy_data:
+                    tcur.execute("UPDATE tensors SET dim=?, data=? WHERE name=?", (brow[0], brow[1], name))
+                elif copy_dim:
+                    tcur.execute("UPDATE tensors SET dim=? WHERE name=?", (brow[0], name))
+                else:
+                    tcur.execute("UPDATE tensors SET data=? WHERE name=?", (brow[0], name))
+
+                if tcur.rowcount > 0:
+                    stats["rows_updated"] += 1
+                    if copy_dim:
+                        stats["dim_rows_updated"] += 1
+                    if copy_data:
+                        stats["data_rows_updated"] += 1
+                else:
+                    stats["rows_missing_target"] += 1
+
+            target_con.commit()
+            if actual_journal_mode == "wal":
+                tcur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            print(f"apply_chunk={idx}/{total_chunks} rows={len(chunk)} free_gb={free_gb:.2f}")
+        except Exception:
+            target_con.rollback()
+            raise
 
     return stats
 
@@ -154,6 +205,9 @@ def run(
     data_names_file: Path | None,
     mode: str,
     head_bytes: int,
+    chunk_size: int,
+    journal_mode: str,
+    min_free_gb: float,
 ) -> int:
     if not target_path.exists():
         print(f"RESULT=FAIL missing target file: {target_path}")
@@ -190,6 +244,9 @@ def run(
         print(f"baseline={baseline_path}")
         print(f"mode={mode}")
         print(f"head_bytes={head_bytes}")
+        print(f"chunk_size={chunk_size}")
+        print(f"journal_mode_request={journal_mode}")
+        print(f"min_free_gb={min_free_gb}")
         print(f"dim_names_file={dim_names_file if dim_names_file is not None else ''}")
         print(f"data_names_file={data_names_file if data_names_file is not None else ''}")
         print(f"dim_names_selected={len(dim_selected)}")
@@ -202,12 +259,20 @@ def run(
             print("RESULT=DRY_RUN")
             return 0
 
-        apply_stats = _apply_updates(
-            target_con=target_con,
-            baseline_con=baseline_con,
-            dim_names=dim_selected,
-            data_names=data_selected,
-        )
+        try:
+            apply_stats = _apply_updates(
+                target_con=target_con,
+                baseline_con=baseline_con,
+                dim_names=dim_selected,
+                data_names=data_selected,
+                chunk_size=chunk_size,
+                journal_mode=journal_mode,
+                min_free_gb=min_free_gb,
+                disk_guard_path=target_path.parent,
+            )
+        except RuntimeError as exc:
+            print(f"RESULT=FAIL {exc}")
+            return 1
 
         post_dim_mismatch = _count_head_mismatch(target_con, baseline_con, dim_selected, "dim", head_bytes)
         post_data_mismatch = _count_head_mismatch(target_con, baseline_con, data_selected, "data", head_bytes)
@@ -249,10 +314,32 @@ def main() -> int:
         default=32,
         help="Head signature bytes for pre/post mismatch checks (default: 32)",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=8,
+        help="Rows per write transaction during apply mode (default: 8)",
+    )
+    parser.add_argument(
+        "--journal-mode",
+        choices=("delete", "wal", "preserve"),
+        default="delete",
+        help="SQLite journal mode for write phase (default: delete)",
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=64.0,
+        help="Abort apply if free workspace disk drops below this GiB threshold (default: 64)",
+    )
     args = parser.parse_args()
 
     if args.head_bytes < 1:
         parser.error("--head-bytes must be >= 1")
+    if args.chunk_size < 1:
+        parser.error("--chunk-size must be >= 1")
+    if args.min_free_gb < 0:
+        parser.error("--min-free-gb must be >= 0")
 
     target = Path(args.file).expanduser().resolve()
     baseline = Path(args.baseline).expanduser().resolve()
@@ -266,6 +353,9 @@ def main() -> int:
         data_names_file=data_file,
         mode=args.mode,
         head_bytes=args.head_bytes,
+        chunk_size=args.chunk_size,
+        journal_mode=args.journal_mode,
+        min_free_gb=args.min_free_gb,
     )
 
 

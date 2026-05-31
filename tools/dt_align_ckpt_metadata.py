@@ -8,6 +8,7 @@ checkpoint to match a baseline checkpoint by tensor name.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -15,6 +16,36 @@ from typing import Dict, List, Sequence, Tuple
 
 
 SERIALIZATION_FIELDS: Sequence[str] = ("type", "format", "datatype")
+
+
+def _chunks(items: Sequence[Tuple[int | str | None, int | str | None, int | str | None, str]], size: int) -> Sequence[Tuple[int | str | None, int | str | None, int | str | None, str]]:
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _free_gb(path: Path) -> float:
+    usage = shutil.disk_usage(str(path))
+    return usage.free / (1024**3)
+
+
+def _enforce_min_free(path: Path, min_free_gb: float) -> float:
+    free_gb = _free_gb(path)
+    if free_gb < min_free_gb:
+        raise RuntimeError(
+            f"free space below threshold: {free_gb:.2f} GiB < {min_free_gb:.2f} GiB"
+        )
+    return free_gb
+
+
+def _configure_journal_mode(cur: sqlite3.Cursor, journal_mode: str) -> str:
+    if journal_mode == "preserve":
+        row = cur.execute("PRAGMA journal_mode").fetchone()
+    else:
+        row = cur.execute(f"PRAGMA journal_mode={journal_mode.upper()}").fetchone()
+
+    if row and row[0] is not None:
+        return str(row[0]).lower()
+    return "unknown"
 
 
 def _load_tensor_keys(con: sqlite3.Connection) -> List[str]:
@@ -191,16 +222,39 @@ def _build_update_plan(target: Path, baseline: Path) -> Tuple[List[Tuple[int | s
         baseline_con.close()
 
 
-def _apply_updates(target: Path, updates: List[Tuple[int | str | None, int | str | None, int | str | None, str]]) -> None:
+def _apply_updates(
+    target: Path,
+    updates: List[Tuple[int | str | None, int | str | None, int | str | None, str]],
+    chunk_size: int,
+    journal_mode: str,
+    min_free_gb: float,
+) -> None:
     con = sqlite3.connect(str(target))
     try:
         cur = con.cursor()
-        con.execute("BEGIN IMMEDIATE")
-        cur.executemany(
-            "UPDATE tensors SET type=?, format=?, datatype=? WHERE name=?",
-            updates,
-        )
-        con.commit()
+        cur.execute("PRAGMA busy_timeout=15000")
+        actual_journal_mode = _configure_journal_mode(cur, journal_mode)
+        print(f"mutation_journal_mode={actual_journal_mode}")
+
+        guard_path = target.parent
+        start_free_gb = _enforce_min_free(guard_path, min_free_gb)
+        print(f"start_free_gb={start_free_gb:.2f}")
+
+        total_chunks = (len(updates) + chunk_size - 1) // chunk_size
+        for idx, chunk in enumerate(_chunks(updates, chunk_size), start=1):
+            free_gb = _enforce_min_free(guard_path, min_free_gb)
+            con.execute("BEGIN IMMEDIATE")
+            cur.executemany(
+                "UPDATE tensors SET type=?, format=?, datatype=? WHERE name=?",
+                chunk,
+            )
+            con.commit()
+            if actual_journal_mode == "wal":
+                cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            print(f"apply_chunk={idx}/{total_chunks} rows={len(chunk)} free_gb={free_gb:.2f}")
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
 
@@ -211,6 +265,9 @@ def run(
     mode: str,
     allow_keyset_mismatch: bool,
     sample_limit: int,
+    chunk_size: int,
+    journal_mode: str,
+    min_free_gb: float,
 ) -> int:
     if not target.exists():
         print(f"RESULT=FAIL target file not found: {target}")
@@ -221,6 +278,9 @@ def run(
 
     before = _compute_summary(target, baseline, sample_limit)
     _print_summary("Metadata Alignment (Before)", before)
+    print(f"chunk_size={chunk_size}")
+    print(f"journal_mode_request={journal_mode}")
+    print(f"min_free_gb={min_free_gb}")
 
     missing = int(before["missing_in_target"])
     extra = int(before["extra_in_target"])
@@ -239,7 +299,17 @@ def run(
     print(f"planned_unreadable_only_target={len(unreadable_only_target)}")
     print(f"planned_unreadable_only_baseline={len(unreadable_only_baseline)}")
 
-    _apply_updates(target, updates)
+    try:
+        _apply_updates(
+            target=target,
+            updates=updates,
+            chunk_size=chunk_size,
+            journal_mode=journal_mode,
+            min_free_gb=min_free_gb,
+        )
+    except RuntimeError as exc:
+        print(f"RESULT=FAIL {exc}")
+        return 1
 
     after = _compute_summary(target, baseline, sample_limit)
     _print_summary("Metadata Alignment (After)", after)
@@ -280,14 +350,45 @@ def main() -> int:
         default=12,
         help="Number of mismatch sample tensor names to print per category (default: 12)",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="Rows per write transaction during apply mode (default: 512)",
+    )
+    parser.add_argument(
+        "--journal-mode",
+        choices=("delete", "wal", "preserve"),
+        default="delete",
+        help="SQLite journal mode for write phase (default: delete)",
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=64.0,
+        help="Abort apply if free workspace disk drops below this GiB threshold (default: 64)",
+    )
     args = parser.parse_args()
 
     if args.sample_limit < 1:
         parser.error("--sample-limit must be >= 1")
+    if args.chunk_size < 1:
+        parser.error("--chunk-size must be >= 1")
+    if args.min_free_gb < 0:
+        parser.error("--min-free-gb must be >= 0")
 
     target = Path(args.file).expanduser().resolve()
     baseline = Path(args.baseline).expanduser().resolve()
-    return run(target, baseline, args.mode, args.allow_keyset_mismatch, args.sample_limit)
+    return run(
+        target,
+        baseline,
+        args.mode,
+        args.allow_keyset_mismatch,
+        args.sample_limit,
+        args.chunk_size,
+        args.journal_mode,
+        args.min_free_gb,
+    )
 
 
 if __name__ == "__main__":
