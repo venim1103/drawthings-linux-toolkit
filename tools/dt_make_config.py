@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import random
 import sys
 from pathlib import Path
@@ -38,6 +39,42 @@ def _optional_string_offset(builder: flatbuffers.Builder, value: str):
     if not txt:
         return None
     return builder.CreateString(txt)
+
+
+def _resolve_model_name_to_file(model: str) -> tuple[str, str | None]:
+    """Resolve a custom model display name to its file key when possible.
+
+    GenerationConfiguration.model is expected to be a downloadable file key.
+    Custom aliases in dt-models/custom.json are user-friendly names and need
+    to be mapped back to their file field.
+    """
+    query = model.strip()
+    if not query:
+        return model, None
+
+    custom_json = WORKSPACE_ROOT / "dt-models" / "custom.json"
+    if not custom_json.exists():
+        return model, None
+
+    try:
+        payload = json.loads(custom_json.read_text(encoding="utf-8"))
+    except Exception:
+        return model, None
+
+    if not isinstance(payload, list):
+        return model, None
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("name", "")).strip() != query:
+            continue
+
+        model_file = str(entry.get("file", "")).strip()
+        if model_file:
+            return model_file, "custom.json:name"
+
+    return model, None
 
 
 def build_config(args) -> bytes:
@@ -160,7 +197,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bindings-dir", default=str(DEFAULT_PY_BINDINGS))
     p.add_argument("--out", required=True, help="Output .bin path")
 
-    p.add_argument("--model", required=True, help="Model file name, e.g. z_image_turbo_1.0_q6p.ckpt")
+    p.add_argument(
+        "--model",
+        required=True,
+        help=(
+            "Model file key (e.g. z_image_turbo_1.0_q6p.ckpt) or a custom.json "
+            "model name alias."
+        ),
+    )
     p.add_argument("--name", default="cli-config")
     p.add_argument("--width", type=int, default=1024)
     p.add_argument("--height", type=int, default=1024)
@@ -225,6 +269,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    resolved_model, resolved_from = _resolve_model_name_to_file(args.model)
+    if resolved_model != args.model:
+        print(f"resolved model alias: {args.model} -> {resolved_model} ({resolved_from})")
+        args.model = resolved_model
 
     if args.width < 64 or args.width % 64 != 0:
         raise ValueError(f"--width must be a positive multiple of 64, got: {args.width}")

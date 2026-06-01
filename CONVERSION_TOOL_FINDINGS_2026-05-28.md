@@ -1215,3 +1215,163 @@ Interpretation:
 
 - the q6p artifact itself is structurally readable and not obviously corrupted,
 - crash persistence indicates the blocker remains in runtime text-encoding/read-path behavior, not a trivial incomplete-write corruption case.
+
+## Official Downloaded q6p Differential Check (2026-06-01)
+
+Goal:
+
+- verify whether the same immediate crash reproduces when using the real downloaded official q6p checkpoint.
+
+Artifact verification:
+
+- file:
+   - `dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+- local size:
+   - about `20G`
+- SQLite sanity:
+   - `PRAGMA quick_check` -> `ok`
+   - `SELECT COUNT(*) FROM tensors` -> `5746`
+
+Control run command (same no-upscaling profile):
+
+```bash
+DT_HIRES_FIX=false \
+DT_HIRES_FIX_WIDTH=0 \
+DT_HIRES_FIX_HEIGHT=0 \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="ltx_2.3_22b_distilled_1.1_q6p.ckpt" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 DT_FPS_ID=5 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- stream reached:
+   - `response #1` with signpost `textEncoded`
+   - `response #2` with signpost `imageEncoded`
+- no immediate `Illegal instruction` / `TextEncoder.encodeLTX2` crash was observed on this official q6p path during that run window.
+- run termination in this session was operator-induced (`pkill`, exit `143`) during follow-up process cleanup, not a server crash signature.
+
+Interpretation:
+
+- the real official q6p control does **not** reproduce the same immediate failure pattern seen on custom q6p/f16 aliases in this environment.
+- this reinforces that the blocker is custom-path/model-path specific, not a universal q6p runtime incompatibility.
+
+## Official q6p Through custom.json Alias (2026-06-01)
+
+Goal:
+
+- test the same official q6p checkpoint, but resolved via `custom.json`, to isolate whether custom-spec resolution itself triggers the failure.
+
+Custom alias added:
+
+- in `dt-models/custom.json`:
+   - `name: official_q6p_via_custom (LTX-2.3 custom)`
+   - `file: ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+   - `clip_encoder: ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+   - `text_encoder: gemma_3_12b_it_qat_q8p.ckpt`
+
+Retest command (same no-upscaling control profile):
+
+```bash
+DT_HIRES_FIX=false \
+DT_HIRES_FIX_WIDTH=0 \
+DT_HIRES_FIX_HEIGHT=0 \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="official_q6p_via_custom (LTX-2.3 custom)" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 DT_FPS_ID=5 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- server crashed with the same signature seen on prior custom-path runs:
+   - `Illegal instruction`
+   - `TextEncoder.encodeLTX2(...)`
+- gRPC client result:
+   - `UNAVAILABLE: Socket closed`
+- server process exit:
+   - `132`
+
+Interpretation:
+
+- with identical checkpoint bytes (`ltx_2.3_22b_distilled_1.1_q6p.ckpt`), direct-file run and custom-alias run diverge.
+- this strongly localizes the failure to custom-spec resolution/runtime-path behavior rather than the official q6p file payload itself.
+
+## custom.json Alias Root Cause + Tooling Fix (2026-06-01)
+
+Correction from additional control:
+
+- A direct-file probe using the same official q6p file while the custom override entry existed still reached:
+   - `response #1` with signpost `textEncoded`
+   - client exit `0` with `--max-responses 1`
+- This indicates the immediate crash was not caused by merely having a custom spec row for that file.
+
+Root cause identified:
+
+- `tools/dt_make_config.py` previously wrote `--model` into config verbatim.
+- when `--model` was a custom alias name (for example, `official_q6p_via_custom (LTX-2.3 custom)`), runtime did not treat it as a downloaded file key.
+- in `LocalImageGenerator.generateTextOnly`, model selection uses:
+   - `ModelZoo.isModelDownloaded(configuration.model)`
+   - if false, fallback to `ModelZoo.defaultSpecification.file`
+- therefore alias strings could silently fall back to default model selection instead of the intended file path.
+
+Fix implemented:
+
+- `tools/dt_make_config.py` now resolves custom aliases from `dt-models/custom.json` (`name -> file`) before writing config.
+- logs explicit resolution when applied, for example:
+   - `resolved model alias: official_q6p_via_custom (LTX-2.3 custom) -> ltx_2.3_22b_distilled_1.1_q6p.ckpt (custom.json:name)`
+
+Post-fix validation:
+
+- config generated from alias now records:
+   - `model: ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+- one-response probe using the resolved config reached:
+   - `response #1` with signpost `textEncoded`
+   - stream closed cleanly at `--max-responses 1` (exit `0`)
+
+Operational conclusion:
+
+- The custom alias path in toolkit config generation is now normalized to file keys.
+- This removes alias-string fallback as a confounder for further custom.json investigations.
+
+## Post-fix Non-Truncated Alias Stream Check (2026-06-01)
+
+Goal:
+
+- run alias-based generation without `--max-responses 1` to confirm behavior beyond one-response probe.
+
+Runs executed:
+
+- primary profile:
+   - config: `output/probe_alias_resolve_config_20260601.bin`
+   - shape: `384x704`, `steps=8`
+   - output dir: `output/probe_alias_resolve_full_after_fix_20260601`
+- fast profile:
+   - config: `output/probe_alias_full_fast_config_20260601.bin`
+   - shape: `256x256`, `steps=4`, `seed=424242`
+   - output dir: `output/probe_alias_resolve_full_fast_20260601`
+
+Common observed stream signals:
+
+- `response #1` with signpost `textEncoded`
+- `response #2` with signpost `imageEncoded`
+- each response showed `chunk state: LAST_CHUNK`
+- no immediate `Illegal instruction` / `TextEncoder.encodeLTX2` crash in these post-fix runs.
+
+Observed lifecycle state during this session:
+
+- both non-truncated probes remained active after `response #2` until operator cleanup.
+- output directories above remained empty before cleanup.
+- termination was operator-induced (`pkill`, exit `143`), not a server crash signature.
+
+Interpretation:
+
+- alias normalization fix is sufficient to clear the prior immediate custom-alias text-encoder crash path.
+- in this session window, full-stream closure/file emission was not observed before manual cleanup, so completion behavior remains a follow-up check.
