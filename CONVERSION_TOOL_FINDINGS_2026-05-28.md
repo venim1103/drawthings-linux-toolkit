@@ -1375,3 +1375,52 @@ Interpretation:
 
 - alias normalization fix is sufficient to clear the prior immediate custom-alias text-encoder crash path.
 - in this session window, full-stream closure/file emission was not observed before manual cleanup, so completion behavior remains a follow-up check.
+
+## Custom Regen Alias Recheck: Preview-Only Stream End (2026-06-01, latest)
+
+Goal:
+
+- verify whether the custom regen alias can complete a one-frame run with a final `generatedImages` payload after recent metadata adjustments.
+
+Metadata adjustment used for this recheck:
+
+- in `dt-models/custom.json`, the two regen-related custom entries were updated to use the official clip encoder while keeping the regen q6p checkpoint as the primary `file`:
+   - `name: 10_e_v1_bf16 (LTX-2.3 custom)`
+   - `name: 10_e_v1_bf16_regen (LTX-2.3 custom)`
+   - `clip_encoder: ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+   - `file: 10_e_v1_bf16_regen_20260531_q6p.ckpt`
+
+Retest command:
+
+```bash
+DT_HIRES_FIX=false \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="10_e_v1_bf16_regen (LTX-2.3 custom)" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- no immediate server crash during early phases; stream progressed through:
+   - `response #1` -> `textEncoded`
+   - `response #2` -> `imageEncoded`
+   - later responses -> `sampling`
+- stream ended normally (client exit `0`) with summary:
+   - `responses: 11`
+   - `images written: 0`
+   - `preview frames seen: 5`
+   - warning emitted: `stream ended without final generatedImages payloads; only preview frames were received`
+- wrapper produced playable fallback from preview frames:
+   - `output/dt_video_20260601_081915/playable.png`
+   - `output/dt_video_20260601_081915/playable.gif`
+   - `output/dt_video_20260601_081915/playable.mp4`
+
+Interpretation:
+
+- this run is **not** a successful final-image generation for validation purposes.
+- although the fast-crash path improved, the model request still failed the required completion criterion because no final `generatedImages` payload was returned.
+- preview fallback artifacts should be treated as diagnostic output only (often low-data/blank) and not as proof of correct generation completion.
