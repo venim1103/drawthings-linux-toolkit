@@ -1424,3 +1424,91 @@ Interpretation:
 - this run is **not** a successful final-image generation for validation purposes.
 - although the fast-crash path improved, the model request still failed the required completion criterion because no final `generatedImages` payload was returned.
 - preview fallback artifacts should be treated as diagnostic output only (often low-data/blank) and not as proof of correct generation completion.
+
+## Deep Analysis: Why custom `ltx_2.3_22b_distilled_q6p.ckpt` fails while official `1.1_q6p` works (2026-06-01)
+
+Question addressed:
+
+- user reported that `ltx_2.3_22b_distilled_1.1_q6p.ckpt` runs, while newly quantized `ltx_2.3_22b_distilled_q6p.ckpt` crashes/fails similarly to prior custom models.
+
+### Control integrity checks (structure only)
+
+All three checkpoints pass fast structural validation and LTX2.3 required-key checks:
+
+- `dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+- `dt-models/ltx_2.3_22b_distilled_q6p.ckpt`
+- `dt-models/ltx_2.3_22b_distilled_f16.ckpt`
+
+So this is not a simple "bad SQLite file" issue.
+
+### Official q6p vs custom q6p deep diff (high signal)
+
+`output/probe_deep_diff_ltx_q6p_vs_official_20260601.md` summary:
+
+- tensor sets match (`5746` shared; no missing/extra)
+- `metadata_mismatch_type=1837`
+- `metadata_mismatch_datatype=1545`
+- `data_len_mismatch=3621`
+- `data_head_mismatch=5641`
+- `full_signature_match=0`
+- mismatch concentration is dominated by `__dit__` family.
+
+Representative mismatch examples:
+
+- many `__dit__[t-attn1_ada_ln_*]` rows changed from baseline datatype `16384` to file datatype `131072`.
+- corresponding type values also shift (baseline `1` -> file `5570572582913`).
+
+### Source f16 vs custom q6p targeted comparison
+
+Fast row-wise comparison against the exact source file used for quantization (`ltx_2.3_22b_distilled_f16.ckpt`) shows:
+
+- same tensor keyset (`5746` / `5746`)
+- `metadata_mismatch_type=5745`
+- `metadata_mismatch_datatype=1545`
+- `data_len_mismatch=5678`
+- mismatch concentration again dominated by `__dit__`.
+
+Critical observation:
+
+- source FP16 rows (`datatype=16384`) count: `1542`
+- source FP16 preserved in custom q6p: `0`
+- source FP16 changed in custom q6p: `1542`
+    - mostly `__dit__` (`1540`), plus connector register tensors.
+
+### Quantizer-path root cause hypothesis (most likely)
+
+Quantizer behavior in `DRAW_THINGS_PATCH/Apps/ModelQuantizer/Quantizer.swift`:
+
+- forced codec mode (`--target-codec q6p`) enters the `if let forcedCodec` branch.
+- that branch quantizes almost all multi-dimensional tensors to the forced codec, with only a limited FP16 allowlist (`embedder`, `pos_embed`, `visual_proj`, `encoder_hid_proj`, `register_tokens`, `refiner_`).
+
+In contrast, LTX2.3 model-specific path (`case .ltx2, .ltx2_3`) uses mixed policy:
+
+- keeps some tensors FP16 (e.g., `embedder`, `pos_embed`, `-linear-`)
+- keeps some higher precision via `q8p` route (e.g., `ada_ln`, convs)
+- uses `q6p` for other tensors.
+
+Interpretation:
+
+- custom file likely over-quantized tensors that runtime expects in higher precision/mixed codecs.
+- this is consistent with observed runtime failure patterns and with loss of the full FP16 subset (`1542 -> 0`).
+
+### Practical conclusion
+
+Most probable issue is **quantization policy mismatch**, not alias resolution and not basic DB corruption:
+
+- official working q6p appears mixed-precision-compatible for runtime,
+- custom forced-q6p output is globally more aggressive and likely invalid for LTX2.3 runtime expectations.
+
+### Recommended next test
+
+Re-quantize from `ltx_2.3_22b_distilled_f16.ckpt` using model-specific policy (no forced q6p), then retest generation:
+
+```bash
+bash tools/dt_quantize_model.sh \
+   -i dt-models/ltx_2.3_22b_distilled_f16.ckpt \
+   -m ltx2.3 \
+   -o dt-models/ltx_2.3_22b_distilled_auto_mix.ckpt
+```
+
+If a forced codec is still required, quantizer code should be patched so LTX2.3 forced mode preserves the same fragile tensor families as the model-specific mixed policy.
