@@ -1006,3 +1006,212 @@ Operational implication at this checkpoint:
 
 - Regenerated/reordered F16 path now passes strict serialization guard and completes at least one end-to-end runtime generation request without reproducing the earlier immediate loader crash.
 - q6p fallback quantization is not required for this checkpoint validation gate.
+
+## No-Upscaling Differential Retest (2026-05-31, late)
+
+### Test A: custom entry, explicit no-upscaling, low guidance
+
+Command:
+
+```bash
+DT_HIRES_FIX=false \
+DT_HIRES_FIX_WIDTH=0 \
+DT_HIRES_FIX_HEIGHT=0 \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="10_e_v1_bf16_regen (LTX-2.3 custom)" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 DT_FPS_ID=5 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- config confirmed `hires_fix: False`
+- server crashed with `Illegal instruction` in:
+   - `TextEncoder.encodeLTX2(...)`
+- client failed with `gRPC error: UNAVAILABLE: Socket closed`
+- output dir contained config only:
+   - `output/dt_video_20260531_221156/config.bin`
+
+### Test B: direct file model name, same settings (custom-entry bypass)
+
+Command:
+
+```bash
+DT_HIRES_FIX=false \
+DT_HIRES_FIX_WIDTH=0 \
+DT_HIRES_FIX_HEIGHT=0 \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="10_e_v1_bf16_regen_20260531_f16.ckpt" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 DT_FPS_ID=5 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- config confirmed `hires_fix: False`
+- server crashed with `Bad pointer dereference` in:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+- run produced config only:
+   - `output/dt_video_20260531_221515/config.bin`
+- no image/audio tensor payloads were emitted before termination.
+
+### Interpretation
+
+- Downloading LTX-2.3 hires-fix upscaler checkpoints is not required to explain this failure path.
+- Failures reproduce with hires-fix explicitly disabled and with `latents_upscalers: []` in custom metadata.
+- The active blocker is upstream of final decode/upscaling and remains in runtime model/tensor read or text-encoding paths.
+
+## Custom Entry Remap To Official Original F16 (2026-06-01)
+
+Goal:
+
+- test whether the custom-entry crash path persists when the custom entry points to the official original F16 checkpoint.
+
+Metadata change applied:
+
+- in `dt-models/custom.json`, entry `10_e_v1_bf16_regen (LTX-2.3 custom)` was remapped to:
+   - `file: ltx_2.3_22b_distilled_f16.ckpt`
+   - `clip_encoder: ltx_2.3_22b_distilled_f16.ckpt`
+
+Retest command (same no-upscaling settings as prior custom-entry repro):
+
+```bash
+DT_HIRES_FIX=false \
+DT_HIRES_FIX_WIDTH=0 \
+DT_HIRES_FIX_HEIGHT=0 \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="10_e_v1_bf16_regen (LTX-2.3 custom)" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 DT_FPS_ID=5 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- config confirmed `hires_fix: False`
+- server still crashed with `Illegal instruction` at:
+   - `TextEncoder.encodeLTX2(...)`
+- process exit status: `132`
+- run output was config-only:
+   - `output/dt_video_20260601_034218/config.bin`
+
+Interpretation:
+
+- Switching the custom entry to the official original F16 checkpoint does not clear the custom-entry crash path.
+- This strongly suggests the blocker is in the custom-entry runtime branch / text-encoding path for this request shape, not in hires-fix assets and not solely in the regenerated checkpoint payload.
+
+## Custom Model Resolution Audit + q6p Rebaseline (2026-06-01, follow-up)
+
+### New root-cause findings from model-resolution checks
+
+- `dt-models/custom.json` entry `10_e_v1_bf16 (LTX-2.3 custom)` referenced a missing file:
+   - `10_e_v1_bf16_q6p.ckpt` (not present on disk)
+- Requested custom model strings are only used directly when `ModelZoo.isModelDownloaded(model)` is true; otherwise generation falls back to `ModelZoo.defaultSpecification.file`.
+- Current default specification in this codebase is:
+   - `ltx_2.3_22b_distilled_1.1_q8p.ckpt`
+- That default q8p checkpoint was also missing locally in this session.
+
+Operational implication:
+
+- Prior custom-entry crash runs were confounded by model-resolution fallback (requested custom alias did not guarantee loading the intended checkpoint).
+
+### Corrective config changes applied
+
+`dt-models/custom.json` was corrected to avoid missing-file references and accidental file-key collision with official exact F16:
+
+- entry `10_e_v1_bf16 (LTX-2.3 custom)`:
+   - `file: ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+   - `clip_encoder: ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+- entry `10_e_v1_bf16_regen (LTX-2.3 custom)`:
+   - `file: 10_e_v1_bf16_regen_20260531_f16.ckpt`
+   - `clip_encoder: 10_e_v1_bf16_regen_20260531_f16.ckpt`
+
+### q6p test-path bootstrap status
+
+Goal for immediate testing was to restore a known-good q6p control path.
+
+Download command:
+
+```bash
+bash tools/dt_models_cli.sh ensure ltx_2.3_22b_distilled_1.1_q6p.ckpt \
+  --no-include-dependencies \
+  --models-dir /workspaces/drawthings-linux-toolkit/dt-models
+```
+
+Observed:
+
+- model resolver recognizes this q6p file and provides the direct static URL.
+- expected file size is about `19.98GB`.
+- background/resumable download is active, writing:
+   - `dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt.part`
+
+Pending gate to run q6p validation:
+
+- wait for `ltx_2.3_22b_distilled_1.1_q6p.ckpt` to finish and pass checksum,
+- then rerun no-upscaling one-frame probe using q6p first as the baseline control.
+
+## Local q6p Quantization Sanity + Runtime Retest (2026-06-01)
+
+Question addressed:
+
+- whether the locally produced q6p artifact was corrupted due interrupted/retried quantization control flow.
+
+Sanity checks on local q6p artifact:
+
+- file under test:
+   - `dt-models/10_e_v1_bf16_regen_20260531_q6p.ckpt`
+- SQLite quick integrity check:
+   - `PRAGMA quick_check` -> `ok`
+- tensor table count:
+   - `SELECT COUNT(*) FROM tensors` -> `5746`
+- observed file size in-session:
+   - about `17G`
+
+Conclusion from sanity checks:
+
+- no evidence of file corruption from the quantization run.
+
+Custom metadata used for q6p retest:
+
+- `dt-models/custom.json` entry `10_e_v1_bf16 (LTX-2.3 custom)` remapped to:
+   - `file: 10_e_v1_bf16_regen_20260531_q6p.ckpt`
+   - `clip_encoder: 10_e_v1_bf16_regen_20260531_q6p.ckpt`
+
+Retest command (same no-upscaling control profile):
+
+```bash
+DT_HIRES_FIX=false \
+DT_HIRES_FIX_WIDTH=0 \
+DT_HIRES_FIX_HEIGHT=0 \
+DT_GUIDANCE=1.0 \
+DT_SHIFT=5.0 \
+DT_MODEL="10_e_v1_bf16 (LTX-2.3 custom)" \
+DT_WIDTH=384 DT_HEIGHT=704 DT_STEPS=8 DT_TEST_ONE_FRAME=1 DT_FPS_ID=5 \
+bash tools/dt_generate_video.sh \
+  "a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic" \
+  "blurry, distorted, low quality, artifacts"
+```
+
+Observed:
+
+- server crash persisted with same signature:
+   - `Illegal instruction`
+   - `TextEncoder.encodeLTX2(...)`
+- gRPC client result:
+   - `UNAVAILABLE: Socket closed`
+- server process exit:
+   - `132`
+
+Interpretation:
+
+- the q6p artifact itself is structurally readable and not obviously corrupted,
+- crash persistence indicates the blocker remains in runtime text-encoding/read-path behavior, not a trivial incomplete-write corruption case.
