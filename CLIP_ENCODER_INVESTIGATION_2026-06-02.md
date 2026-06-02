@@ -276,3 +276,94 @@ Candidate preserve/safer families to treat specially:
 - `DRAW_THINGS_PATCH/patches/draw-things-community.patch`
 - `output/probe_forcedfix_vs_official_clip_path_20260602.md`
 - `output/probe_deep_diff_forcedfix_vs_official_q6p_20260602.md`
+
+## Addendum (2026-06-02, later): clipfix2 probe update + runtime checks
+
+After applying the clipfix2 quantizer adjustments, the probe pack was rerun to quantify improvement and verify runtime progression behavior.
+
+### A) clipfix2 targeted probe vs official q6p (clip-path families)
+
+Source report:
+
+- `output/probe_clipfix2_vs_official_clip_path_20260602.md`
+
+Stats:
+
+- `selected_tensors=262`
+- `readable_selected=261`
+- `mismatch_any=16`
+- `full_match=245`
+- `metadata_mismatch_type=0`
+- `metadata_mismatch_datatype=0`
+- `data_len_mismatch=0`
+- `data_head_mismatch=0`
+- `data_small_sha256_mismatch=0`
+- remaining mismatch class: `dim_head_mismatch=16`
+
+Family map delta:
+
+- `__text_video_connector__`: now `0/128` mismatched
+- `__text_audio_connector__`: `16/128` mismatched (dim-head only)
+- `__text_feature_extractor__`: readable rows match; unreadable-on-both row persists
+
+Interpretation:
+
+- This is a large improvement from the earlier forcedfix profile (`261/262` mismatched).
+- Remaining clip-path drift is now narrow and localized.
+
+### B) clipfix2 targeted probe vs source f16 (sanity context)
+
+Source report:
+
+- `output/probe_clipfix2_vs_sourcef16_clip_path_20260602.md`
+
+Stats:
+
+- `mismatch_any=261`
+- `metadata_mismatch_type=261`
+- `data_len_mismatch=0`
+
+Interpretation:
+
+- Type-policy mismatch vs source f16 is expected for quantized artifacts and should not be treated as direct evidence of clip-path runtime incompatibility.
+
+### C) clipfix2 full deep diff vs official q6p
+
+Source report:
+
+- `output/probe_deep_diff_clipfix2_vs_official_q6p_20260602.md`
+
+Stats:
+
+- `shared_tensors=5746`
+- `full_signature_match=245`
+- `metadata_mismatch_type=1540`
+- `metadata_mismatch_datatype=1540`
+- `data_len_mismatch=3325`
+- `data_head_mismatch=5380`
+- `data_small_sha256_mismatch=4088`
+
+Interpretation:
+
+- Clip-path progress is real, but global divergence remains dominated by `__dit__`.
+- This explains why clip improvements alone do not guarantee full behavior parity across long streams.
+
+### D) Runtime A/B update (bounded stream parity)
+
+Using response-capped probes (`--max-responses 3`), both official and clipfix2 paths reached the same signpost progression:
+
+- `textEncoded -> imageEncoded -> sampling`
+- clean exit (`0`) on both runs
+
+This confirms clipfix2 no longer fails earlier than official in the bounded path.
+
+### E) drawthings-start validation note
+
+Server startup path was also verified:
+
+- `drawthings-start` resolves to `drawthings-grpc`
+- default server start on `127.0.0.1:7861` succeeded
+- Echo RPC health check succeeded
+- override run with `DRAWTHINGS_PORT=7859` also succeeded with Echo
+
+Operationally, this startup path is now safe to use for both default and legacy-port probe workflows.

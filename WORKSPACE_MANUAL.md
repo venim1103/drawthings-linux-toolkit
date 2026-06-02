@@ -49,6 +49,29 @@ If needed, verify GPU visibility:
 
     nvidia-smi
 
+Quick server health check (after start):
+
+  /workspaces/drawthings-linux-toolkit/.venv/bin/python \
+    /workspaces/drawthings-linux-toolkit/tools/dt_api_client.py \
+    --host 127.0.0.1:7861 echo --name healthcheck
+
+Legacy port override (for existing probe scripts that use 7859):
+
+  DRAWTHINGS_PORT=7859 drawthings-start
+
+Then validate:
+
+  /workspaces/drawthings-linux-toolkit/.venv/bin/python \
+    /workspaces/drawthings-linux-toolkit/tools/dt_api_client.py \
+    --host 127.0.0.1:7859 echo --name healthcheck
+
+Telemetry note for probe runs:
+
+- One-shot `nvidia-smi` may report `utilization.gpu=0` even during active inference.
+- Prefer interval sampling during active jobs:
+
+    nvidia-smi dmon -s u -d 1
+
 ## 3) Patch system
 
 The patch system is designed to survive file drift better than direct file-copy backups.

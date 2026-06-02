@@ -1512,3 +1512,161 @@ bash tools/dt_quantize_model.sh \
 ```
 
 If a forced codec is still required, quantizer code should be patched so LTX2.3 forced mode preserves the same fragile tensor families as the model-specific mixed policy.
+
+## Incremental Update (2026-06-02): Probe Pack + Runtime/Server Checks
+
+This addendum records the latest probe-heavy validation cycle, including clipfix2 parity checks, bounded runtime A/B behavior, GPU telemetry, and server startup verification.
+
+### New artifacts from this cycle
+
+- `output/probe_clipfix2_vs_official_clip_path_20260602.json`
+- `output/probe_clipfix2_vs_official_clip_path_20260602.md`
+- `output/probe_clipfix2_vs_sourcef16_clip_path_20260602.json`
+- `output/probe_clipfix2_vs_sourcef16_clip_path_20260602.md`
+- `output/probe_deep_diff_clipfix2_vs_official_q6p_20260602.json`
+- `output/probe_deep_diff_clipfix2_vs_official_q6p_20260602.md`
+- `output/probe_ab_official_cfg_20260602.bin`
+- `output/probe_ab_clipfix2_cfg_20260602.bin`
+- `output/gpu_probe_official_debug_20260602/client.log`
+- `output/gpu_probe_official_debug_20260602/gpu_dmon.log`
+
+### Probe result: clipfix2 vs official q6p (clip-path targeted)
+
+Source report:
+
+- `output/probe_clipfix2_vs_official_clip_path_20260602.md`
+
+Summary stats:
+
+- `selected_tensors=262`
+- `readable_selected=261`
+- `mismatch_any=16`
+- `full_match=245`
+- `metadata_mismatch_type=0`
+- `metadata_mismatch_format=0`
+- `metadata_mismatch_datatype=0`
+- `dim_len_mismatch=0`
+- `data_len_mismatch=0`
+- `dim_head_mismatch=16`
+- `data_head_mismatch=0`
+- `data_small_sha256_mismatch=0`
+
+Family map highlights:
+
+- `__text_audio_connector__`: `16/128` mismatched (all `dim_head_mismatch`)
+- `__text_video_connector__`: `0/128` mismatched
+- `__text_feature_extractor__`: `0/4` mismatched with `1` unreadable-on-both row retained (`t-video_aggregate_embed-0-0`)
+- connector learnable registers: `0/2` mismatched
+
+Interpretation:
+
+- Clip-path parity improved materially versus earlier forcedfix variants; remaining drift is narrow and concentrated in audio connector dim-head encoding.
+
+### Probe result: clipfix2 vs source f16 (clip-path targeted)
+
+Source report:
+
+- `output/probe_clipfix2_vs_sourcef16_clip_path_20260602.md`
+
+Summary stats:
+
+- `selected_tensors=262`
+- `readable_selected=261`
+- `mismatch_any=261`
+- `full_match=0`
+- `metadata_mismatch_type=261`
+- `metadata_mismatch_format=0`
+- `metadata_mismatch_datatype=0`
+- `dim_len_mismatch=0`
+- `data_len_mismatch=0`
+- `dim_head_mismatch=0`
+- `data_head_mismatch=0`
+
+Interpretation:
+
+- Type-policy mismatch versus source f16 is expected for quantized output and should not be used alone as a runtime-fail signal.
+
+### Probe result: clipfix2 vs official q6p (full deep diff)
+
+Source report:
+
+- `output/probe_deep_diff_clipfix2_vs_official_q6p_20260602.md`
+
+Summary stats:
+
+- `shared_tensors=5746`
+- `full_signature_match=245`
+- `metadata_mismatch_type=1540`
+- `metadata_mismatch_datatype=1540`
+- `data_len_mismatch=3325`
+- `data_head_mismatch=5380`
+- `data_small_sha256_mismatch=4088`
+- top mismatch prefix remains `__dit__`
+
+Interpretation:
+
+- Even with strong clip-path improvement, whole-model divergence is still dominated by `__dit__` tensor payload/metadata differences.
+
+### Runtime A/B probe update (bounded, response-capped)
+
+Both official and clipfix2 were run through identical bounded streaming probes (`--max-responses 3`) to stabilize comparisons under intermittent long-run backend instability.
+
+Observed parity for both paths:
+
+- signpost sequence reached: `textEncoded -> imageEncoded -> sampling`
+- clean exit status (`0`)
+- `responses=3`
+- `images written=0`, `audio written=0`, `preview frames seen=0` (expected due early stop)
+
+Operational implication:
+
+- clipfix2 no longer fails earlier than official in the same bounded runtime path.
+
+### GPU telemetry caveat and fix
+
+One-shot `nvidia-smi` snapshots in this devcontainer can misleadingly show `utilization.gpu=0` and process name `[Not Found]` during active inference.
+
+Reliable method:
+
+- run `nvidia-smi dmon -s u -d 1` during an active probe.
+
+Observed on official debug probe:
+
+- `samples=115`
+- `max_sm=100`
+- `avg_sm=31.4`
+
+Conclusion:
+
+- GPU kernels were executing; use interval telemetry instead of one-shot snapshots for runtime diagnosis.
+
+### drawthings-start startup validation
+
+`drawthings-start` was validated end-to-end in this container.
+
+Resolution and defaults:
+
+- `drawthings-start` is an alias to `drawthings-grpc`
+- launcher defaults:
+   - address `127.0.0.1`
+   - port `7861`
+   - GPU `0`
+   - `--no-tls`
+   - `--model-browser`
+   - `--no-response-compression`
+   - model dir from `DRAWTHINGS_MODEL_DIR` or `dt-models`
+
+Health checks executed:
+
+- default start on `127.0.0.1:7861` + successful Echo RPC
+- port-override start (`DRAWTHINGS_PORT=7859`) + successful Echo RPC
+
+Operational implication:
+
+- Existing probe tooling can use `drawthings-start` directly (default 7861) or with `DRAWTHINGS_PORT=7859` for legacy host/port alignment.
+
+### Next-run guidance
+
+- Keep clip-path targeted probe and full deep diff together in the acceptance bundle.
+- Use bounded A/B probes first to compare progression parity before launching full unbounded streams.
+- For GPU diagnosis, always collect `dmon` telemetry in parallel with client logs.
