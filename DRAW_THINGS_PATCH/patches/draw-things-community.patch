@@ -297,9 +297,10 @@ index 7f3969b1..3518e1b6 100644
 +                key.contains("text_feature_extractor") || key.contains("text_video_connector")
 +                || key.contains("text_audio_connector")
 +              if isLTXTextFeaturePath {
-+                // Keep clip-side feature extractor and connector weights in FP16.
-+                // These tensors are consumed by TextEncoder.encodeLTX2 via filePaths[1].
-+                $0.write(key, tensor: fp16)
++                // Preserve clip-side feature extractor and connector weights verbatim.
++                // These tensors are consumed by TextEncoder.encodeLTX2 via filePaths[1],
++                // and recasting can distort payload/metadata for key rows.
++                $0.write(key, tensor: tensor)
 +                continue
 +              }
 +              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-")
