@@ -1668,5 +1668,69 @@ Operational implication:
 ### Next-run guidance
 
 - Keep clip-path targeted probe and full deep diff together in the acceptance bundle.
+
+## Breakthrough Update (2026-06-02): Full Custom Output Succeeded
+
+After applying setup-level fixes, a strict one-frame custom run completed end-to-end and produced final image + audio payloads.
+
+### Setup changes that mattered
+
+1. Custom model alias pinned to official clip path for runtime stability:
+   - alias: `10_e_v1_custom_main_official_clip`
+   - main file: `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+   - clip_encoder: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+
+2. Wrapper guardrail fix in `tools/dt_generate_video.sh`:
+   - profile checks now resolve custom alias name to actual model file key first,
+   - distilled-model guidance safety (`guidance=1.0`) now applies correctly even when model is passed as a custom alias,
+   - this prevents silent alias-path drift to non-compatible default guidance behavior.
+
+### Successful strict run details
+
+Command profile:
+
+- host: `127.0.0.1:7861` (drawthings-start)
+- model alias: `10_e_v1_custom_main_official_clip`
+- size: `256x256`
+- steps: `8`
+- one-frame mode: `DT_TEST_ONE_FRAME=1`
+- preview fallback disabled: `DT_ALLOW_PREVIEW_FALLBACK=0`
+- effective guidance: `1.0`
+
+Observed stream progression:
+
+- `response #1`: `textEncoded`
+- `response #2`: `imageEncoded`
+- `response #3-11`: `sampling`
+- `response #12`: `imageDecoded`
+- `response #14`: final image tensor written
+- `response #15`: final audio tensor written
+
+Completion summary:
+
+- `responses=15`
+- `images written=1`
+- `audio written=1`
+- `preview frames seen=5`
+- generation time: `9m 48s`
+- total time including conversion: `9m 51s`
+
+Output directory:
+
+- `output/dt_video_20260602_140012`
+
+Produced files:
+
+- `image_r0014_01.bin`
+- `audio_r0015_01.bin`
+- `playable.png`
+- `playable.gif`
+- `playable.mp4`
+- `playable.wav`
+
+### Operational takeaway
+
+- This confirms the current setup can produce real final output from the custom main model path when clip encoder is pinned to official q6p and distilled guidance guardrails are enforced after alias resolution.
+- Keep this alias and guardrail behavior as the default smoke-test path before wider prompt/resolution sweeps.
 - Use bounded A/B probes first to compare progression parity before launching full unbounded streams.
 - For GPU diagnosis, always collect `dmon` telemetry in parallel with client logs.

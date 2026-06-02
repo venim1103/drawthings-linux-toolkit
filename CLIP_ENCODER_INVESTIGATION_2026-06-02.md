@@ -367,3 +367,29 @@ Server startup path was also verified:
 - override run with `DRAWTHINGS_PORT=7859` also succeeded with Echo
 
 Operationally, this startup path is now safe to use for both default and legacy-port probe workflows.
+
+### F) Full strict custom run success (2026-06-02)
+
+A full strict one-frame run (no response cap, preview fallback disabled) was completed successfully after the setup adjustments above.
+
+Run profile:
+
+- model alias: `10_e_v1_custom_main_official_clip`
+- main file: `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+- clip encoder: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+- `256x256`, `steps=8`, effective `guidance=1.0`, one-frame mode
+
+Observed stream completion:
+
+- `textEncoded -> imageEncoded -> sampling -> imageDecoded -> final image/audio payloads`
+- summary: `responses=15`, `images written=1`, `audio written=1`
+
+Output:
+
+- `output/dt_video_20260602_140012`
+- playable artifacts were generated (`playable.png`, `playable.gif`, `playable.mp4`, `playable.wav`).
+
+Interpretation:
+
+- This validates that the custom-main path can complete successfully when clip path and distilled guidance behavior are constrained as described.
+- Remaining work shifts from "can it finish" to stability/quality across prompts and larger resolutions.

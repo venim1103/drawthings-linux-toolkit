@@ -153,6 +153,47 @@ sys.exit(1)
 PY
 }
 
+resolve_custom_model_file() {
+  local model_name="$1"
+  local custom_json="${ROOT_DIR}/dt-models/custom.json"
+
+  if [[ -z "${model_name}" || ! -f "${custom_json}" ]]; then
+  echo "${model_name}"
+  return 0
+  fi
+
+  "${PYTHON_BIN}" - "${model_name}" "${custom_json}" <<'PY'
+import json
+import sys
+
+model_name = sys.argv[1]
+json_path = sys.argv[2]
+
+try:
+  payload = json.load(open(json_path, "r", encoding="utf-8"))
+except Exception:
+  print(model_name)
+  sys.exit(0)
+
+if not isinstance(payload, list):
+  print(model_name)
+  sys.exit(0)
+
+for entry in payload:
+  if not isinstance(entry, dict):
+    continue
+  if str(entry.get("name", "")).strip() != model_name:
+    continue
+
+  model_file = str(entry.get("file", "")).strip()
+  if model_file:
+    print(model_file)
+    sys.exit(0)
+
+print(model_name)
+PY
+}
+
 get_custom_model_numeric_field() {
   local model_name="$1"
   local field_name="$2"
@@ -223,7 +264,12 @@ ltx23_upscalers_present() {
 }
 
 IS_LTX23_MODEL=0
-if is_ltx23_model "${MODEL}"; then
+MODEL_EFFECTIVE="$(resolve_custom_model_file "${MODEL}")"
+if [[ "${MODEL_EFFECTIVE}" != "${MODEL}" ]]; then
+  echo "Resolved custom alias for profile checks: ${MODEL} -> ${MODEL_EFFECTIVE}"
+fi
+
+if is_ltx23_model "${MODEL_EFFECTIVE}"; then
   IS_LTX23_MODEL=1
 fi
 
@@ -231,7 +277,11 @@ fi
 if [[ "${IS_LTX23_MODEL}" == "1" ]]; then
   if [[ "${HAS_DT_GUIDANCE}" == "0" ]]; then
     model_default_scale="$(get_custom_model_numeric_field "${MODEL}" "default_scale" || true)"
-    if [[ -n "${model_default_scale}" ]]; then
+    if [[ "${MODEL_EFFECTIVE}" == ltx_2.3_*distilled* ]]; then
+      if [[ -n "${model_default_scale}" && "${model_default_scale}" != "1" && "${model_default_scale}" != "1.0" ]]; then
+        echo "Ignoring custom default guidance ${model_default_scale} for distilled model compatibility."
+      fi
+    elif [[ -n "${model_default_scale}" ]]; then
       GUIDANCE="${model_default_scale}"
       echo "Using model default guidance scale ${GUIDANCE} from dt-models/custom.json"
     fi
@@ -255,21 +305,21 @@ if [[ "${IS_LTX23_MODEL}" == "1" ]]; then
 fi
 
 # LTX-2.3 distilled checkpoints are sensitive to guidance / step settings.
-if [[ "${MODEL}" == ltx_2.3_*distilled* ]]; then
+if [[ "${MODEL_EFFECTIVE}" == ltx_2.3_*distilled* ]]; then
   if [[ "${GUIDANCE}" != "1" && "${GUIDANCE}" != "1.0" ]]; then
     if [[ "${DT_ALLOW_NONSTANDARD_GUIDANCE:-0}" == "1" ]]; then
-      echo "Warning: using nonstandard guidance ${GUIDANCE} for ${MODEL}"
+      echo "Warning: using nonstandard guidance ${GUIDANCE} for ${MODEL_EFFECTIVE}"
     else
-      echo "Adjusting guidance from ${GUIDANCE} to 1.0 for ${MODEL}"
+      echo "Adjusting guidance from ${GUIDANCE} to 1.0 for ${MODEL_EFFECTIVE}"
       GUIDANCE="1.0"
     fi
   fi
 
   if (( STEPS < 8 )); then
     if [[ "${DT_ALLOW_LOW_STEPS:-0}" == "1" ]]; then
-      echo "Warning: using low steps ${STEPS} for ${MODEL} (recommended: 8+)"
+      echo "Warning: using low steps ${STEPS} for ${MODEL_EFFECTIVE} (recommended: 8+)"
     else
-      echo "Adjusting steps from ${STEPS} to 8 for ${MODEL}"
+      echo "Adjusting steps from ${STEPS} to 8 for ${MODEL_EFFECTIVE}"
       STEPS="8"
     fi
   fi
