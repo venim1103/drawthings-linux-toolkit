@@ -95,6 +95,15 @@ struct Quantizer: ParsableCommand {
             if version == .ltx2 || version == .ltx2_3 {
               // LTX models are sensitive to blanket forced quantization.
               // Preserve key modulation / projection tensors, and keep higher precision for ada_ln / conv.
+              let isLTXTextFeaturePath =
+                key.contains("text_feature_extractor") || key.contains("text_video_connector")
+                || key.contains("text_audio_connector")
+              if isLTXTextFeaturePath {
+                // Keep clip-side feature extractor and connector weights in FP16.
+                // These tensors are consumed by TextEncoder.encodeLTX2 via filePaths[1].
+                $0.write(key, tensor: fp16)
+                continue
+              }
               if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-")
                 || key.contains("scale_shift_table") || key.contains("caption_projection")
                 || key.contains("patchify_proj") || key.contains("proj_out")
