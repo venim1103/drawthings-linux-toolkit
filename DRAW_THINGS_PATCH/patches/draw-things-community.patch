@@ -209,7 +209,7 @@ index 1ab4a19f..52191bc0 100644
    }
  }
 diff --git a/Apps/ModelQuantizer/Quantizer.swift b/Apps/ModelQuantizer/Quantizer.swift
-index 7f3969b1..ddbf58d8 100644
+index 7f3969b1..3518e1b6 100644
 --- a/Apps/ModelQuantizer/Quantizer.swift
 +++ b/Apps/ModelQuantizer/Quantizer.swift
 @@ -2,6 +2,15 @@ import ArgumentParser
@@ -284,12 +284,34 @@ index 7f3969b1..ddbf58d8 100644
              continue
            }
  
-@@ -48,6 +90,24 @@ struct Quantizer: ParsableCommand {
+@@ -48,6 +90,46 @@ struct Quantizer: ParsableCommand {
            let fp16 = Tensor<FloatType>(from: tensor)
            let shape = fp16.shape
            let squeezedDims = shape.reduce(0) { $1 > 1 ? 1 + $0 : $0 }
 +
 +          if let forcedCodec {
++            if version == .ltx2 || version == .ltx2_3 {
++              // LTX models are sensitive to blanket forced quantization.
++              // Preserve key modulation / projection tensors, and keep higher precision for ada_ln / conv.
++              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-")
++                || key.contains("scale_shift_table") || key.contains("caption_projection")
++                || key.contains("patchify_proj") || key.contains("proj_out")
++              {
++                $0.write(key, tensor: fp16)
++                continue
++              }
++              if squeezedDims > 1 {
++                if key.contains("ada_ln") || key.contains("adaln") || shape.count == 4 {
++                  $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
++                } else {
++                  $0.write(key, tensor: fp16, codec: [forcedCodec, .ezm7])
++                }
++              } else {
++                $0.write(key, tensor: fp16, codec: .ezm7)
++              }
++              continue
++            }
++
 +            // Keep common fragile projection/positional tensors in FP16 when forcing a codec.
 +            if key.contains("embedder") || key.contains("pos_embed") || key.contains("visual_proj")
 +              || key.contains("encoder_hid_proj") || key.contains("register_tokens")
@@ -309,7 +331,7 @@ index 7f3969b1..ddbf58d8 100644
            switch version {
            case .v1, .v2, .ssd1b, .svdI2v, .sdxlBase, .sdxlRefiner, .wurstchenStageB, .kandinsky21:
              if key.contains("visual_proj") || key.contains("encoder_hid_proj") {
-@@ -262,7 +322,23 @@ struct Quantizer: ParsableCommand {
+@@ -262,7 +344,23 @@ struct Quantizer: ParsableCommand {
                }
              }
            case .ltx2, .ltx2_3:
@@ -1545,3 +1567,41 @@ index 7c261ab7..de36fd54 100644
          let stubs = cookie_io_functions_t(
            read: readStub, write: writeStub, seek: seekStub, close: closeStub)
          let result = fopencookie(cookie.toOpaque(), mode, stubs)
+diff --git a/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift b/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
+new file mode 100644
+index 00000000..a8801b7a
+--- /dev/null
++++ b/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
+@@ -0,0 +1,31 @@
++import NNC
++
++extension Functional {
++  public static func swishMul(
++    value: Model.IO,
++    gate: Model.IO,
++    beta: Float = 1,
++    scale: Float = 1,
++    streamContext: StreamContext? = nil
++  ) -> Model.IO {
++    let activated = gate.swish(beta: beta)
++    if scale == 1 {
++      return value .* activated
++    }
++    return scale * (value .* activated)
++  }
++
++  public static func swishMul<T: DynamicGraph.TensorGroup>(
++    value: T,
++    gate: T,
++    beta: Float = 1,
++    scale: Float = 1,
++    streamContext: StreamContext? = nil
++  ) -> T {
++    let activated = Functional.swish(gate, beta: beta, streamContext: streamContext)
++    if scale == 1 {
++      return value .* activated
++    }
++    return scale * (value .* activated)
++  }
++}
+\ No newline at end of file

@@ -92,6 +92,28 @@ struct Quantizer: ParsableCommand {
           let squeezedDims = shape.reduce(0) { $1 > 1 ? 1 + $0 : $0 }
 
           if let forcedCodec {
+            if version == .ltx2 || version == .ltx2_3 {
+              // LTX models are sensitive to blanket forced quantization.
+              // Preserve key modulation / projection tensors, and keep higher precision for ada_ln / conv.
+              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-")
+                || key.contains("scale_shift_table") || key.contains("caption_projection")
+                || key.contains("patchify_proj") || key.contains("proj_out")
+              {
+                $0.write(key, tensor: fp16)
+                continue
+              }
+              if squeezedDims > 1 {
+                if key.contains("ada_ln") || key.contains("adaln") || shape.count == 4 {
+                  $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
+                } else {
+                  $0.write(key, tensor: fp16, codec: [forcedCodec, .ezm7])
+                }
+              } else {
+                $0.write(key, tensor: fp16, codec: .ezm7)
+              }
+              continue
+            }
+
             // Keep common fragile projection/positional tensors in FP16 when forcing a codec.
             if key.contains("embedder") || key.contains("pos_embed") || key.contains("visual_proj")
               || key.contains("encoder_hid_proj") || key.contains("register_tokens")
