@@ -393,3 +393,30 @@ Interpretation:
 
 - This validates that the custom-main path can complete successfully when clip path and distilled guidance behavior are constrained as described.
 - Remaining work shifts from "can it finish" to stability/quality across prompts and larger resolutions.
+
+### G) Pure custom main+clip success (2026-06-03)
+
+A follow-up run removed the official clip dependency completely by using alias `10_e_v1`, where both `file` and `clip_encoder` point to:
+
+- `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+
+Run profile:
+
+- `256x256`, `steps=8`, one-frame mode
+- strict final payload requirement (`DT_ALLOW_PREVIEW_FALLBACK=0`)
+- effective guidance `1.0` (enforced via alias-aware distilled guardrail logic)
+
+Observed completion:
+
+- `responses=15`
+- `images written=1`
+- `audio written=1`
+- signposts reached `imageDecoded` and then emitted final image/audio payloads
+
+Output directory:
+
+- `output/dt_video_20260603_075221`
+
+Implication:
+
+- With the current wrapper guardrail fix and clipfix2 artifact, we can run without the original official distill model as clip loader.

@@ -1734,3 +1734,50 @@ Produced files:
 - Keep this alias and guardrail behavior as the default smoke-test path before wider prompt/resolution sweeps.
 - Use bounded A/B probes first to compare progression parity before launching full unbounded streams.
 - For GPU diagnosis, always collect `dmon` telemetry in parallel with client logs.
+
+## Follow-up Update (2026-06-03): Pure Custom Main+Clip Also Succeeds
+
+Goal for this pass was to remove dependence on official distill checkpoint as the clip loader.
+
+### Test profile
+
+- model alias: `10_e_v1`
+- alias mapping in `dt-models/custom.json`:
+   - `file: ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+   - `clip_encoder: ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+- host: `127.0.0.1:7861`
+- size: `256x256`
+- steps: `8`
+- one-frame mode + strict final-payload requirement (`DT_ALLOW_PREVIEW_FALLBACK=0`)
+
+### Critical setup precondition
+
+- `tools/dt_generate_video.sh` now resolves custom alias name to effective file key before distilled safety checks.
+- This ensured effective guidance stayed at `1.0` for distilled compatibility even when using alias `10_e_v1` (whose custom default scale is `12`).
+
+### Observed result
+
+- full stream completed with:
+   - `responses=15`
+   - `images written=1`
+   - `audio written=1`
+   - `preview frames seen=5`
+- signposts progressed through:
+   - `textEncoded -> imageEncoded -> sampling -> imageDecoded -> final payloads`
+
+### Artifacts
+
+- output dir: `output/dt_video_20260603_075221`
+- tensors:
+   - `image_r0014_01.bin`
+   - `audio_r0015_01.bin`
+- playable outputs:
+   - `playable.png`
+   - `playable.gif`
+   - `playable.mp4`
+   - `playable.wav`
+
+### Conclusion
+
+- The setup now works without loading the original official distill model as clip-loader.
+- A pure custom main+clip alias is runtime-viable under the distilled-safe generation profile.
