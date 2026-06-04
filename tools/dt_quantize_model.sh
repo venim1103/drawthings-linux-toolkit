@@ -8,6 +8,10 @@ set -euo pipefail
 # - Shows a live read/rate/ETA monitor and output file growth.
 # - Keeps quantizer CLI arguments unchanged (pass-through).
 
+# Safety policy:
+# - For LTX2.3, forcing q4p is blocked by default.
+# - Set override env vars below to bypass safeguards.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${DRAWTHINGS_WORKSPACE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PKG_PATH="$ROOT/draw-things-community"
@@ -15,6 +19,7 @@ BUILD_CONFIG="${DRAWTHINGS_BUILD_CONFIG:-release}"
 AUTOBUILD="${DRAWTHINGS_QUANTIZER_AUTOBUILD:-1}"
 MONITOR_ENABLED="${DRAWTHINGS_QUANTIZER_MONITOR:-1}"
 MONITOR_INTERVAL="${DRAWTHINGS_QUANTIZER_MONITOR_INTERVAL:-5}"
+ALLOW_Q4P_LTX23="${DRAWTHINGS_QUANTIZER_ALLOW_Q4P_LTX23:-0}"
 
 usage() {
   cat <<'EOF'
@@ -28,6 +33,9 @@ Environment:
   DRAWTHINGS_QUANTIZER_MONITOR        Set to 0 to disable live progress monitoring.
   DRAWTHINGS_QUANTIZER_MONITOR_INTERVAL
                                       Monitor refresh interval in seconds (default: 5).
+  DRAWTHINGS_QUANTIZER_ALLOW_Q4P_LTX23
+                                      Set to 1 to allow forced --target-codec q4p
+                                      for -m ltx2.3 / ltx2_3. Default: 0 (blocked).
   DRAWTHINGS_BUILD_CONFIG             release (default) or debug.
 
 Examples:
@@ -41,6 +49,8 @@ Examples:
 Notes:
   - Progress percentage is based on input bytes read from /proc/<pid>/io.
   - On some workloads, read progress can reach 100% before final file flush completes.
+  - LTX2.3 safety default:
+      * --target-codec q4p is blocked unless overridden.
 EOF
 }
 
@@ -127,6 +137,47 @@ detect_output_file() {
     esac
   done
   echo "$output_file"
+}
+
+detect_model_version() {
+  local args=("$@")
+  local model_version=""
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      --model-version|-m)
+        if ((i + 1 < ${#args[@]})); then
+          model_version="${args[$((i + 1))]}"
+        fi
+        ;;
+      --model-version=*)
+        model_version="${args[$i]#--model-version=}"
+        ;;
+      -m=*)
+        model_version="${args[$i]#-m=}"
+        ;;
+    esac
+  done
+  echo "$model_version"
+}
+
+detect_target_codec() {
+  local args=("$@")
+  local target_codec=""
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      --target-codec)
+        if ((i + 1 < ${#args[@]})); then
+          target_codec="${args[$((i + 1))]}"
+        fi
+        ;;
+      --target-codec=*)
+        target_codec="${args[$i]#--target-codec=}"
+        ;;
+    esac
+  done
+  echo "$target_codec"
 }
 
 has_help_arg() {
@@ -275,6 +326,21 @@ if [[ ${#quantizer_args[@]} -eq 1 ]] && has_help_arg "${quantizer_args[@]}"; the
   quantizer_bin="$(resolve_quantizer_bin)"
   "$quantizer_bin" --help
   exit 0
+fi
+
+model_version_raw="$(detect_model_version "${quantizer_args[@]}")"
+target_codec_raw="$(detect_target_codec "${quantizer_args[@]}")"
+
+model_version_norm="${model_version_raw,,}"
+model_version_norm="${model_version_norm//_/.}"
+target_codec_norm="${target_codec_raw,,}"
+
+if [[ "$model_version_norm" == "ltx2.3" ]]; then
+  if [[ "$target_codec_norm" == "q4p" && "$ALLOW_Q4P_LTX23" != "1" ]]; then
+    echo "error: refusing --target-codec q4p for model version $model_version_raw (known unstable for LTX2.3)." >&2
+    echo "       Set DRAWTHINGS_QUANTIZER_ALLOW_Q4P_LTX23=1 to force anyway." >&2
+    exit 2
+  fi
 fi
 
 quantizer_bin="$(resolve_quantizer_bin)"

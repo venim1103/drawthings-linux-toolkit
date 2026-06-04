@@ -420,3 +420,55 @@ Output directory:
 Implication:
 
 - With the current wrapper guardrail fix and clipfix2 artifact, we can run without the original official distill model as clip loader.
+
+## Forensic Replay (exact clipfix2 build chain from transcript)
+
+The exact artifact creation path for `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt` was:
+
+1. Apply quantizer edit (clip-path preserve branch) in both:
+   - `draw-things-community/Apps/ModelQuantizer/Quantizer.swift`
+   - `DRAW_THINGS_PATCH/Apps/ModelQuantizer/Quantizer.swift`
+
+   Final clip-path behavior in forced LTX branch:
+
+   - detect `isLTXTextFeaturePath` when key contains:
+     - `text_feature_extractor`
+     - `text_video_connector`
+     - `text_audio_connector`
+   - preserve verbatim with:
+     - `$0.write(key, tensor: tensor)`
+
+   (Earlier variant used `$0.write(key, tensor: fp16)`; clipfix2 switched this to verbatim tensor write.)
+
+2. Rebuild quantizer binary:
+
+   - `swift build --package-path draw-things-community -c release --product model-quantizer`
+
+3. Launch quantization (async in the session):
+
+   - `bash tools/dt_quantize_model.sh -i dt-models/ltx_2.3_22b_distilled_f16.ckpt -m ltx2.3 -o dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt --target-codec q6p`
+
+4. Post-run checks executed immediately after completion:
+
+   - `ls -lh dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt dt-models/ltx_2.3_22b_distilled_f16.ckpt`
+   - `./.venv/bin/python tools/dt_validate_converted_ckpt.py --file dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt --profile ltx2_3`
+   - `./.venv/bin/python tools/dt_probe_ckpt_targeted_content.py --file dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt --baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt --prefix __text_feature_extractor__ --prefix __text_video_connector__ --prefix __text_audio_connector__ --prefix text_video_connector_learnable_registers --prefix text_audio_connector_learnable_registers --sample-limit 12 --progress-every 50 --out-json output/probe_clipfix2_vs_official_clip_path_20260602.json --out-md output/probe_clipfix2_vs_official_clip_path_20260602.md`
+   - `./.venv/bin/python tools/dt_probe_ckpt_targeted_content.py --file dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt --baseline dt-models/ltx_2.3_22b_distilled_f16.ckpt --prefix __text_feature_extractor__ --prefix __text_video_connector__ --prefix __text_audio_connector__ --prefix text_video_connector_learnable_registers --prefix text_audio_connector_learnable_registers --sample-limit 12 --progress-every 50 --out-json output/probe_clipfix2_vs_sourcef16_clip_path_20260602.json --out-md output/probe_clipfix2_vs_sourcef16_clip_path_20260602.md`
+   - `./.venv/bin/python tools/dt_probe_ckpt_deep_diff.py --file dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt --baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt --sample-limit 12 --top-prefix-count 12 --out-json output/probe_deep_diff_clipfix2_vs_official_q6p_20260602.json --out-md output/probe_deep_diff_clipfix2_vs_official_q6p_20260602.md`
+
+### Important replay note for current workspace state
+
+`tools/dt_quantize_model.sh` no longer rewrites `--target-codec q6p` to `auto`.
+
+You can replay forced-q6p directly with the command line only (no extra q6p override env var needed).
+
+### Direct replay command for `10_e_v1_bf16_regen_0_f16.ckpt`
+
+Use the same quantizer behavior and switch only input/output:
+
+- `bash tools/dt_quantize_model.sh -i dt-models/10_e_v1_bf16_regen_0_f16.ckpt -m ltx2.3 -o dt-models/10_e_v1_bf16_regen_0_q6p_clipfix2_replay.ckpt --target-codec q6p`
+
+Recommended immediate checks (same pattern as clipfix2 run):
+
+- `./.venv/bin/python tools/dt_validate_converted_ckpt.py --file dt-models/10_e_v1_bf16_regen_0_q6p_clipfix2_replay.ckpt --profile ltx2_3`
+- `./.venv/bin/python tools/dt_probe_ckpt_targeted_content.py --file dt-models/10_e_v1_bf16_regen_0_q6p_clipfix2_replay.ckpt --baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt --prefix __text_feature_extractor__ --prefix __text_video_connector__ --prefix __text_audio_connector__ --prefix text_video_connector_learnable_registers --prefix text_audio_connector_learnable_registers --sample-limit 12 --progress-every 50 --out-json output/probe_10ev1_replay_vs_official_clip_path.json --out-md output/probe_10ev1_replay_vs_official_clip_path.md`
