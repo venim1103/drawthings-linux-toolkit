@@ -52,7 +52,8 @@ Environment:
   DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD
                                      Serialization parity guard mode:
                                      auto (default), 1, or 0.
-                                     - auto: enable only when baseline file exists
+                                     - auto: run parity check only when baseline exists;
+                                       report mismatches as warnings without failing.
                                      - 1: always enforce (fails if baseline missing)
                                      - 0: disable serialization parity checks
   DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_BASELINE
@@ -273,6 +274,12 @@ has_help_arg() {
   return 1
 }
 
+if [[ ${#converter_args[@]} -eq 1 ]] && has_help_arg "${converter_args[@]}"; then
+  converter_bin="$(resolve_converter_bin)"
+  "$converter_bin" --help
+  exit 0
+fi
+
 fmt_bytes() {
   local n="${1:-0}"
   if command -v numfmt >/dev/null 2>&1; then
@@ -417,12 +424,14 @@ if [[ "$exit_code" -eq 0 && "$VALIDATE_ENABLED" == "1" ]] && ! has_help_arg "${c
       exit_code=1
     else
       python_bin="$(resolve_python_bin)"
-      validator_args=(
+      validator_base_args=(
         "$python_bin"
         "$validator_script"
         --file "$converted_ckpt"
         --profile "$VALIDATE_PROFILE"
       )
+      validator_guard_args=()
+      run_guard_validator="0"
 
       align_script="$ROOT/tools/dt_align_ckpt_metadata.py"
       align_mode="${ALIGN_METADATA_MODE,,}"
@@ -548,11 +557,13 @@ if [[ "$exit_code" -eq 0 && "$VALIDATE_ENABLED" == "1" ]] && ! has_help_arg "${c
         fi
 
         if [[ "$exit_code" -eq 0 && -n "$serialization_baseline" && -f "$serialization_baseline" ]]; then
-          validator_args+=(
+          validator_guard_args=(
+            "${validator_base_args[@]}"
             --serialization-baseline "$serialization_baseline"
             --serialization-guard-profile "$VALIDATE_SERIALIZATION_PROFILE"
             --serialization-report-limit "$VALIDATE_SERIALIZATION_REPORT_LIMIT"
           )
+          run_guard_validator="1"
           echo "==> Serialization parity guard baseline: $serialization_baseline (profile=$VALIDATE_SERIALIZATION_PROFILE)" >&2
         elif [[ "$guard_enabled" == "auto" ]]; then
           echo "==> Serialization parity guard skipped (auto): baseline not found: $serialization_baseline" >&2
@@ -560,14 +571,27 @@ if [[ "$exit_code" -eq 0 && "$VALIDATE_ENABLED" == "1" ]] && ! has_help_arg "${c
       fi
 
       if [[ -n "$input_file" ]] && [[ "${input_file,,}" == *.safetensors ]]; then
-        validator_args+=(--source-safetensors "$input_file")
+        validator_base_args+=(--source-safetensors "$input_file")
       fi
 
       if [[ "$exit_code" -eq 0 ]]; then
-        echo "==> Validating converted checkpoint: $converted_ckpt" >&2
-        if ! "${validator_args[@]}"; then
-          echo "error: converted checkpoint failed integrity validation" >&2
+        echo "==> Validating converted checkpoint structure: $converted_ckpt" >&2
+        if ! "${validator_base_args[@]}"; then
+          echo "error: converted checkpoint failed structural validation" >&2
           exit_code=1
+        fi
+      fi
+
+      if [[ "$exit_code" -eq 0 && "$run_guard_validator" == "1" ]]; then
+        echo "==> Validating serialization parity guard: $converted_ckpt" >&2
+        if ! "${validator_guard_args[@]}"; then
+          if [[ "$guard_enabled" == "auto" ]]; then
+            echo "warning: serialization parity mismatches detected in auto mode; conversion output kept." >&2
+            echo "         set DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD=1 to enforce failure." >&2
+          else
+            echo "error: converted checkpoint failed serialization parity guard" >&2
+            exit_code=1
+          fi
         fi
       fi
     fi
