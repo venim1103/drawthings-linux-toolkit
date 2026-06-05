@@ -1781,3 +1781,36 @@ Goal for this pass was to remove dependence on official distill checkpoint as th
 
 - The setup now works without loading the original official distill model as clip-loader.
 - A pure custom main+clip alias is runtime-viable under the distilled-safe generation profile.
+
+## Update (2026-06-05): Post-replay A/B still fails on custom artifact
+
+After replaying `10_e_v1_bf16_regen_0_f16.ckpt -> 10_e_v1_bf16_regen_0_q6p.ckpt` with the hardened helper, structural checks passed but runtime A/B did not converge.
+
+Artifacts:
+
+- `output/ab_post_replay_20260605_121548.md`
+- `output/ab_post_replay_20260605_121548_official.log`
+- `output/ab_post_replay_20260605_121548_custom.log`
+
+Observed outcomes:
+
+- Official control (`official_q6p_via_custom`):
+   - `rc=0`
+   - `responses=15`, `images written=1`, `audio written=1`, `preview frames seen=5`
+   - output dir: `output/dt_video_20260605_121549`
+- Custom (`10_e_v1`):
+   - `rc=1`
+   - `responses=0`, `images written=0`, `audio written=0`
+   - immediate client failure: `gRPC error: UNAVAILABLE: Socket closed`
+
+Server crash evidence during custom request:
+
+- `SIGSEGV` (exit `139`)
+- backtrace head:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+
+Interpretation:
+
+- Replay regeneration can produce a structurally healthy SQLite checkpoint while runtime still fails in the loader path.
+- For this artifact family, replay alone is insufficient; deeper serialization/quantization compatibility remains unresolved.

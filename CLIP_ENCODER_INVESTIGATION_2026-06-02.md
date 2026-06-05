@@ -22,11 +22,19 @@ New workflow automation in this repo now captures the repeatable repair/replay s
    - replay hardening for output realpath/symlink safety
    - sqlite sanity checks enabled by default
 
-Latest runtime validation for repaired `10_e_v1_bf16_regen_0_q6p.ckpt` still shows preview-only termination (no final generated image/audio payloads):
+Final post-replay A/B runtime validation (default profile) still fails for custom `10_e_v1`, and now reproduces a hard server crash:
 
-- stream reached `textEncoded -> imageEncoded -> sampling`
-- stream finished with `responses=11`, `images written=0`, `audio written=0`, `preview frames seen=5`
-- server stayed alive and responsive to echo RPC after the failed generation
+- summary artifact: `output/ab_post_replay_20260605_121548.md`
+- official control (`official_q6p_via_custom`) succeeded:
+   - `responses=15`, `images written=1`, `audio written=1`, `preview frames seen=5`
+   - output: `output/dt_video_20260605_121549`
+- custom (`10_e_v1`) failed on generation start:
+   - client-side error: `gRPC error: UNAVAILABLE: Socket closed`
+   - server crash path: `ccv_nnc_tensor_read -> ccv_cnnp_model_read` (`SIGSEGV`)
+
+Conclusion for this cycle:
+
+- replay regeneration fixed neither preview-only behavior nor runtime stability for this artifact; failure mode remains loader/serialization-path instability under custom checkpoint content.
 
 ## Scope and Method
 

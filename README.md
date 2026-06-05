@@ -55,3 +55,17 @@ Quick usage:
 			-i dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
 			-o dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
 			--official-baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt
+
+## Latest runtime findings (2026-06-05 post-replay A/B)
+
+- Replay regeneration completed with structural checks passing (`PRAGMA quick_check=ok`, `tensors rows=5746`), but runtime stability for custom `10_e_v1` was not restored.
+- Official control alias `official_q6p_via_custom` completed end-to-end:
+	- `responses=15`, `images written=1`, `audio written=1`, `preview frames seen=5`
+	- output directory: `/workspaces/drawthings-linux-toolkit/output/dt_video_20260605_121549`
+- Custom alias `10_e_v1` failed at generation start:
+	- client error: `gRPC error: UNAVAILABLE: Socket closed`
+	- server crash: `SIGSEGV` in loader path `ccv_nnc_tensor_read -> ccv_cnnp_model_read`
+- Recorded artifacts:
+	- `output/ab_post_replay_20260605_121548.md`
+	- `output/ab_post_replay_20260605_121548_official.log`
+	- `output/ab_post_replay_20260605_121548_custom.log`

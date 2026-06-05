@@ -177,6 +177,23 @@ Example:
     cd /workspaces/drawthings-linux-toolkit
     bash tools/run_q6p_restore_postpatch_highlimit.sh --tag repatch_from_restored
 
+## 4.2) Post-replay runtime status (2026-06-05)
+
+Latest default A/B run after replay regeneration:
+
+- Summary: `output/ab_post_replay_20260605_121548.md`
+- Official control (`official_q6p_via_custom`) completed successfully:
+  - `responses=15`, `images=1`, `audio=1`, `preview frames=5`
+  - output: `output/dt_video_20260605_121549`
+- Custom (`10_e_v1`) failed immediately in generation phase:
+  - client: `UNAVAILABLE: Socket closed`
+  - server: `SIGSEGV` (`ccv_nnc_tensor_read -> ccv_cnnp_model_read`)
+
+Operational conclusion:
+
+- Replay output can be structurally healthy while still crashing at runtime for this custom artifact.
+- Keep official control as runtime baseline and treat `10_e_v1_bf16_regen_0_q6p.ckpt` as unstable until deeper serialization/quantization policy issues are resolved.
+
 ## 5) Model management tools
 
 ## 5.1 Fast model CLI wrapper
