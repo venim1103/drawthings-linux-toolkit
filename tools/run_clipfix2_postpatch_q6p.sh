@@ -12,6 +12,7 @@ TAG="$(date +%Y%m%d_%H%M%S)"
 SKIP_BACKUP=0
 SKIP_PROBE=0
 DRY_RUN=0
+ALLOW_SYMLINK_TARGET=0
 CHUNK_SIZE=8
 MIN_FREE_GB=5
 SAMPLE_LIMIT=12
@@ -41,6 +42,7 @@ Options:
       --skip-backup              Skip backup step.
       --skip-probe               Skip pre/post targeted probes.
       --dry-run                  Selection + dry-run only, no file mutation.
+      --allow-symlink-target     Allow mutating a symlink path (disabled by default).
       --chunk-size <n>           Chunk size for row updates (default: 8).
       --min-free-gb <n>          Minimum free disk threshold (default: 5).
       --sample-limit <n>         Probe sample limit (default: 12).
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --allow-symlink-target)
+      ALLOW_SYMLINK_TARGET=1
       shift
       ;;
     --chunk-size)
@@ -165,6 +171,24 @@ if [[ ! -f "$BASELINE" ]]; then
   exit 1
 fi
 
+TARGET_REAL="$(readlink -f "$TARGET")"
+BASELINE_REAL="$(readlink -f "$BASELINE")"
+
+if [[ "$ALLOW_SYMLINK_TARGET" == "0" ]] && [[ -L "$TARGET" ]] && [[ "$DRY_RUN" == "0" ]]; then
+  echo "error: target is a symlink; refusing in-place mutation by default" >&2
+  echo "       target      : $TARGET" >&2
+  echo "       resolves_to : $TARGET_REAL" >&2
+  echo "       use --allow-symlink-target to override intentionally" >&2
+  exit 1
+fi
+
+if [[ "$TARGET_REAL" == "$BASELINE_REAL" ]] && [[ "$DRY_RUN" == "0" ]]; then
+  echo "error: target and baseline resolve to the same file; refusing no-op/self patch" >&2
+  echo "       target_real  : $TARGET_REAL" >&2
+  echo "       baseline_real: $BASELINE_REAL" >&2
+  exit 1
+fi
+
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "error: python not found at: $PYTHON_BIN" >&2
   exit 1
@@ -197,7 +221,9 @@ fi
 
 echo "==> clipfix2 postpatch on existing q6p"
 echo "    target  : $TARGET"
+echo "    target_real: $TARGET_REAL"
 echo "    baseline: $BASELINE"
+echo "    baseline_real: $BASELINE_REAL"
 echo "    workdir : $WORK_DIR"
 echo "    dry_run : $DRY_RUN"
 
@@ -317,14 +343,13 @@ def chunks(values, size):
         yield values[i:i + size]
 
 tcon = sqlite3.connect(str(target))
-bcon = sqlite3.connect(str(baseline))
 try:
     tcur = tcon.cursor()
-    bcur = bcon.cursor()
     tcur.execute("PRAGMA busy_timeout=15000")
     row = tcur.execute("PRAGMA journal_mode=WAL").fetchone()
     mode = str(row[0]).lower() if row and row[0] is not None else "unknown"
     print(f"metadata_mutation_journal_mode={mode}")
+    tcur.execute("ATTACH DATABASE ? AS baseline_db", (str(baseline),))
 
     updated = 0
     missing_baseline = 0
@@ -335,28 +360,45 @@ try:
     for idx, chunk in enumerate(chunks(names, chunk_size), start=1):
         tcon.execute("BEGIN IMMEDIATE")
         try:
-            for name in chunk:
-                try:
-                    brow = bcur.execute(
-                        "SELECT type, format, datatype FROM tensors WHERE name=?",
-                        (name,),
-                    ).fetchone()
-                except sqlite3.DataError:
-                    skipped_dataerror += 1
-                    continue
+            tcur.execute("DROP TABLE IF EXISTS temp._selected_names")
+            tcur.execute("CREATE TEMP TABLE _selected_names(name TEXT PRIMARY KEY)")
+            tcur.executemany(
+                "INSERT INTO _selected_names(name) VALUES(?)",
+                [(name,) for name in chunk],
+            )
 
-                if brow is None:
-                    missing_baseline += 1
-                    continue
+            row = tcur.execute(
+                "SELECT COUNT(*) "
+                "FROM _selected_names s "
+                "LEFT JOIN tensors t ON t.name=s.name "
+                "WHERE t.name IS NULL"
+            ).fetchone()
+            missing_target += int(row[0] if row else 0)
 
-                tcur.execute(
-                    "UPDATE tensors SET type=?, format=?, datatype=? WHERE name=?",
-                    (brow[0], brow[1], brow[2], name),
-                )
-                if tcur.rowcount > 0:
-                    updated += 1
-                else:
-                    missing_target += 1
+            row = tcur.execute(
+                "SELECT COUNT(*) "
+                "FROM _selected_names s "
+                "LEFT JOIN baseline_db.tensors b ON b.name=s.name "
+                "WHERE b.name IS NULL"
+            ).fetchone()
+            missing_baseline += int(row[0] if row else 0)
+
+            row = tcur.execute(
+                "SELECT COUNT(*) "
+                "FROM _selected_names s "
+                "JOIN tensors t ON t.name=s.name "
+                "JOIN baseline_db.tensors b ON b.name=s.name"
+            ).fetchone()
+            updated += int(row[0] if row else 0)
+
+            tcur.execute(
+                "UPDATE tensors "
+                "SET type=(SELECT b.type FROM baseline_db.tensors b WHERE b.name=tensors.name), "
+                "format=(SELECT b.format FROM baseline_db.tensors b WHERE b.name=tensors.name), "
+                "datatype=(SELECT b.datatype FROM baseline_db.tensors b WHERE b.name=tensors.name) "
+                "WHERE name IN (SELECT name FROM _selected_names) "
+                "AND EXISTS(SELECT 1 FROM baseline_db.tensors b WHERE b.name=tensors.name)"
+            )
 
             tcon.commit()
             tcur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -370,8 +412,12 @@ try:
     print(f"metadata_rows_missing_target={missing_target}")
     print(f"metadata_rows_skipped_dataerror={skipped_dataerror}")
 finally:
+    try:
+        tcur.execute("DROP TABLE IF EXISTS temp._selected_names")
+        tcur.execute("DETACH DATABASE baseline_db")
+    except sqlite3.DatabaseError:
+        pass
     tcon.close()
-    bcon.close()
 PY
 
 echo "==> Structural validation"

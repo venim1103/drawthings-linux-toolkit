@@ -15,6 +15,8 @@ PROGRESS_EVERY=50
 TAG="$(date +%Y%m%d)"
 SKIP_BACKUP=0
 SKIP_PROBES=0
+ALLOW_SYMLINK_OUTPUT=0
+SKIP_SQLITE_CHECK=0
 
 usage() {
   cat <<'EOF'
@@ -32,6 +34,8 @@ Options:
                                   Default: <output>.pre_replay_<YYYYMMDD>.ckpt
       --skip-backup               Do not backup existing output.
       --skip-probes               Run build + quantize + validate only.
+      --allow-symlink-output      Allow writing to an output symlink path.
+      --skip-sqlite-check         Skip sqlite quick_check + tensor row count.
       --sample-limit <n>          Probe sample limit (default: 12).
       --progress-every <n>        Probe progress interval (default: 50).
       --tag <value>               Suffix tag used in probe filenames.
@@ -83,6 +87,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-probes)
       SKIP_PROBES=1
+      shift
+      ;;
+    --allow-symlink-output)
+      ALLOW_SYMLINK_OUTPUT=1
+      shift
+      ;;
+    --skip-sqlite-check)
+      SKIP_SQLITE_CHECK=1
       shift
       ;;
     --sample-limit)
@@ -139,6 +151,43 @@ if [[ ! -f "$OFFICIAL_BASELINE" ]]; then
   exit 1
 fi
 
+SRC_REAL="$(readlink -f "$SRC")"
+OFFICIAL_BASELINE_REAL="$(readlink -f "$OFFICIAL_BASELINE")"
+
+if [[ "$OUT" == "$SRC" ]]; then
+  echo "error: output path must differ from source path" >&2
+  exit 1
+fi
+
+if [[ "$OUT" == "$OFFICIAL_BASELINE" ]]; then
+  echo "error: output path must differ from official baseline path" >&2
+  exit 1
+fi
+
+if [[ "$ALLOW_SYMLINK_OUTPUT" == "0" ]] && [[ -L "$OUT" ]]; then
+  echo "error: output is a symlink; refusing by default" >&2
+  echo "       output      : $OUT" >&2
+  echo "       resolves_to : $(readlink -f "$OUT" 2>/dev/null || echo unresolved)" >&2
+  echo "       use --allow-symlink-output to override intentionally" >&2
+  exit 1
+fi
+
+if [[ -e "$OUT" || -L "$OUT" ]]; then
+  OUT_REAL="$(readlink -f "$OUT" 2>/dev/null || true)"
+  if [[ -n "$OUT_REAL" ]] && [[ "$OUT_REAL" == "$OFFICIAL_BASELINE_REAL" ]]; then
+    echo "error: output resolves to official baseline file; refusing overwrite" >&2
+    echo "       output_real   : $OUT_REAL" >&2
+    echo "       baseline_real : $OFFICIAL_BASELINE_REAL" >&2
+    exit 1
+  fi
+  if [[ -n "$OUT_REAL" ]] && [[ "$OUT_REAL" == "$SRC_REAL" ]]; then
+    echo "error: output resolves to source file; refusing in-place overwrite" >&2
+    echo "       output_real : $OUT_REAL" >&2
+    echo "       src_real    : $SRC_REAL" >&2
+    exit 1
+  fi
+fi
+
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "error: python not found at: $PYTHON_BIN" >&2
   exit 1
@@ -166,8 +215,13 @@ fi
 
 echo "==> clipfix2-style q6p replay"
 echo "    src               : $SRC"
+echo "    src_real          : $SRC_REAL"
 echo "    out               : $OUT"
+if [[ -e "$OUT" || -L "$OUT" ]]; then
+  echo "    out_real          : $(readlink -f "$OUT" 2>/dev/null || echo unresolved)"
+fi
 echo "    official baseline : $OFFICIAL_BASELINE"
+echo "    official_baseline_real: $OFFICIAL_BASELINE_REAL"
 echo "    tag               : $TAG"
 
 if [[ "$SKIP_BACKUP" == "0" ]]; then
@@ -193,6 +247,24 @@ bash "$QUANT_WRAPPER" \
 if [[ ! -f "$OUT" ]]; then
   echo "error: quantization did not produce output file: $OUT" >&2
   exit 1
+fi
+
+if [[ "$SKIP_SQLITE_CHECK" == "0" ]]; then
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "error: sqlite3 not found on PATH (required unless --skip-sqlite-check is used)" >&2
+    exit 1
+  fi
+
+  echo "==> SQLite sanity checks"
+  SQLITE_QC="$(sqlite3 "$OUT" 'PRAGMA quick_check;' | tail -n 1 | tr -d '\r')"
+  echo "sqlite_quick_check=$SQLITE_QC"
+  if [[ "$SQLITE_QC" != "ok" ]]; then
+    echo "error: sqlite quick_check failed for output" >&2
+    exit 1
+  fi
+
+  SQLITE_ROWS="$(sqlite3 "$OUT" 'SELECT COUNT(*) FROM tensors;' | tail -n 1 | tr -d '\r')"
+  echo "sqlite_tensors_rows=$SQLITE_ROWS"
 fi
 
 echo "==> Validate output structure"

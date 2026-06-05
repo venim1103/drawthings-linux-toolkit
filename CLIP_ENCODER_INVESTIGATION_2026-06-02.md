@@ -12,6 +12,22 @@ Current evidence shows:
 
 Most likely root cause: forced-q6p quantization policy still over-quantizes / re-encodes fragile LTX families used by the clip-side feature extractor and connectors.
 
+## 2026-06-05 operational addendum
+
+New workflow automation in this repo now captures the repeatable repair/replay steps:
+
+- `tools/run_q6p_restore_postpatch_highlimit.sh`
+   - restore -> clipfix2 postpatch -> high-limit oversized-row fallback -> quick_check
+- `tools/run_clipfix2_replay_q6p.sh`
+   - replay hardening for output realpath/symlink safety
+   - sqlite sanity checks enabled by default
+
+Latest runtime validation for repaired `10_e_v1_bf16_regen_0_q6p.ckpt` still shows preview-only termination (no final generated image/audio payloads):
+
+- stream reached `textEncoded -> imageEncoded -> sampling`
+- stream finished with `responses=11`, `images written=0`, `audio written=0`, `preview frames seen=5`
+- server stayed alive and responsive to echo RPC after the failed generation
+
 ## Scope and Method
 
 I investigated in this order:

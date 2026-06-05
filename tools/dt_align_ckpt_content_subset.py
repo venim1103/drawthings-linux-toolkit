@@ -12,7 +12,7 @@ import shutil
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, Iterator, List, Sequence
 
 
 def _parse_names_file(path: Path) -> List[str]:
@@ -66,7 +66,7 @@ def _configure_journal_mode(cur: sqlite3.Cursor, journal_mode: str) -> str:
     return "unknown"
 
 
-def _chunks(values: Sequence[str], size: int) -> Sequence[str]:
+def _chunks(values: Sequence[str], size: int) -> Iterator[Sequence[str]]:
     for i in range(0, len(values), size):
         yield values[i : i + size]
 
@@ -110,7 +110,7 @@ def _count_head_mismatch(
 
 def _apply_updates(
     target_con: sqlite3.Connection,
-    baseline_con: sqlite3.Connection,
+    baseline_path: Path,
     dim_names: Sequence[str],
     data_names: Sequence[str],
     chunk_size: int,
@@ -123,8 +123,6 @@ def _apply_updates(
     all_names = sorted(dim_set | data_set)
 
     tcur = target_con.cursor()
-    bcur = baseline_con.cursor()
-
     stats = {
         "selected_union": len(all_names),
         "rows_missing_baseline": 0,
@@ -139,61 +137,87 @@ def _apply_updates(
     actual_journal_mode = _configure_journal_mode(tcur, journal_mode)
     print(f"mutation_journal_mode={actual_journal_mode}")
 
+    # Use SQLite engine-side copying via ATTACH to avoid Python sqlite3 DataError
+    # when selected rows contain very large BLOBs.
+    target_con.execute("ATTACH DATABASE ? AS baseline_db", (str(baseline_path),))
+
     start_free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
     print(f"start_free_gb={start_free_gb:.2f}")
 
     total_chunks = (len(all_names) + chunk_size - 1) // chunk_size
-    for idx, chunk in enumerate(_chunks(all_names, chunk_size), start=1):
-        free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
-        target_con.execute("BEGIN IMMEDIATE")
-        try:
-            for name in chunk:
-                copy_dim = name in dim_set
-                copy_data = name in data_set
+    try:
+        for idx, chunk in enumerate(_chunks(all_names, chunk_size), start=1):
+            free_gb = _enforce_min_free(disk_guard_path, min_free_gb)
+            target_con.execute("BEGIN IMMEDIATE")
+            try:
+                for name in chunk:
+                    copy_dim = name in dim_set
+                    copy_data = name in data_set
 
-                cols = []
-                if copy_dim:
-                    cols.append("dim")
-                if copy_data:
-                    cols.append("data")
-                select_cols = ", ".join(cols)
-
-                try:
-                    brow = bcur.execute(
-                        f"SELECT {select_cols} FROM tensors WHERE name=?",
+                    row = tcur.execute(
+                        "SELECT 1 FROM baseline_db.tensors WHERE name=?",
                         (name,),
                     ).fetchone()
-                except sqlite3.DataError:
-                    stats["rows_skipped_dataerror"] += 1
-                    continue
+                    if row is None:
+                        stats["rows_missing_baseline"] += 1
+                        continue
 
-                if brow is None:
-                    stats["rows_missing_baseline"] += 1
-                    continue
+                    row = tcur.execute(
+                        "SELECT 1 FROM tensors WHERE name=?",
+                        (name,),
+                    ).fetchone()
+                    if row is None:
+                        stats["rows_missing_target"] += 1
+                        continue
 
-                if copy_dim and copy_data:
-                    tcur.execute("UPDATE tensors SET dim=?, data=? WHERE name=?", (brow[0], brow[1], name))
-                elif copy_dim:
-                    tcur.execute("UPDATE tensors SET dim=? WHERE name=?", (brow[0], name))
-                else:
-                    tcur.execute("UPDATE tensors SET data=? WHERE name=?", (brow[0], name))
+                    try:
+                        if copy_dim and copy_data:
+                            tcur.execute(
+                                "UPDATE tensors "
+                                "SET dim=(SELECT b.dim FROM baseline_db.tensors b WHERE b.name=?), "
+                                "data=(SELECT b.data FROM baseline_db.tensors b WHERE b.name=?) "
+                                "WHERE name=?",
+                                (name, name, name),
+                            )
+                        elif copy_dim:
+                            tcur.execute(
+                                "UPDATE tensors "
+                                "SET dim=(SELECT b.dim FROM baseline_db.tensors b WHERE b.name=?) "
+                                "WHERE name=?",
+                                (name, name),
+                            )
+                        else:
+                            tcur.execute(
+                                "UPDATE tensors "
+                                "SET data=(SELECT b.data FROM baseline_db.tensors b WHERE b.name=?) "
+                                "WHERE name=?",
+                                (name, name),
+                            )
+                    except sqlite3.DataError:
+                        stats["rows_skipped_dataerror"] += 1
+                        continue
 
-                if tcur.rowcount > 0:
-                    stats["rows_updated"] += 1
-                    if copy_dim:
-                        stats["dim_rows_updated"] += 1
-                    if copy_data:
-                        stats["data_rows_updated"] += 1
-                else:
-                    stats["rows_missing_target"] += 1
+                    if tcur.rowcount and tcur.rowcount > 0:
+                        stats["rows_updated"] += 1
+                        if copy_dim:
+                            stats["dim_rows_updated"] += 1
+                        if copy_data:
+                            stats["data_rows_updated"] += 1
+                    else:
+                        stats["rows_missing_target"] += 1
 
-            target_con.commit()
-            if actual_journal_mode == "wal":
-                tcur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            print(f"apply_chunk={idx}/{total_chunks} rows={len(chunk)} free_gb={free_gb:.2f}")
-        except Exception:
-            target_con.rollback()
-            raise
+                target_con.commit()
+                if actual_journal_mode == "wal":
+                    tcur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                print(f"apply_chunk={idx}/{total_chunks} rows={len(chunk)} free_gb={free_gb:.2f}")
+            except Exception:
+                target_con.rollback()
+                raise
+    finally:
+        try:
+            tcur.execute("DETACH DATABASE baseline_db")
+        except sqlite3.DatabaseError:
+            pass
 
     return stats
 
@@ -262,7 +286,7 @@ def run(
         try:
             apply_stats = _apply_updates(
                 target_con=target_con,
-                baseline_con=baseline_con,
+                baseline_path=baseline_path,
                 dim_names=dim_selected,
                 data_names=data_selected,
                 chunk_size=chunk_size,
@@ -281,6 +305,9 @@ def run(
             print(f"{key}={value}")
         print(f"post_dim_head_mismatch={post_dim_mismatch}")
         print(f"post_data_head_mismatch={post_data_mismatch}")
+        if apply_stats["rows_skipped_dataerror"] > 0:
+            print("RESULT=FAIL rows_skipped_dataerror > 0 (selected rows could not be copied)")
+            return 1
         print("RESULT=PASS")
         return 0
     finally:

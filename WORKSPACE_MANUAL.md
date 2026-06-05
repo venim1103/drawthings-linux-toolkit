@@ -1,6 +1,6 @@
 # Workspace Manual
 
-Last updated: 2026-05-19
+Last updated: 2026-06-05
 
 This manual explains how the current workspace is organized, how to run the core workflows, and how to maintain the patching/build system.
 
@@ -136,6 +136,47 @@ Important:
   - `DRAWTHINGS_QUANTIZER_MONITOR=0` disables the monitor.
   - `DRAWTHINGS_QUANTIZER_MONITOR_INTERVAL=5` controls refresh interval seconds.
 
+## 4.1) Replay and postpatch safety helpers
+
+Replay helper script:
+
+- tools/run_clipfix2_replay_q6p.sh
+
+What it does:
+
+- Builds model-quantizer and runs forced q6p replay.
+- Guards against accidental output clobbering (source/baseline/symlink checks).
+- Runs sqlite sanity checks on output by default (`PRAGMA quick_check` and tensors row count).
+
+Example:
+
+    cd /workspaces/drawthings-linux-toolkit
+    bash tools/run_clipfix2_replay_q6p.sh \
+      -i dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+      -o dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
+      --official-baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt
+
+Optional replay safety override flags:
+
+- `--allow-symlink-output`
+- `--skip-sqlite-check`
+
+Recovery helper script:
+
+- tools/run_q6p_restore_postpatch_highlimit.sh
+
+What it does:
+
+- Restores target q6p from a chosen source backup.
+- Runs clipfix2 postpatch.
+- Applies high-limit sqlite one-row fallback for oversized clip tensor row.
+- Runs final sqlite `PRAGMA quick_check`.
+
+Example:
+
+    cd /workspaces/drawthings-linux-toolkit
+    bash tools/run_q6p_restore_postpatch_highlimit.sh --tag repatch_from_restored
+
 ## 5) Model management tools
 
 ## 5.1 Fast model CLI wrapper
@@ -248,6 +289,11 @@ Rebuild quantizer only:
 
     cd /workspaces/drawthings-linux-toolkit/draw-things-community
     swift build -c release --product model-quantizer
+
+  Run one-command restore/postpatch/high-limit fallback flow:
+
+    cd /workspaces/drawthings-linux-toolkit
+    bash tools/run_q6p_restore_postpatch_highlimit.sh --tag repatch_from_restored
 
 ## 9) Recommended daily workflow
 

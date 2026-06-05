@@ -26,7 +26,8 @@ SHIFT=5.0
 NUM_FRAMES=1
 FPS_ID=5
 SEED=4242
-MAX_RESPONSES=2
+MAX_RESPONSES=1
+CANARY_TIMEOUT_SEC="${DT_CANARY_TIMEOUT_SEC:-180}"
 
 PROMPT="a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic"
 NEG_PROMPT="blurry, distorted, low quality, artifacts"
@@ -63,7 +64,8 @@ Options:
   --num-frames <n>            Frames (default: 1).
   --fps-id <n>                FPS id (default: 5).
   --seed <n>                  Seed (default: 4242).
-  --max-responses <n>         Early stop response cap (default: 2).
+  --max-responses <n>         Early stop response cap (default: 1).
+  --canary-timeout-sec <n>    Timeout for canary request in seconds (default: 180, 0 disables).
   --prompt <text>             Prompt text.
   --negative-prompt <text>    Negative prompt text.
   --tag <value>               Artifact suffix tag.
@@ -71,10 +73,11 @@ Options:
 
 Behavior:
 1) Captures previous alias symlink target.
-2) Switches alias symlink to candidate.
-3) Runs bounded canary generation.
-4) On failure, restores previous alias symlink and restarts server.
-5) On success, keeps candidate active.
+2) Stops current server (if requested).
+3) Switches alias symlink to candidate and starts server.
+4) Runs bounded canary generation.
+5) On failure, restores previous alias symlink and restarts server.
+6) On success, keeps candidate active.
 
 Notes:
 - Alias file must already be a symlink.
@@ -158,21 +161,33 @@ run_canary() {
     --fps-id "${FPS_ID}" \
     --seed "${SEED}"
 
+  local -a canary_cmd=(
+    "${PYTHON_BIN}" "${ROOT}/tools/dt_api_client.py"
+    --host "${HOST}"
+    --max-recv-bytes 134217728
+    generate-raw
+    --config-bin "${CONFIG_BIN}"
+    --prompt "${PROMPT}"
+    --negative-prompt "${NEG_PROMPT}"
+    --output-dir "${WORK_DIR}"
+    --chunked
+    --save-preview
+    --max-responses "${MAX_RESPONSES}"
+  )
+
   set +e
-  "${PYTHON_BIN}" "${ROOT}/tools/dt_api_client.py" \
-    --host "${HOST}" \
-    --max-recv-bytes 134217728 \
-    generate-raw \
-    --config-bin "${CONFIG_BIN}" \
-    --prompt "${PROMPT}" \
-    --negative-prompt "${NEG_PROMPT}" \
-    --output-dir "${WORK_DIR}" \
-    --chunked \
-    --save-preview \
-    --max-responses "${MAX_RESPONSES}" \
-    2>&1 | tee "${CANARY_LOG}"
+  if (( CANARY_TIMEOUT_SEC > 0 )) && command -v timeout >/dev/null 2>&1; then
+    timeout "${CANARY_TIMEOUT_SEC}" "${canary_cmd[@]}" 2>&1 | tee "${CANARY_LOG}"
+  else
+    "${canary_cmd[@]}" 2>&1 | tee "${CANARY_LOG}"
+  fi
   local rc=${PIPESTATUS[0]}
   set -e
+
+  if (( rc == 124 )); then
+    echo "canary_timeout=true seconds=${CANARY_TIMEOUT_SEC}" >>"${CANARY_LOG}"
+    return 1
+  fi
 
   if (( rc != 0 )); then
     return 1
@@ -260,6 +275,10 @@ while [[ $# -gt 0 ]]; do
       MAX_RESPONSES="${2:-}"
       shift 2
       ;;
+    --canary-timeout-sec)
+      CANARY_TIMEOUT_SEC="${2:-}"
+      shift 2
+      ;;
     --prompt)
       PROMPT="${2:-}"
       shift 2
@@ -323,6 +342,11 @@ if ! is_pos_int "${STEPS}" || ! is_pos_int "${NUM_FRAMES}" || ! is_pos_int "${FP
   exit 1
 fi
 
+if ! [[ "${CANARY_TIMEOUT_SEC}" =~ ^[0-9]+$ ]]; then
+  echo "error: --canary-timeout-sec must be a non-negative integer" >&2
+  exit 1
+fi
+
 PREV_TARGET="$(readlink "${ALIAS_FILE}")"
 PREV_TARGET_ABS="$(readlink -f "${ALIAS_FILE}")"
 
@@ -339,14 +363,9 @@ echo "    model_name : ${MODEL_NAME}"
 echo "    work_dir   : ${WORK_DIR}"
 
 if [[ "${RESTART_SERVER}" == "1" ]]; then
-  echo "==> Restarting server before switch"
+  echo "==> Stopping server before switch"
   if ! kill_server; then
     echo "error: failed to stop existing gRPCServerCLI process cleanly" >&2
-    exit 1
-  fi
-  start_server
-  if ! wait_for_health "safe-activate-pre-switch"; then
-    echo "error: server health check failed before switch" >&2
     exit 1
   fi
 fi
@@ -355,13 +374,15 @@ echo "==> Switching alias to candidate"
 ln -sfn "${CANDIDATE_FILE}" "${ALIAS_FILE}"
 
 if [[ "${RESTART_SERVER}" == "1" ]]; then
-  echo "==> Restarting server after switch"
-  if ! kill_server; then
-    echo "warning: failed to cleanly kill server after switch" >&2
-  fi
+  echo "==> Starting server after switch"
   start_server
   if ! wait_for_health "safe-activate-post-switch"; then
-    echo "warning: health check failed after switch; proceeding to canary anyway" >&2
+    echo "error: server health check failed after switch" >&2
+    ln -sfn "${PREV_TARGET}" "${ALIAS_FILE}"
+    kill_server || true
+    start_server || true
+    wait_for_health "safe-activate-health-restore" || true
+    exit 1
   fi
 fi
 
