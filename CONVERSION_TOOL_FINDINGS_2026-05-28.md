@@ -11,6 +11,13 @@ This report captures the full investigation and patch work for converting custom
 - Controlled one-response probes show official q6/f16 controls reach `textEncoded`, while custom F16/q6 checkpoints still reproduce runtime failure (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`, server exit 139).
 - Metadata-column alignment against official F16 now reaches strict guard parity (`type/format/datatype` mismatches reduced to `0` on readable shared tensors), but runtime crash persists on aligned custom F16.
 - Deep row-level probe after metadata alignment shows `1542` tensor `data` blob length mismatches vs official F16 (`1540` under `__dit__`), while metadata columns remain at parity on readable shared tensors.
+
+- 2026-06-08 row-wise safe probe added: tools/dt_probe_ckpt_meta_len_rowwise.py avoids bulk blob reads and stably measured residuals after full extra-dim branch (metadata_mismatch_type=2989, data_len_mismatch=2728, unreadable_both=1).
+- Monolithic metadata apply over the 2989-name residual set repeatedly entered D-state and/or exited 137; practical workaround was recursive micro-batching (900 -> 300 -> 100 -> 25 names) with tools/dt_patch_ckpt_metadata_subset.py.
+- Post-metachunkfix parity reached metadata_mismatch_type/format/datatype=0 and dim_len_mismatch=0, but residual data_len_mismatch remained 2728; bounded canary (120s) timed out with canary_rc=124 and no response #1 (request-begin only).
+- 2026-06-08 Run-006 payload-remediation continuation fully drained the remaining `data_len_mismatch=2728` branch using recursive micro-batched content apply (`tools/dt_align_ckpt_content_subset.py`); run completion initially left one leaf name (`__dit__[t-x_out_proj-17-0]`) which then succeeded under one-name retry (`chunk-size=1`, rows_updated=1, RESULT=PASS).
+- Post-retry row-wise verification reached full readable-shared meta/len parity (`metadata_mismatch_type/format/datatype=0`, `dim_len_mismatch=0`, `data_len_mismatch=0`, `mismatch_any=0`, `full_match=5745`, `unreadable_both=1`).
+- Despite parity exhaustion on row-wise metadata/length metrics, bounded canary still timed out pre-stream (`canary_rc=124`, `post_echo_rc=0`, no `response #1`) in `output/q6p_canary_20260608_run006_post_leafretry`.
 - Targeted payload alignment for the `80%` `__dit__` subgroup subset (`1248` tensors) reduced global `data` length mismatches from `1542` to `294`, but one-response runtime still crashed in the same reader path.
 - A second targeted payload pass on the remaining `294` tensor names reduced readable shared-tensor `data` length mismatches to `0` (`5745/5745` readable shared rows), but one-response runtime still crashed in the same read path.
 - Targeted non-`__dit__` content probe after length parity found `115/261` rows with `data` head-signature mismatch (zero metadata/length mismatches), concentrated in connector and feature-extractor families.
@@ -1814,3 +1821,209 @@ Interpretation:
 
 - Replay regeneration can produce a structurally healthy SQLite checkpoint while runtime still fails in the loader path.
 - For this artifact family, replay alone is insufficient; deeper serialization/quantization compatibility remains unresolved.
+
+## Update (2026-06-08): In-place dimfix automation + bounded canary outcome
+
+### Goal
+
+- Operationalize a low-space remediation path that does not require creating another full 20G+ checkpoint copy.
+
+### New reusable scripts/assets
+
+- `tools/run_q6p_inplace_dimfix_from_f16.sh`
+   - in-place dim/data subset patch from source f16
+   - metadata subset patch (`type/format/datatype`)
+   - structural validation
+   - bounded runtime canary with timeout
+- `tools/dt_build_q6p_dimfix_names.py`
+- `tools/dt_patch_ckpt_metadata_subset.py`
+- `tools/patch_sets/10_e_v1_q6p_dimfix770_20260608.txt`
+
+### Current environment constraint
+
+- Official baseline `dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt` was deleted to save space.
+- Clipfix2 checkpoint can be used as fallback comparison baseline for rebuild-mode operations:
+   - `dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+
+### Latest run evidence
+
+Run folder:
+
+- `output/q6p_inplace_dimfix_20260608_080006`
+
+Observed result:
+
+- in-place row patch + metadata patch + structural validation: PASS
+- bounded canary (`--canary-timeout-sec 120`) timed out and then server crashed
+- server backtrace head unchanged:
+   - `ccv_nnc_tensor_read`
+   - `ccv_cnnp_model_read`
+- client did not receive streamed responses before timeout
+
+Logs:
+
+- `output/q6p_inplace_dimfix_20260608_080006/client.log`
+- `output/q6p_inplace_dimfix_20260608_080006/server.log`
+
+### Conclusion
+
+- In-place 770-row dequantization/metadata restore is not sufficient to recover runtime stability for this artifact.
+- Keep using bounded canary probes and iterate candidate selection heuristics (or baseline comparator strategy) without introducing new full-copy artifacts.
+
+## Update (2026-06-08): Expanded 1282-row in-place branch + post-patch canary
+
+### Candidate-set expansion
+
+To continue under low-space constraints without official baseline, clipfix2 fallback baseline was used to build broader selection sets:
+
+- `extra_dim_only` candidate set: `2756` rows
+   - prefixes: `__dit__` 2692, `__text_audio_connector__` 32, `__text_video_connector__` 32
+- staged apply set used for runtime test: `1282` rows
+   - `770` original rows + `512` additional rows from extra-dim pool
+
+Patch-set artifacts:
+
+- `tools/patch_sets/10_e_v1_q6p_dimfix_extra_dim_2756_clipfix2base_20260608.txt`
+- `tools/patch_sets/10_e_v1_q6p_dimfix_extra_only_1986_clipfix2base_20260608.txt`
+- `tools/patch_sets/10_e_v1_q6p_dimfix_extra512_clipfix2base_20260608.txt`
+- `tools/patch_sets/10_e_v1_q6p_dimfix770_plus_extra512_clipfix2base_20260608.txt`
+
+### Expanded apply run outcome
+
+Command path:
+
+- `bash tools/run_q6p_inplace_dimfix_from_f16.sh --names-file tools/patch_sets/10_e_v1_q6p_dimfix770_plus_extra512_clipfix2base_20260608.txt --tag 20260608_clipfix2_plus_extra512 --canary-timeout-sec 120 --max-responses 10 --min-free-gb 50`
+
+Observed:
+
+- dim/data subset apply: pass (`rows_updated=1282`, `post_data_head_mismatch=0` on selected set)
+- metadata subset apply: pass (`metadata_rows_updated=1282`)
+- structural validate: pass (`tensor_count=5746`, profile `ltx2_3` pass)
+- canary stream: no `response #1` observed in run folder logs
+
+Artifacts:
+
+- `output/q6p_inplace_dimfix_20260608_clipfix2_plus_extra512/client.log`
+- `output/q6p_inplace_dimfix_20260608_clipfix2_plus_extra512/server.log`
+
+### Post-patch canary-only retest
+
+Reusable helper added:
+
+- `tools/run_q6p_canary_once.sh`
+
+Canary output folder:
+
+- `output/q6p_canary_20260608_post_extra512_canary`
+
+Observed server crash stack (unchanged):
+
+- `ccv_nnc_tensor_read`
+- `ccv_cnnp_model_read`
+
+Artifacts:
+
+- `output/q6p_canary_20260608_post_extra512_canary/client.log`
+- `output/q6p_canary_20260608_post_extra512_canary/server.log`
+
+### Interpretation
+
+- Expanding from 770 to 1282 in-place row substitutions did not move runtime past the same loader-path failure.
+- Failure remains pre-first-streamed response and continues to implicate deeper serialization invariants beyond these selected dim/data/metadata substitutions.
+
+## Update (2026-06-08): Full extra-dim branch (2756 rows)
+
+To remove staged-selection uncertainty, the full `extra_dim_only` set was applied in place.
+
+Command path:
+
+- `bash tools/run_q6p_inplace_dimfix_from_f16.sh --names-file tools/patch_sets/10_e_v1_q6p_dimfix_extra_dim_2756_clipfix2base_20260608.txt --tag 20260608_clipfix2_extra2756 --canary-timeout-sec 120 --max-responses 10 --min-free-gb 50`
+
+Observed apply/validate results:
+
+- dim/data subset apply: pass (`rows_updated=2756`, `post_data_head_mismatch=0` on selected set)
+- metadata subset apply: pass (`metadata_rows_updated=2756`)
+- structural validate: pass (`tensor_count=5746`, profile `ltx2_3` pass)
+
+Canary outcome:
+
+- run still failed before first streamed response
+- terminal ended with `Killed` (exit notification `137`)
+- run-folder logs captured request-start only (no `response #1`, no stack in that run folder)
+
+Artifacts:
+
+- `output/q6p_inplace_dimfix_20260608_clipfix2_extra2756/client.log`
+- `output/q6p_inplace_dimfix_20260608_clipfix2_extra2756/server.log`
+
+Interpretation:
+
+- Even full extra-dim subset replacement (2756 rows) is insufficient to recover runtime behavior.
+- Combined evidence now spans 770, 1282, and 2756 selected-row branches, all failing pre-first-streamed response.
+
+## Update (2026-06-08): Row-wise meta/len probe + metadata chunk-fix branch
+
+To bypass repeated full-scan/DataError/kill behavior, a row-wise metadata/length-only probe path was used:
+
+- `tools/dt_probe_ckpt_meta_len_rowwise.py`
+
+Initial residual state after full extra-dim branch:
+
+- readable shared tensors: `5745` (`unreadable_both=1`)
+- `metadata_mismatch_type=2989`
+- `metadata_mismatch_format=0`
+- `metadata_mismatch_datatype=0`
+- `dim_len_mismatch=0`
+- `data_len_mismatch=2728`
+
+Key probe artifacts:
+
+- `output/probe_meta_len_all5746_vs_sourcef16_20260608.json`
+- `output/probe_meta_len_remaining2990_vs_sourcef16_20260608.json`
+- `tools/patch_sets/10_e_v1_q6p_run005_mismatch_meta_len_all5746_20260608.txt`
+
+### Metadata-only remediation behavior
+
+Direct metadata apply over all 2989 names repeatedly entered D-state and/or terminated with exit `137`.
+
+Workaround that succeeded:
+
+- split names into smaller chunks (`900 -> 300 -> 100 -> 25` on failing windows)
+- apply each chunk with:
+   - `tools/dt_patch_ckpt_metadata_subset.py --journal-mode delete`
+
+Post-chunkfix verification:
+
+- `metadata_mismatch_type=0`
+- `metadata_mismatch_format=0`
+- `metadata_mismatch_datatype=0`
+- `dim_len_mismatch=0`
+- residual `data_len_mismatch=2728`
+- `mismatch_any=2728`, `full_match=3017`
+
+Artifact:
+
+- `output/probe_meta_len_all5746_post_metachunkfix_20260608.json`
+
+### Post-metachunkfix canary
+
+Command:
+
+- `bash tools/run_q6p_canary_once.sh --model 10_e_v1_bf16_regen_0_q6p.ckpt --timeout-sec 120 --max-responses 10 --tag 20260608_post_metachunkfix`
+
+Observed:
+
+- `canary_rc=124` (timeout)
+- `post_echo_rc=0`
+- no `response #1`
+- server log showed request begin but no crash stack and no streamed payloads before timeout
+
+Artifacts:
+
+- `output/q6p_canary_20260608_post_metachunkfix/client.log`
+- `output/q6p_canary_20260608_post_metachunkfix/server.log`
+
+Interpretation:
+
+- Reaching metadata parity alone is not sufficient.
+- Current highest-signal residual branch is content/payload divergence represented by `data_len_mismatch=2728`.

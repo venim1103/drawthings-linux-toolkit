@@ -194,6 +194,47 @@ Operational conclusion:
 - Replay output can be structurally healthy while still crashing at runtime for this custom artifact.
 - Keep official control as runtime baseline and treat `10_e_v1_bf16_regen_0_q6p.ckpt` as unstable until deeper serialization/quantization policy issues are resolved.
 
+## 4.3) In-place q6p dimfix workflow (no full checkpoint copies)
+
+When disk/RAM headroom is tight, use the in-place dimfix path instead of creating new 20G+ artifacts.
+
+Scripts added for repeatable use:
+
+- `tools/dt_build_q6p_dimfix_names.py`
+  - Builds candidate tensor names from mismatch topology.
+- `tools/dt_patch_ckpt_metadata_subset.py`
+  - Patches `type/format/datatype` for a selected row subset.
+- `tools/run_q6p_inplace_dimfix_from_f16.sh`
+  - End-to-end orchestration: in-place row patch + optional bounded canary.
+- `tools/patch_sets/10_e_v1_q6p_dimfix770_20260608.txt`
+  - Precomputed 770-row patch set used by default for 10_e_v1.
+
+Default run (no name rebuild, no full copy):
+
+    cd /workspaces/drawthings-linux-toolkit
+    bash tools/run_q6p_inplace_dimfix_from_f16.sh --canary-timeout-sec 120 --max-responses 10
+
+Rebuild name list from baseline/reference (requires both files present):
+
+    cd /workspaces/drawthings-linux-toolkit
+    bash tools/run_q6p_inplace_dimfix_from_f16.sh --rebuild-names
+
+Notes:
+
+- This workflow mutates target q6p in place by design.
+- Keep `--canary-timeout-sec` finite so stalled runs terminate automatically.
+- If official baseline was deleted to save space, you can still run using the precomputed names file.
+- If you need `--rebuild-names` without the official baseline, use clipfix2 as fallback:
+
+    bash tools/run_q6p_inplace_dimfix_from_f16.sh \
+      --rebuild-names \
+      --baseline-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt \
+      --reference-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt
+
+- Continuation docs:
+  - `Q6P_HANDOFF_FINDINGS_2026-06-08.md`
+  - `Q6P_CONTINUATION_RUNBOOK_2026-06-08.md`
+
 ## 5) Model management tools
 
 ## 5.1 Fast model CLI wrapper

@@ -56,6 +56,38 @@ Quick usage:
 			-o dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
 			--official-baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt
 
+## In-place q6p dimfix helpers (2026-06-08)
+
+For low-space environments, these scripts patch `10_e_v1` q6p in place (no extra 20G+ copy):
+
+- `tools/run_q6p_inplace_dimfix_from_f16.sh`
+- `tools/run_q6p_canary_once.sh`
+- `tools/dt_build_q6p_dimfix_names.py`
+- `tools/dt_patch_ckpt_metadata_subset.py`
+- `tools/patch_sets/10_e_v1_q6p_dimfix770_20260608.txt`
+
+Quick usage (default precomputed names, bounded canary):
+
+		cd /workspaces/drawthings-linux-toolkit
+		bash tools/run_q6p_inplace_dimfix_from_f16.sh --canary-timeout-sec 120 --max-responses 10
+
+Optional name rebuild mode (requires baseline + reference q6p files present):
+
+		bash tools/run_q6p_inplace_dimfix_from_f16.sh --rebuild-names
+
+If official q6p baseline is unavailable, clipfix2 can be used as fallback baseline/reference for rebuild mode:
+
+		bash tools/run_q6p_inplace_dimfix_from_f16.sh \
+			--rebuild-names \
+			--baseline-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt \
+			--reference-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt
+
+Handoff docs for continuation:
+
+- `Q6P_HANDOFF_FINDINGS_2026-06-08.md`
+- `Q6P_CONTINUATION_RUNBOOK_2026-06-08.md`
+- `Q6P_RUN_LOG.md` (append-only iteration record)
+
 ## Latest runtime findings (2026-06-05 post-replay A/B)
 
 - Replay regeneration completed with structural checks passing (`PRAGMA quick_check=ok`, `tensors rows=5746`), but runtime stability for custom `10_e_v1` was not restored.
