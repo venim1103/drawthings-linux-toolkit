@@ -313,3 +313,41 @@ bash tools/run_q6p_canary_once.sh \
   - canary server log: `output/q6p_canary_20260608_run006_post_leafretry/server.log`
 - Outcome: Row-wise metadata/length parity reached full-match state (`mismatch_any=0`, `full_match=5745`, `unreadable_both=1`), but runtime still timed out pre-stream (`canary_rc=124`, no `response #1`).
 - Next branch: Focus on byte-level payload semantics for equal-length rows (family-targeted content probes and/or constrained content-copy experiments on stable micro-windows).
+
+## Run 007 - 2026-06-08 14:11 (UTC)
+
+- Goal: Move from ad-hoc commands to a repeatable scripted validity matrix and confirm whether `10_e_v1_bf16_regen_0_f16.ckpt` is valid independently of q6p runtime failures.
+- Script added: `tools/run_10e_v1_model_validity_matrix.sh`
+- Matrix command:
+
+```bash
+bash tools/run_10e_v1_model_validity_matrix.sh --tag 20260608_matrix_check_01
+```
+
+- f16 structural checks (scripted):
+  - tensor count: 5746
+  - null-name rows: 0
+  - converter validator (`dt_validate_converted_ckpt.py --source-safetensors dt-models/10_e_v1_bf16.safetensors`): `RESULT=PASS`, profile `ltx2_3`
+- f16 runtime canary (scripted):
+  - timeout sec: 240
+  - max responses: 30
+  - canary rc: 0
+  - post echo rc: 0
+  - reached streamed signposts through `imageDecoded`
+  - wrote generated image payload (`image_r0010_01.bin`)
+- q6p runtime canary (scripted comparison branch):
+  - timeout sec: 120
+  - max responses: 10
+  - canary rc: 137
+  - post echo rc: 1
+  - saw response #1: no
+  - client log stopped at request-start; server terminated during request
+- Artifacts:
+  - matrix summary: `output/model_validity_20260608_matrix_check_01/summary.md`
+  - f16 validator log: `output/model_validity_20260608_matrix_check_01/f16_validator.log`
+  - f16 canary log: `output/model_validity_20260608_matrix_check_01/f16_canary.log`
+  - q6p canary log: `output/model_validity_20260608_matrix_check_01/q6p_canary.log`
+  - f16 canary work dir: `output/q6p_canary_20260608_matrix_check_01_f16`
+  - q6p canary work dir: `output/q6p_canary_20260608_matrix_check_01_q6p`
+- Outcome: Scripted evidence indicates the `10_e_v1_bf16_regen_0_f16.ckpt` conversion is structurally valid and runtime-usable; active blocker remains q6p runtime behavior.
+- Next branch: Keep triage scripted and q6p-focused (payload semantics / serialization invariants), using the new matrix script as a baseline gate before each q6p experiment.
