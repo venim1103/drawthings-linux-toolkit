@@ -9,10 +9,13 @@ HOST="127.0.0.1:7861"
 TIMEOUT_SEC=90
 TIMEOUT_EXPLICIT=0
 MAX_RESPONSES=10
+MAX_RESPONSES_EXPLICIT=0
 TAG="$(date +%Y%m%d_%H%M%S)"
 SOFT_FAIL=0
 FINAL_MODE=0
 NO_TIMEOUT=0
+REQUIRE_COMPLETE_STREAM=0
+REQUIRE_FINAL_OUTPUT=0
 
 WIDTH=256
 HEIGHT=256
@@ -40,6 +43,12 @@ Options:
                             --timeout-sec was explicitly set.
   --no-timeout              Disable timeout wrapper for generate-raw.
   --max-responses <n>       Max streamed responses before client exits (default: 10).
+                            Use 0 for unlimited.
+  --require-complete-stream Require the stream to finish without early max-response stop.
+                            If --max-responses is not explicitly set, this auto-sets
+                            max responses to 0 (unlimited).
+  --require-final-output    Require at least one non-preview output payload
+                            (generated image or audio).
   --tag <value>             Output folder tag (default: current timestamp).
   --soft-fail               Always exit 0; still prints RESULT=FAIL on failures.
   -h, --help                Show this help.
@@ -75,7 +84,16 @@ if [[ $# -gt 0 ]]; then
         ;;
       --max-responses)
         MAX_RESPONSES="${2:-}"
+        MAX_RESPONSES_EXPLICIT=1
         shift 2
+        ;;
+      --require-complete-stream)
+        REQUIRE_COMPLETE_STREAM=1
+        shift
+        ;;
+      --require-final-output)
+        REQUIRE_FINAL_OUTPUT=1
+        shift
         ;;
       --tag)
         TAG="${2:-}"
@@ -102,6 +120,10 @@ if [[ "$FINAL_MODE" == "1" && "$TIMEOUT_EXPLICIT" != "1" && "$NO_TIMEOUT" != "1"
   TIMEOUT_SEC=900
 fi
 
+if [[ "$REQUIRE_COMPLETE_STREAM" == "1" && "$MAX_RESPONSES_EXPLICIT" != "1" ]]; then
+  MAX_RESPONSES=0
+fi
+
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "error: missing python env at $PYTHON_BIN" >&2
   exit 1
@@ -112,8 +134,8 @@ if [[ "$NO_TIMEOUT" != "1" && "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MAX_RESPONSES" -lt 1 ]]; then
-  echo "error: --max-responses must be >= 1" >&2
+if [[ "$MAX_RESPONSES" -lt 0 ]]; then
+  echo "error: --max-responses must be >= 0" >&2
   exit 1
 fi
 
@@ -140,6 +162,8 @@ else
   echo "timeout_sec=$TIMEOUT_SEC"
 fi
 echo "max_responses=$MAX_RESPONSES"
+echo "require_complete_stream=$REQUIRE_COMPLETE_STREAM"
+echo "require_final_output=$REQUIRE_FINAL_OUTPUT"
 echo "work_dir=$WORK_DIR"
 
 pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
@@ -245,6 +269,37 @@ if ! grep -q 'response #1' "$CLIENT_LOG"; then
     exit 0
   fi
   exit 1
+fi
+
+if [[ "$REQUIRE_COMPLETE_STREAM" == "1" ]]; then
+  if ! grep -q '^generation stream finished$' "$CLIENT_LOG"; then
+    echo "RESULT=FAIL stream did not finish cleanly"
+    if [[ "$SOFT_FAIL" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
+
+  if grep -q '^stopping early at max responses:' "$CLIENT_LOG"; then
+    echo "RESULT=FAIL stream stopped early by max response cap"
+    if [[ "$SOFT_FAIL" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
+fi
+
+if [[ "$REQUIRE_FINAL_OUTPUT" == "1" ]]; then
+  IMAGE_COUNT="$(awk -F': ' '/^images written:/{value=$2} END{if (value == "") value = "0"; print value}' "$CLIENT_LOG")"
+  AUDIO_COUNT="$(awk -F': ' '/^audio written:/{value=$2} END{if (value == "") value = "0"; print value}' "$CLIENT_LOG")"
+
+  if [[ "$IMAGE_COUNT" -lt 1 && "$AUDIO_COUNT" -lt 1 ]]; then
+    echo "RESULT=FAIL no final generated output payloads observed"
+    if [[ "$SOFT_FAIL" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
 fi
 
 echo "RESULT=PASS"
