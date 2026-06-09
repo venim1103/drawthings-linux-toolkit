@@ -351,3 +351,384 @@ bash tools/run_10e_v1_model_validity_matrix.sh --tag 20260608_matrix_check_01
   - q6p canary work dir: `output/q6p_canary_20260608_matrix_check_01_q6p`
 - Outcome: Scripted evidence indicates the `10_e_v1_bf16_regen_0_f16.ckpt` conversion is structurally valid and runtime-usable; active blocker remains q6p runtime behavior.
 - Next branch: Keep triage scripted and q6p-focused (payload semantics / serialization invariants), using the new matrix script as a baseline gate before each q6p experiment.
+
+## Run 008 - 2026-06-09 10:55 (UTC)
+
+- Goal: Execute a no-skip equal-length payload-semantics pass, apply the resulting mismatch set, and re-run bounded canary.
+- Probe workflow (scripted, full coverage):
+  - `tools/dt_probe_ckpt_equal_len_payload_mismatch.py` was run in deterministic 500-row chunks over the full shared set (5746 rows), then merged.
+  - This avoided long single-process D-state stalls while preserving full row coverage.
+- Probe aggregated results:
+  - selected_tensors: 5746
+  - unreadable_both: 1
+  - readable_selected: 5745
+  - metadata_mismatch: 0
+  - data_len_equal: 5745
+  - data_small_sha256_compared: 2310
+  - data_small_sha256_mismatch: 26
+  - data_len_equal_sig_mismatch: 26
+  - merged mismatch names: 26 (all `__dit__` family)
+- Equal-length mismatch patch run:
+  - command: `bash tools/run_q6p_payloadfix_recursive.sh --names-file output/run008_equal_len_payloadfix_01/equal_len_payload_mismatch_names.txt --tag 20260609_run008_payloadfix_26 --head-bytes 32 --chunk-size 1 --initial-split-lines 26 --canary-timeout-sec 120 --max-responses 10`
+  - apply summary:
+    - pre_selected_data_head_mismatch: 26
+    - rows_updated: 26
+    - rows_skipped_dataerror: 0
+    - post_selected_data_head_mismatch: 0
+- Post-apply row-wise parity check:
+  - metadata_mismatch_type/format/datatype: 0/0/0
+  - dim_len_mismatch: 0
+  - data_len_mismatch: 0
+  - mismatch_any: 0
+  - full_match: 5745
+  - unreadable_both: 1
+- Post-apply bounded canary:
+  - timeout sec: 120
+  - max responses: 10
+  - canary rc: 124 (timed out)
+  - post echo rc: 0
+  - saw response #1: no
+  - client tail: only request-start metadata (no streamed response)
+  - server tail: request begin + config-steps log; no streamed generation signposts before timeout
+- Artifacts:
+  - chunked probe dir: `output/run008_equal_len_payloadfix_01/chunks`
+  - merged mismatch names: `output/run008_equal_len_payloadfix_01/equal_len_payload_mismatch_names.txt`
+  - payloadfix work dir: `output/20260609_run008_payloadfix_26`
+  - post-fix row-wise probe json: `output/20260609_run008_payloadfix_26/probe_meta_len_rowwise_after_leafretry.json`
+  - canary work dir: `output/q6p_canary_20260609_run008_payloadfix_26_post_leafretry`
+  - canary client log: `output/q6p_canary_20260609_run008_payloadfix_26_post_leafretry/client.log`
+  - canary server log: `output/q6p_canary_20260609_run008_payloadfix_26_post_leafretry/server.log`
+- Outcome: Repairing all currently detected equal-length data-head/small-hash mismatches (26 rows) did not restore runtime streaming; q6p still times out before first response.
+- Next branch: Expand byte-level serialization checks beyond current head+small-hash signatures (chunked tail/mid sampling and/or focused full-payload comparisons on suspect DIT families) while keeping all runs scripted and artifactized.
+
+## Run 009 - 2026-06-09 11:02 (UTC)
+
+- Goal: Re-run the equal-length branch with a higher hash threshold (`small_hash_limit=16384`) and chunked full coverage to capture additional 8KB-scale payload mismatches.
+- Script path: `tools/run_q6p_equal_len_payloadfix.sh` (updated with chunked probe mode).
+- Command:
+
+```bash
+bash tools/run_q6p_equal_len_payloadfix.sh \
+  --tag 20260609_run009_hash16k_chunked \
+  --probe-small-hash-limit 16384 \
+  --probe-chunk-rows 500 \
+  --head-bytes 32 \
+  --probe-progress-every 50 \
+  --skip-matrix \
+  --chunk-size 1 \
+  --initial-split-lines 200 \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Result:
+  - chunk `1-500`: `RESULT=PASS` with `mismatch_names_count=0`
+  - chunk `501-1000`: probe process entered D-state (`folio_wait_bit_common`) and did not progress.
+  - Run was aborted before recursive apply/canary to avoid indefinite hang.
+- Artifacts:
+  - run dir: `output/20260609_run009_hash16k_chunked`
+  - partial probe chunk output: `output/20260609_run009_hash16k_chunked/probe_chunks/report_1_500.json`
+  - stalled target chunk path: `output/20260609_run009_hash16k_chunked/probe_chunks/report_501_1000.json` (not completed)
+- Outcome: Wider small-hash probing remains unstable in this environment at current chunk shape; need a lighter targeted branch.
+
+## Run 010 - 2026-06-09 11:09 (UTC)
+
+- Goal: Execute a family-targeted fallback by copying all DIT gate `*-1` payload rows from baseline and retesting runtime.
+- Names build (scripted snippet) produced:
+  - `output/run010_gate_family_all_minus1_names.txt`
+  - names_count: 192
+  - families: `__dit__[t-a_gate|t-ax_gate|t-x_gate|t-xa_gate]-*-1`
+- Apply + probe + canary command:
+
+```bash
+bash tools/run_q6p_payloadfix_recursive.sh \
+  --names-file output/run010_gate_family_all_minus1_names.txt \
+  --tag 20260609_run010_gate_family_minus1 \
+  --head-bytes 32 \
+  --chunk-size 1 \
+  --initial-split-lines 192 \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Apply summary:
+  - union_selected: 192
+  - rows_updated: 192
+  - rows_skipped_dataerror: 0
+  - pre_selected_data_head_mismatch: 0
+  - post_selected_data_head_mismatch: 0
+- Post-apply row-wise probe:
+  - metadata_mismatch_type/format/datatype: 0/0/0
+  - dim_len_mismatch: 0
+  - data_len_mismatch: 0
+  - mismatch_any: 0
+  - full_match: 5745
+  - unreadable_both: 1
+- Canary outcome:
+  - timeout sec: 120
+  - max responses: 10
+  - canary rc: 124 (timed out)
+  - post echo rc: 0
+  - saw response #1: no
+  - server log: request begin/config-steps only; no streamed response signposts
+- Artifacts:
+  - names file: `output/run010_gate_family_all_minus1_names.txt`
+  - payloadfix work dir: `output/20260609_run010_gate_family_minus1`
+  - post-fix row-wise probe json: `output/20260609_run010_gate_family_minus1/probe_meta_len_rowwise_after_leafretry.json`
+  - canary work dir: `output/q6p_canary_20260609_run010_gate_family_minus1_post_leafretry`
+  - canary client log: `output/q6p_canary_20260609_run010_gate_family_minus1_post_leafretry/client.log`
+  - canary server log: `output/q6p_canary_20260609_run010_gate_family_minus1_post_leafretry/server.log`
+- Outcome: Even copying all 192 DIT gate `*-1` payloads did not restore runtime streaming; q6p still times out before first response.
+- Next branch: Move beyond gate/data-head classes to targeted tail/mid or full-payload checks on a smaller suspect set (scripted micro-batches with hard per-batch time bounds), then canary after each batch window.
+
+## Run 011 - 2026-06-09 11:33 (UTC)
+
+- Goal: Run a full DIT-only window-signature probe (head+mid+tail) with chunking and bounded workflow to detect payload drift beyond head-only checks.
+- Script path: `tools/run_q6p_window_sig_payloadfix.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_window_sig_payloadfix.sh \
+  --tag 20260609_run011_window_sig_batch1 \
+  --head-bytes 32 \
+  --mid-bytes 64 \
+  --tail-bytes 64 \
+  --probe-small-hash-limit 0 \
+  --probe-chunk-rows 400 \
+  --probe-progress-every 100 \
+  --prefix __dit__ \
+  --batch-size 24 \
+  --max-batches 1 \
+  --initial-split-lines 24 \
+  --chunk-size 1 \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Probe summary:
+  - filtered shared rows (`__dit__`): 5484
+  - `data_len_equal_sig_mismatch`: 0
+  - `data_mid_hex_mismatch`: 0
+  - `data_tail_hex_mismatch`: 0
+  - `mismatch_names_count`: 0
+- Apply/canary:
+  - no remediation batches executed (`batches_executed=0`).
+- Artifacts:
+  - summary: `output/20260609_run011_window_sig_batch1/summary.md`
+  - probe log/json: `output/20260609_run011_window_sig_batch1/window_sig_probe.log`, `output/20260609_run011_window_sig_batch1/window_sig_probe.json`
+  - mismatch names: `output/20260609_run011_window_sig_batch1/window_sig_mismatch_names.txt`
+- Outcome: DIT head/mid/tail signature probe did not surface actionable equal-length payload mismatches.
+
+## Run 012 - 2026-06-09 11:47 (UTC)
+
+- Goal: Target non-DIT family (`__text_feature_extractor__`) with window signatures plus small full-hash compare (`<=64KB`) to probe unresolved unreadable region.
+- Script path: `tools/run_q6p_window_sig_payloadfix.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_window_sig_payloadfix.sh \
+  --tag 20260609_run012_textfeat_sig_hash64k_batch1 \
+  --head-bytes 32 \
+  --mid-bytes 64 \
+  --tail-bytes 64 \
+  --probe-small-hash-limit 65536 \
+  --probe-chunk-rows 200 \
+  --probe-progress-every 50 \
+  --prefix __text_feature_extractor__ \
+  --batch-size 8 \
+  --max-batches 1 \
+  --initial-split-lines 8 \
+  --chunk-size 1 \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Probe summary:
+  - filtered shared rows: 4
+  - `readable_selected`: 3
+  - `unreadable_both`: 1
+  - signature mismatches: 0
+  - `mismatch_names_count`: 0
+- Apply/canary:
+  - no remediation batches executed (`batches_executed=0`).
+- Artifacts:
+  - summary: `output/20260609_run012_textfeat_sig_hash64k_batch1/summary.md`
+  - probe log/json: `output/20260609_run012_textfeat_sig_hash64k_batch1/window_sig_probe.log`, `output/20260609_run012_textfeat_sig_hash64k_batch1/window_sig_probe.json`
+- Outcome: No signature mismatch in readable text-feature rows; one unreadable row remained unresolved.
+
+## Run 013 - 2026-06-09 11:52 (UTC)
+
+- Goal: Force-copy full `__text_feature_extractor__` family payloads (4 rows) via recursive split-on-failure and observe runtime behavior.
+- Names file build:
+  - `output/run013_text_feature_family_names.txt`
+  - names_count: 4
+  - includes `__text_feature_extractor__[t-video_aggregate_embed-0-0]`
+- Command:
+
+```bash
+bash tools/run_q6p_payloadfix_recursive.sh \
+  --names-file output/run013_text_feature_family_names.txt \
+  --tag 20260609_run013_textfeat_family_all \
+  --head-bytes 32 \
+  --chunk-size 1 \
+  --initial-split-lines 4 \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Apply summary:
+  - 3 rows updated successfully.
+  - 1 row persisted as DataError leaf even after retry:
+    - `__text_feature_extractor__[t-video_aggregate_embed-0-0]`
+  - failed leaf list: `output/20260609_run013_textfeat_family_all/failed_leaf_names.txt`
+- Post-apply row-wise probe:
+  - metadata mismatches: 0
+  - dim/data_len mismatches: 0
+  - `full_match=5745`, `unreadable_both=1`
+- Canary outcome:
+  - server crashed with SIGSEGV while reading tensor payload during model load:
+    - `ccv_nnc_tensor_read`
+    - `ccv_cnnp_model_read`
+  - server log: `output/q6p_canary_20260609_run013_textfeat_family_all_post_leafretry/server.log`
+- Outcome: Unreadable leaf row correlates with deterministic model-load crash path.
+
+## Run 014 - 2026-06-09 12:18 (UTC)
+
+- Goal: Patch the exact failed leaf row using high-limit sqlite and retest canary.
+- Script path: `tools/run_q6p_highlimit_row_patch_canary.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_highlimit_row_patch_canary.sh \
+  --tag 20260609_run014_highlimit_textfeat_leaf \
+  --row-name "__text_feature_extractor__[t-video_aggregate_embed-0-0]" \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Patch summary:
+  - pre `quick_check`: `ok`
+  - high-limit row patch changes: `row_patch_changes=1`
+  - post `quick_check`: `ok`
+- Canary outcome:
+  - `canary_rc=124` (timeout)
+  - `post_echo_rc=0`
+  - no SIGSEGV stack in server log; request begin/config-steps only
+  - logs:
+    - `output/q6p_canary_20260609_run014_highlimit_textfeat_leaf_canary/client.log`
+    - `output/q6p_canary_20260609_run014_highlimit_textfeat_leaf_canary/server.log`
+- Outcome: High-limit patch removes the crash path for the unreadable row but does not restore streaming response; runtime still stalls before first response.
+- Next branch: Run DIT-focused small-blob full-hash pass (`<=64KB`) with chunked scripted probe to search for non-window payload drift not visible in head/mid/tail signatures.
+
+## Run 015 - 2026-06-09 12:33 (UTC)
+
+- Goal: Execute DIT-focused window+small-hash (`<=64KB`) full coverage branch in chunked scripted mode.
+- Script path: `tools/run_q6p_window_sig_payloadfix.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_window_sig_payloadfix.sh \
+  --tag 20260609_run015_dit_sig_hash64k_batch1 \
+  --head-bytes 32 \
+  --mid-bytes 64 \
+  --tail-bytes 64 \
+  --probe-small-hash-limit 65536 \
+  --probe-chunk-rows 300 \
+  --probe-progress-every 100 \
+  --prefix __dit__ \
+  --batch-size 24 \
+  --max-batches 1 \
+  --initial-split-lines 24 \
+  --chunk-size 1 \
+  --canary-timeout-sec 120 \
+  --max-responses 10
+```
+
+- Observed partial results before interruption:
+  - processed chunks through range `1801-2100` with zero mismatches so far
+  - repeated chunk stats: `data_len_equal_sig_mismatch=0`, `data_small_sha256_mismatch=0`
+- Termination:
+  - run interrupted manually (`KeyboardInterrupt`) during subsequent probe chunk
+  - exit code: 130
+- Outcome: No evidence of mismatches in processed ranges, but run incomplete; cannot treat as final coverage result.
+
+## Run 016 - 2026-06-09 12:52 (UTC)
+
+- Goal: Re-run high-limit leaf patch branch with final-mode timeout policy (15 minutes) to ensure timeout is not the primary blocker.
+- Script path: `tools/run_q6p_highlimit_row_patch_canary.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_highlimit_row_patch_canary.sh \
+  --tag 20260609_run016_highlimit_textfeat_leaf_finalmode \
+  --row-name "__text_feature_extractor__[t-video_aggregate_embed-0-0]" \
+  --final-mode \
+  --max-responses 10
+```
+
+- Patch summary:
+  - pre `quick_check`: `ok`
+  - high-limit patch changes: `row_patch_changes=1`
+  - post `quick_check`: `ok`
+- Canary summary:
+  - configured timeout: 900s (final-mode policy)
+  - `canary_rc=1`
+  - `post_echo_rc=1`
+  - client observed: `gRPC error: UNAVAILABLE: Socket closed`
+  - server crashed with SIGSEGV during request handling:
+    - `ccv_nnc_tensor_read`
+    - `ccv_cnnp_model_read`
+- Artifacts:
+  - canary dir: `output/q6p_canary_20260609_run016_highlimit_textfeat_leaf_finalmode_canary`
+  - client log: `output/q6p_canary_20260609_run016_highlimit_textfeat_leaf_finalmode_canary/client.log`
+  - server log: `output/q6p_canary_20260609_run016_highlimit_textfeat_leaf_finalmode_canary/server.log`
+- Outcome: Extending timeout to final-mode (15 min) did not address the failure; this branch fails due deterministic server crash, not timeout.
+- Next branch: Keep final-mode for long tests, but prioritize root-cause isolation of model-load crash path (row-level/binary-serialization integrity around `ccv_nnc_tensor_read`) before additional timeout-focused experiments.
+
+## Run 017 - 2026-06-09 13:28 (UTC)
+
+- Goal: Patch the full `__text_feature_extractor__` family (4 rows) with high-limit sqlite and rerun canary in final-mode timeout policy.
+- Script path: `tools/run_q6p_highlimit_rows_patch_canary.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_highlimit_rows_patch_canary.sh \
+  --tag 20260609_run017_highlimit_textfeat_family_finalmode \
+  --rows-file output/run013_text_feature_family_names.txt \
+  --final-mode \
+  --max-responses 10
+```
+
+- Patch summary:
+  - pre `quick_check`: `ok`
+  - all 4 row updates reported `changes=1`:
+    - `__text_feature_extractor__[t-audio_aggregate_embed-0-0]`
+    - `__text_feature_extractor__[t-audio_aggregate_embed-0-1]`
+    - `__text_feature_extractor__[t-video_aggregate_embed-0-0]`
+    - `__text_feature_extractor__[t-video_aggregate_embed-0-1]`
+  - post `quick_check`: `ok`
+- Canary summary (final-mode):
+  - `timeout_sec=900`, `final_mode=1`
+  - `canary_rc=1`
+  - `post_echo_rc=1`
+  - client observed: `gRPC error: UNAVAILABLE: Socket closed`
+  - server crashed with SIGSEGV stack head:
+    - `ccv_nnc_tensor_read`
+    - `ccv_cnnp_model_read`
+  - `crash_detected=1`
+- Artifacts:
+  - patch work dir: `output/20260609_run017_highlimit_textfeat_family_finalmode`
+  - normalized rows list: `output/20260609_run017_highlimit_textfeat_family_finalmode/rows_norm.txt`
+  - applied SQL: `output/20260609_run017_highlimit_textfeat_family_finalmode/patch_rows.sql`
+  - patch log: `output/20260609_run017_highlimit_textfeat_family_finalmode/highlimit_patch.log`
+  - canary dir: `output/q6p_canary_20260609_run017_highlimit_textfeat_family_finalmode_canary`
+  - client log: `output/q6p_canary_20260609_run017_highlimit_textfeat_family_finalmode_canary/client.log`
+  - server log: `output/q6p_canary_20260609_run017_highlimit_textfeat_family_finalmode_canary/server.log`
+- Outcome: Even full text-feature family high-limit patch does not prevent the runtime crash; failure remains pre-stream with the same loader crash signature.
+
+## Pause Note - 2026-06-09
+
+- Execution paused by request for markdown handoff updates.
+- Current highest-signal conclusion:
+  - Increasing timeout to final-mode (900s) is necessary for long validations but not sufficient for this failure path.
+  - Latest branches fail by deterministic server SIGSEGV (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`) rather than timeout-only stall.

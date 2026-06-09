@@ -27,9 +27,12 @@ IGNORE_CANARY_FAILURE=0
 
 HOST="127.0.0.1:7861"
 CANARY_TIMEOUT_SEC=120
+CANARY_TIMEOUT_EXPLICIT=0
 MAX_RESPONSES=10
 CANARY_TAG=""
 PROBE_PROGRESS_EVERY=400
+FINAL_MODE=0
+CANARY_NO_TIMEOUT=0
 
 usage() {
   cat <<'EOF'
@@ -62,6 +65,9 @@ Options:
   --probe-progress-every <n>       Probe progress interval (default: 400).
   --host <host:port>               Canary host (default: 127.0.0.1:7861).
   --canary-timeout-sec <n>         Canary timeout seconds (default: 120).
+  --final-mode                     Use longer final validation timeout (900s)
+                                   unless --canary-timeout-sec is explicitly set.
+  --canary-no-timeout              Disable canary timeout wrapper.
   --max-responses <n>              Canary max streamed responses (default: 10).
   --canary-tag <value>             Canary output tag (default: <tag>_post_leafretry).
   -h, --help                       Show help.
@@ -155,7 +161,16 @@ if [[ $# -gt 0 ]]; then
         ;;
       --canary-timeout-sec)
         CANARY_TIMEOUT_SEC="${2:-}"
+        CANARY_TIMEOUT_EXPLICIT=1
         shift 2
+        ;;
+      --final-mode)
+        FINAL_MODE=1
+        shift
+        ;;
+      --canary-no-timeout)
+        CANARY_NO_TIMEOUT=1
+        shift
         ;;
       --max-responses)
         MAX_RESPONSES="${2:-}"
@@ -176,6 +191,10 @@ if [[ $# -gt 0 ]]; then
         ;;
     esac
   done
+fi
+
+if [[ "$FINAL_MODE" == "1" && "$CANARY_TIMEOUT_EXPLICIT" != "1" && "$CANARY_NO_TIMEOUT" != "1" ]]; then
+  CANARY_TIMEOUT_SEC=900
 fi
 
 TARGET_Q6P="$(abs_path "$TARGET_Q6P")"
@@ -217,8 +236,8 @@ if [[ "$HEAD_BYTES" -lt 1 ]]; then
   echo "error: --head-bytes must be >= 1" >&2
   exit 1
 fi
-if [[ "$CANARY_TIMEOUT_SEC" -lt 1 ]]; then
-  echo "error: --canary-timeout-sec must be >= 1" >&2
+if [[ "$CANARY_NO_TIMEOUT" != "1" && "$CANARY_TIMEOUT_SEC" -lt 1 ]]; then
+  echo "error: --canary-timeout-sec must be >= 1 unless --canary-no-timeout is used" >&2
   exit 1
 fi
 if [[ "$MAX_RESPONSES" -lt 1 ]]; then
@@ -255,6 +274,8 @@ echo "min_free_gb=$MIN_FREE_GB"
 echo "head_bytes=$HEAD_BYTES"
 echo "run_probe=$RUN_PROBE"
 echo "run_canary=$RUN_CANARY"
+echo "final_mode=$FINAL_MODE"
+echo "canary_no_timeout=$CANARY_NO_TIMEOUT"
 
 if [[ "$STOP_RUNTIME" == "1" ]]; then
   echo "== stop runtime processes =="
@@ -383,13 +404,23 @@ fi
 CANARY_RC=0
 if [[ "$RUN_CANARY" == "1" ]]; then
   echo "== bounded canary =="
-  set +e
-  bash "$CANARY_ONCE" \
-    --model "$(basename "$TARGET_Q6P")" \
-    --host "$HOST" \
-    --timeout-sec "$CANARY_TIMEOUT_SEC" \
-    --max-responses "$MAX_RESPONSES" \
+  declare -a canary_cmd=(
+    bash "$CANARY_ONCE"
+    --model "$(basename "$TARGET_Q6P")"
+    --host "$HOST"
+    --max-responses "$MAX_RESPONSES"
     --tag "$CANARY_TAG"
+  )
+  if [[ "$CANARY_NO_TIMEOUT" == "1" ]]; then
+    canary_cmd+=(--no-timeout)
+  else
+    canary_cmd+=(--timeout-sec "$CANARY_TIMEOUT_SEC")
+  fi
+  if [[ "$FINAL_MODE" == "1" ]]; then
+    canary_cmd+=(--final-mode)
+  fi
+  set +e
+  "${canary_cmd[@]}"
   CANARY_RC=$?
   set -e
   echo "canary_rc=$CANARY_RC"
