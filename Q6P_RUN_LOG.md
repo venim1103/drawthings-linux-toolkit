@@ -830,3 +830,277 @@ tools/run_ltx23_first_divergence_stage.sh \
   - q6p mismatch names: `output/first_divergence_phase2_run019_micro_20260610_074323/compare_q6p_mismatch_names.txt`
 
 - Outcome: first-divergence instrumentation now provides deterministic stage localization; in this controlled run divergence is isolated to q6p stage while f16 remains parity-clean.
+
+## Run 020 - 2026-06-10 08:20 (UTC)
+
+- Goal: Complete full-row Phase 2 stage-localization run using currently available baseline/candidate model pairs and extract q6p-only divergence set.
+- Script path: `tools/run_ltx23_first_divergence_stage.sh`
+- Primary command:
+
+```bash
+bash tools/run_ltx23_first_divergence_stage.sh \
+  --baseline-f16 dt-models/ltx_2.3_22b_distilled_f16.ckpt \
+  --candidate-f16 dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --baseline-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt \
+  --candidate-q6p dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
+  --tag phase2_run020_full_20260610
+```
+
+- Full-row stage compare result (`phase2_run020_full_20260610`):
+  - f16 compare:
+    - `mismatch_rows=5601`
+    - first divergence:
+      - `name=__dit__[t-a2v_adaln_single_0-0-0]`
+      - `field=signatures.data_head_hex`
+  - q6p compare:
+    - `mismatch_rows=5745`
+    - first divergence:
+      - `name=__dit__[t-a2v_adaln_single_0-0-0]`
+      - `field=metadata.type`
+  - stage summary:
+    - `first_divergent_stage=f16`
+
+- Derived mismatch-set delta analysis:
+  - `q6p_only_count=144`
+  - `f16_only_count=0`
+  - `shared_count=5601`
+  - q6p-only prefix counts:
+    - `__text_audio_connector__`: 72
+    - `__text_video_connector__`: 72
+  - q6p-only subfamily counts:
+    - `t-up_proj`: 32
+    - `t-to_v`: 32
+    - `t-to_o`: 32
+    - `t-to_gate`: 32
+    - `t-down_proj`: 16
+
+- Artifacts:
+  - summary: `output/first_divergence_phase2_run020_full_20260610/summary.json`
+  - f16 compare: `output/first_divergence_phase2_run020_full_20260610/compare_f16.json`
+  - q6p compare: `output/first_divergence_phase2_run020_full_20260610/compare_q6p.json`
+  - q6p-only names: `output/first_divergence_phase2_run020_full_20260610/q6p_only_mismatch_names.txt`
+  - q6p-only summary: `output/first_divergence_phase2_run020_full_20260610/q6p_only_summary.txt`
+
+- Outcome: full official-vs-custom comparison is model-identity dominated at f16 payload/signature level, but q6p still introduces a narrow additional mismatch slice isolated to text connector families.
+- Next branch: regenerate a fresh custom q6p with quantizer trace enabled and compare old-vs-new custom q6p plus canary behavior to test whether connector policy differences drive runtime outcomes.
+
+## Run 021 - 2026-06-10 11:21 (UTC)
+
+- Goal: Regenerate custom q6p from current custom f16 with LTX quantizer decision trace enabled, then retest runtime under strict completion gate.
+- Quantization command:
+
+```bash
+bash tools/dt_quantize_model.sh \
+  -i dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  -m ltx2.3 \
+  -o dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --target-codec q6p \
+  --ltx-trace-output output/quant_trace_run021_20260610/ltx_trace.jsonl
+```
+
+- Quantization output:
+  - output ckpt: `dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` (about 20G)
+  - trace jsonl: `output/quant_trace_run021_20260610/ltx_trace.jsonl`
+  - quantize log: `output/quant_trace_run021_20260610/quantize.log`
+
+- Structural checks:
+  - `PRAGMA quick_check`: `ok`
+  - `tensors` row count: `5746`
+  - trace row count: `5746`
+
+- Trace decision distribution (reason):
+  - `forced_ltx_scalar_path`: 3780
+  - `forced_ltx_default_quant_path`: 1632
+  - `forced_ltx_text_feature_path`: 262
+  - `forced_ltx_sensitive_projection`: 40
+  - `forced_ltx_high_precision_path`: 32
+
+- Trace decision distribution (decision):
+  - `ezm7`: 3780
+  - `[q6p,ezm7]`: 1632
+  - `preserve_original`: 262
+  - `fp16`: 40
+  - `[q8p,ezm7]`: 32
+
+- Strict q6p canary command:
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --timeout-sec 240 \
+  --max-responses 0 \
+  --require-complete-stream \
+  --require-final-output \
+  --tag run021_trace_q6p_strict_20260610
+```
+
+- Canary outcome:
+  - `canary_rc=0`
+  - `post_echo_rc=0`
+  - streamed signposts reached: `textEncoded` -> `imageEncoded` -> `sampling` -> `imageDecoded`
+  - stream finished with final output (`images written: 1`)
+  - no deterministic `ccv_nnc_tensor_read` / `ccv_cnnp_model_read` crash in this run
+
+- Artifacts:
+  - quant trace dir: `output/quant_trace_run021_20260610`
+  - strict canary dir: `output/q6p_canary_run021_trace_q6p_strict_20260610`
+  - canary client log: `output/q6p_canary_run021_trace_q6p_strict_20260610/client.log`
+  - canary server log: `output/q6p_canary_run021_trace_q6p_strict_20260610/server.log`
+
+- Trace decision histogram (`ltx_trace.jsonl`, 5746 rows):
+  - decisions:
+    - `ezm7`: 3780
+    - `[q6p,ezm7]`: 1632
+    - `preserve_original`: 262
+    - `fp16`: 40
+    - `[q8p,ezm7]`: 32
+  - reasons:
+    - `forced_ltx_scalar_path`: 3780
+    - `forced_ltx_default_quant_path`: 1632
+    - `forced_ltx_text_feature_path`: 262
+    - `forced_ltx_sensitive_projection`: 40
+    - `forced_ltx_high_precision_path`: 32
+
+- Outcome: traced regenerated q6p candidate passed strict runtime gate end-to-end in this controlled run; this is the first clear pass shift against the previously deterministic crash branch.
+- Next branch: complete old-vs-new q6p manifest compare to map which tensor-policy deltas align with the runtime pass shift.
+
+## Run 022 - 2026-06-10 11:38 (UTC)
+
+- Goal: Complete same-model old-vs-new q6p stage localization to isolate what changed between the prior failing q6p and the traced regenerated q6p candidate.
+- Script path: `tools/run_ltx23_first_divergence_stage.sh`
+- Command:
+
+```bash
+bash tools/run_ltx23_first_divergence_stage.sh \
+  --baseline-f16 dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --candidate-f16 dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --baseline-q6p dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
+  --candidate-q6p dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --progress-every 200 \
+  --tag phase2_run021_old_vs_new_q6p_full_20260610
+```
+
+- Results (`phase2_run021_old_vs_new_q6p_full_20260610`):
+  - f16 compare:
+    - `mismatch_rows=0`
+    - `first_divergence=none`
+  - q6p compare:
+    - `mismatch_rows=5745`
+    - `field_mismatch_total=38853`
+    - first divergence:
+      - `name=__dit__[t-a2v_adaln_single_0-0-0]`
+      - `field=metadata.type`
+      - baseline value: `258`
+      - candidate value: `38877129135357953`
+  - stage summary:
+    - `first_divergent_stage=q6p`
+
+- q6p compare shape (top prefixes):
+  - `__dit__`: 5484
+  - `__text_audio_connector__`: 128
+  - `__text_video_connector__`: 128
+  - `__text_feature_extractor__`: 3
+  - `text_audio_connector_learnable_registers`: 1
+  - `text_video_connector_learnable_registers`: 1
+
+- Artifacts:
+  - summary: `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/summary.json`
+  - summary md: `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/summary.md`
+  - q6p compare: `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/compare_q6p.json`
+  - q6p mismatch names: `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/compare_q6p_mismatch_names.txt`
+
+- Reproducibility rerun (`phase2_run021_old_vs_new_q6p_20260610`):
+  - repeated same-model compare without `--progress-every` override
+  - reproduced stage decision and counts exactly:
+    - `first_divergent_stage=q6p`
+    - `f16 mismatch_rows=0`
+    - `q6p mismatch_rows=5745`
+    - `field_mismatch_total=38853`
+  - artifact summary: `output/first_divergence_phase2_run021_old_vs_new_q6p_20260610/summary.json`
+
+- Outcome: with identical f16 inputs, first divergence isolates strictly to q6p stage and indicates broad q6p-row rewrite between old and traced candidates.
+
+## Run 023 - 2026-06-10 11:32 (UTC)
+
+- Goal: Re-run the strict Phase 1 acceptance matrix using the traced q6p candidate to confirm the pass shift under the established gate contract.
+- Script path: `tools/run_ltx23_model_validity_matrix.sh`
+- Command:
+
+```bash
+bash tools/run_ltx23_model_validity_matrix.sh \
+  --f16-ckpt dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --q6p-ckpt dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --source-safetensors dt-models/10_e_v1_bf16.safetensors \
+  --tag phase1_trace021_retry_20260610
+```
+
+- Matrix summary (`phase1_trace021_retry_20260610`):
+  - SQLite sanity:
+    - f16 tensor_count=5746, null_name_count=0
+    - q6p tensor_count=5746, null_name_count=0
+  - f16 validation:
+    - profile auto resolved to `ltx2_3`
+    - required LTX2.3 prefix checks passed
+    - `f16_validate_rc=0`
+  - strict f16 canary:
+    - `f16_canary_rc=0`
+    - complete stream with final image output (`images written: 1`)
+  - strict q6p canary (traced candidate):
+    - `q6p_canary_rc=0`
+    - complete stream with final image output (`images written: 1`)
+  - final matrix result:
+    - `final_rc=0`
+    - `RESULT=PASS`
+
+- Artifacts:
+  - matrix summary: `output/model_validity_ltx23_phase1_trace021_retry_20260610/summary.md`
+  - matrix logs:
+    - `output/model_validity_ltx23_phase1_trace021_retry_20260610/f16_validator.log`
+    - `output/model_validity_ltx23_phase1_trace021_retry_20260610/f16_canary.log`
+    - `output/model_validity_ltx23_phase1_trace021_retry_20260610/q6p_canary.log`
+  - canary logs:
+    - `output/q6p_canary_phase1_trace021_retry_20260610_f16/client.log`
+    - `output/q6p_canary_phase1_trace021_retry_20260610_f16/server.log`
+    - `output/q6p_canary_phase1_trace021_retry_20260610_q6p/client.log`
+    - `output/q6p_canary_phase1_trace021_retry_20260610_q6p/server.log`
+
+- Outcome: traced q6p candidate now satisfies the same strict matrix gates that previously failed, including final-output completion.
+
+## Run 024 - 2026-06-10 12:02 (UTC)
+
+- Goal: Verify traced q6p stability beyond a single seed/size using strict completion gates.
+- Harness changes:
+  - `tools/run_q6p_canary_once.sh` extended with:
+    - `--width`
+    - `--height`
+    - `--steps`
+    - `--seed`
+  - Added `tools/run_q6p_strict_stability_matrix.sh` to run repeatable multi-case strict canaries.
+
+- Command:
+
+```bash
+bash tools/run_q6p_strict_stability_matrix.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --tag run024_trace021_stability_20260610 \
+  --seeds 4242,7777,1337 \
+  --sizes 256x256,384x704 \
+  --steps 4 \
+  --timeout-sec 300
+```
+
+- Matrix summary (`run024_trace021_stability_20260610`):
+  - cases: 6
+  - pass: 6
+  - fail: 0
+  - per-case strict signals:
+    - all cases `canary_rc=0`
+    - all cases `post_echo_rc=0`
+    - all cases produced final image output (`images=1`)
+
+- Artifacts:
+  - summary: `output/q6p_strict_stability_run024_trace021_stability_20260610/summary.md`
+  - case table: `output/q6p_strict_stability_run024_trace021_stability_20260610/results.tsv`
+  - per-case logs: `output/q6p_strict_stability_run024_trace021_stability_20260610/cases/*.log`
+
+- Outcome: traced q6p candidate passes strict runtime gates across multi-seed and multi-size coverage in this matrix.

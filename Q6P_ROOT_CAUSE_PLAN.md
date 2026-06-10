@@ -1,6 +1,6 @@
 # Q6P Root-Cause Plan for Custom LTX2.3
 
-Last updated: 2026-06-09
+Last updated: 2026-06-10
 Status: Active
 Owner: Copilot + user
 
@@ -77,3 +77,31 @@ Success means full generation completes (not only first streamed response) and n
 	- Smoke run (`phase2_smoke_20260610_073716`) passed with `first_divergent_stage=none` when baseline=candidate.
 - 2026-06-10: Run 019 micro divergence localization (`phase2_run019_micro_20260610_074323`) reported `first_divergent_stage=q6p` with first mismatch at `__dit__[t-a2v_adaln_single_0-0-0]` on `metadata.type`.
 - 2026-06-10: Added optional LTX quantizer decision trace output in `DRAW_THINGS_PATCH/Apps/ModelQuantizer/Quantizer.swift` via `--ltx-trace-output` JSONL.
+- 2026-06-10: Run 020 full-row stage-localization (`phase2_run020_full_20260610`) completed.
+	- Using available official-vs-custom baseline/candidate pair, summary reported `first_divergent_stage=f16` (payload/signature divergence on `__dit__[t-a2v_adaln_single_0-0-0]`).
+	- q6p compare still added a distinct metadata/codec divergence signal (`metadata.type`, `codec_key`) with `mismatch_rows=5745`.
+	- Derived set delta isolated q6p-only rows to 144 names, all in connector families:
+		- `__text_audio_connector__`: 72
+		- `__text_video_connector__`: 72
+	- Next causal branch: regenerate custom q6p with `--ltx-trace-output` and test whether connector-policy decisions explain q6p-only mismatch rows and runtime behavior.
+- 2026-06-10: Run 021 traced q6p regeneration (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`) completed.
+	- SQLite sanity passed (`quick_check=ok`, `tensors=5746`).
+	- Quantizer decision trace captured 5746 rows (`output/quant_trace_run021_20260610/ltx_trace.jsonl`).
+	- Strict q6p canary with complete-stream + final-output gates passed (`canary_rc=0`, `images written: 1`, no loader crash).
+- 2026-06-10: Run 022 old-vs-new same-model q6p compare (`phase2_run021_old_vs_new_q6p_full_20260610`) completed.
+	- f16 parity held exactly (`mismatch_rows=0`).
+	- divergence remained strictly q6p-stage (`first_divergent_stage=q6p`).
+	- q6p compare reported broad delta (`mismatch_rows=5745`, first field `metadata.type`).
+- 2026-06-10: Run 022 reproducibility rerun (`phase2_run021_old_vs_new_q6p_20260610`) matched prior results exactly.
+	- `first_divergent_stage=q6p`, `f16 mismatch_rows=0`, `q6p mismatch_rows=5745`.
+- 2026-06-10: Run 023 strict matrix retry (`phase1_trace021_retry_20260610`) passed all gates.
+	- f16 strict canary: pass.
+	- traced q6p strict canary: pass with final image output.
+	- matrix final result: `RESULT=PASS`.
+- 2026-06-10: Added canary parameterization and strict stability matrix tooling.
+	- `tools/run_q6p_canary_once.sh` now supports `--width`, `--height`, `--steps`, `--seed`.
+	- Added `tools/run_q6p_strict_stability_matrix.sh` for repeatable multi-case strict canaries.
+- 2026-06-10: Run 024 strict stability matrix (`run024_trace021_stability_20260610`) passed.
+	- coverage: 3 seeds x 2 sizes (6 cases total)
+	- all cases passed (`canary_rc=0`, `post_echo_rc=0`, final image output present)
+	- Current causal branch: derive minimal policy slice from run021 trace/compare deltas, then productize traced-q6p generation as default path for custom LTX2.3.

@@ -56,13 +56,64 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - baseline=`258`, candidate=`38877129135357953`
   - reported `first_divergent_stage=q6p`
 
+- Run 020 (`phase2_run020_full_20260610`):
+  - full-row phase-2 stage-localization run completed with available official-vs-custom pair
+  - f16 compare: `mismatch_rows=5601`, first field `signatures.data_head_hex`
+  - q6p compare: `mismatch_rows=5745`, first field `metadata.type`
+  - stage summary reported `first_divergent_stage=f16` (expected model-content drift dominates full official-vs-custom comparison)
+  - derived q6p-only mismatch set isolated additional quantization-stage drift to 144 rows:
+    - `__text_audio_connector__`: 72
+    - `__text_video_connector__`: 72
+  - q6p-only subfamilies: `t-to_gate`, `t-to_o`, `t-to_v`, `t-up_proj`, `t-down_proj`
+
+- Run 021 (`run021_trace_q6p_strict_20260610`):
+  - regenerated custom q6p from current custom f16 with LTX trace enabled
+    - output: `dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - trace: `output/quant_trace_run021_20260610/ltx_trace.jsonl` (5746 rows)
+    - sqlite checks: `quick_check=ok`, `tensors=5746`
+  - strict q6p canary passed end-to-end:
+    - `canary_rc=0`, `post_echo_rc=0`
+    - signposts reached through `imageDecoded`
+    - stream completed with final output (`images written: 1`)
+  - this run did not reproduce the prior deterministic loader crash path
+    (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`)
+
+- Run 022 (`phase2_run021_old_vs_new_q6p_full_20260610`):
+  - completed same-model old-vs-new q6p stage compare with identical f16 inputs
+  - f16 compare stayed parity-clean (`mismatch_rows=0`)
+  - q6p compare remained fully divergent (`mismatch_rows=5745`, `field_mismatch_total=38853`)
+  - stage summary: `first_divergent_stage=q6p`
+  - first divergence:
+    - tensor: `__dit__[t-a2v_adaln_single_0-0-0]`
+    - field: `metadata.type`
+    - baseline=`258`, candidate=`38877129135357953`
+  - reproducibility rerun (`phase2_run021_old_vs_new_q6p_20260610`) matched the same stage decision and mismatch counts exactly
+
+- Run 023 (`phase1_trace021_retry_20260610`):
+  - strict validity matrix rerun with traced q6p candidate passed all gates
+  - f16 strict canary: `f16_canary_rc=0`
+  - q6p strict canary: `q6p_canary_rc=0`
+  - matrix final result: `RESULT=PASS`
+
+- Run 024 (`run024_trace021_stability_20260610`):
+  - added strict stability matrix harness and executed multi-case run on traced q6p candidate
+  - matrix coverage: 3 seeds x 2 sizes = 6 strict cases
+    - seeds: `4242, 7777, 1337`
+    - sizes: `256x256`, `384x704`
+  - result: `pass=6`, `fail=0`
+  - every case reported:
+    - `canary_rc=0`
+    - `post_echo_rc=0`
+    - final output present (`images=1`)
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
 - Current blocker is not timeout-only behavior.
-- Current blocker is deterministic server crash during model load/request handling:
-  - `ccv_nnc_tensor_read`
-  - `ccv_cnnp_model_read`
+- Deterministic crash remains the historical baseline for prior q6p artifacts, but traced candidate now passes strict gates in both direct canary and matrix harness.
+- Same-model compare localizes the behavior shift to q6p stage only (f16 parity exact), with broad q6p metadata/payload rewrites.
+- Full-row phase-2 family signal still highlights connector families as high-value causal context, but successful traced candidate indicates previous q6p state likely carried stale/invalid encoding state beyond connector-only deltas.
+- Multi-case strict stability matrix now confirms the traced candidate is not a single-seed/single-size accidental pass under current gates.
 
 ## 4) Key artifacts
 
@@ -90,6 +141,33 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/first_divergence_phase2_run019_micro_20260610_074323/compare_f16.json`
   - `output/first_divergence_phase2_run019_micro_20260610_074323/compare_q6p.json`
   - `output/first_divergence_phase2_run019_micro_20260610_074323/compare_q6p_mismatch_names.txt`
+- Run 020 phase-2 full artifacts:
+  - `output/first_divergence_phase2_run020_full_20260610/summary.json`
+  - `output/first_divergence_phase2_run020_full_20260610/summary.md`
+  - `output/first_divergence_phase2_run020_full_20260610/compare_f16.json`
+  - `output/first_divergence_phase2_run020_full_20260610/compare_q6p.json`
+  - `output/first_divergence_phase2_run020_full_20260610/q6p_only_mismatch_names.txt`
+  - `output/first_divergence_phase2_run020_full_20260610/q6p_only_summary.txt`
+- Run 021 artifacts:
+  - `output/quant_trace_run021_20260610/quantize.log`
+  - `output/quant_trace_run021_20260610/ltx_trace.jsonl`
+  - `output/q6p_canary_run021_trace_q6p_strict_20260610/client.log`
+  - `output/q6p_canary_run021_trace_q6p_strict_20260610/server.log`
+- Run 022 artifacts:
+  - `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/summary.json`
+  - `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/summary.md`
+  - `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/compare_q6p.json`
+  - `output/first_divergence_phase2_run021_old_vs_new_q6p_full_20260610/compare_q6p.md`
+  - `output/first_divergence_phase2_run021_old_vs_new_q6p_20260610/summary.json`
+- Run 023 artifacts:
+  - `output/model_validity_ltx23_phase1_trace021_retry_20260610/summary.md`
+  - `output/model_validity_ltx23_phase1_trace021_retry_20260610/f16_validator.log`
+  - `output/model_validity_ltx23_phase1_trace021_retry_20260610/f16_canary.log`
+  - `output/model_validity_ltx23_phase1_trace021_retry_20260610/q6p_canary.log`
+- Run 024 artifacts:
+  - `output/q6p_strict_stability_run024_trace021_stability_20260610/summary.md`
+  - `output/q6p_strict_stability_run024_trace021_stability_20260610/results.tsv`
+  - `output/q6p_strict_stability_run024_trace021_stability_20260610/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -97,6 +175,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Pivot from timeout tuning to crash-localization around tensor read path:
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
+- Immediate next branch:
+  - derive minimal q6p policy slice from old-vs-new mismatch clusters and run021 trace records
+  - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
+  - promote traced q6p candidate naming/versioning in `dt-models/custom.json` after deciding the release label
 
 ## 6) Phase-2 instrumentation added (2026-06-10)
 

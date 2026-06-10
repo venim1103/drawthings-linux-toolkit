@@ -38,6 +38,10 @@ Usage:
 Options:
   --model <file>            Model key from dt-models directory.
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
+  --width <n>               Pixel width for request config (default: 256).
+  --height <n>              Pixel height for request config (default: 256).
+  --steps <n>               Sampling steps for request config (default: 4).
+  --seed <n>                Seed for request config (default: 4242).
   --timeout-sec <n>         timeout(1) seconds for generate-raw (default: 90).
   --final-mode              Use longer final validation timeout (900s) unless
                             --timeout-sec was explicitly set.
@@ -67,6 +71,22 @@ if [[ $# -gt 0 ]]; then
         ;;
       --host)
         HOST="${2:-}"
+        shift 2
+        ;;
+      --width)
+        WIDTH="${2:-}"
+        shift 2
+        ;;
+      --height)
+        HEIGHT="${2:-}"
+        shift 2
+        ;;
+      --steps)
+        STEPS="${2:-}"
+        shift 2
+        ;;
+      --seed)
+        SEED="${2:-}"
         shift 2
         ;;
       --timeout-sec)
@@ -136,6 +156,26 @@ fi
 
 if [[ "$MAX_RESPONSES" -lt 0 ]]; then
   echo "error: --max-responses must be >= 0" >&2
+  exit 1
+fi
+
+if ! [[ "$WIDTH" =~ ^[0-9]+$ ]] || [[ "$WIDTH" -lt 64 ]]; then
+  echo "error: --width must be an integer >= 64" >&2
+  exit 1
+fi
+
+if ! [[ "$HEIGHT" =~ ^[0-9]+$ ]] || [[ "$HEIGHT" -lt 64 ]]; then
+  echo "error: --height must be an integer >= 64" >&2
+  exit 1
+fi
+
+if ! [[ "$STEPS" =~ ^[0-9]+$ ]] || [[ "$STEPS" -lt 1 ]]; then
+  echo "error: --steps must be an integer >= 1" >&2
+  exit 1
+fi
+
+if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
+  echo "error: --seed must be a non-negative integer" >&2
   exit 1
 fi
 
