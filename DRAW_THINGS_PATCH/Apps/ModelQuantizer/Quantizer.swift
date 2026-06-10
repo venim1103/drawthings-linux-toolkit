@@ -1,5 +1,6 @@
 import ArgumentParser
 import Diffusion
+import Foundation
 import NNC
 
 enum QuantizationTargetCodec: String, ExpressibleByArgument {
@@ -40,6 +41,13 @@ struct Quantizer: ParsableCommand {
   )
   var targetCodec: QuantizationTargetCodec = .auto
 
+  @Option(
+    name: .long,
+    help:
+      "Optional JSONL output path for LTX2/LTX2.3 quantization decisions (one record per tensor write)."
+  )
+  var ltxTraceOutput: String = ""
+
   mutating func run() throws {
     // Convert string to ModelVersion enum
     guard let version = ModelVersion(rawValue: modelVersion) else {
@@ -67,6 +75,49 @@ struct Quantizer: ParsableCommand {
       print("Forcing quantization codec: \(targetCodec.rawValue) (\(forcedCodec))")
     }
 
+    let tracePath = ltxTraceOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    let traceEnabledForLTX = !tracePath.isEmpty && (version == .ltx2 || version == .ltx2_3)
+    var traceHandle: FileHandle? = nil
+    if traceEnabledForLTX {
+      let traceURL = URL(fileURLWithPath: tracePath)
+      let parent = traceURL.deletingLastPathComponent()
+      try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+      if FileManager.default.fileExists(atPath: traceURL.path) {
+        try FileManager.default.removeItem(at: traceURL)
+      }
+      _ = FileManager.default.createFile(atPath: traceURL.path, contents: nil)
+      traceHandle = try FileHandle(forWritingTo: traceURL)
+      print("LTX quantization trace enabled: \(traceURL.path)")
+    }
+    defer {
+      try? traceHandle?.close()
+    }
+
+    func traceLTXDecision(
+      key: String,
+      shape: [Int],
+      squeezedDims: Int,
+      decision: String,
+      reason: String,
+      forcedCodec: String
+    ) {
+      guard let traceHandle else { return }
+      let payload: [String: Any] = [
+        "key": key,
+        "shape": shape,
+        "squeezed_dims": squeezedDims,
+        "decision": decision,
+        "reason": reason,
+        "forced_codec": forcedCodec,
+        "model_version": version.rawValue,
+      ]
+      guard let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+        return
+      }
+      traceHandle.write(jsonData)
+      traceHandle.write(Data([0x0a]))
+    }
+
     let graph = DynamicGraph()
     graph.openStore(
       inputFile, flags: .readOnly, externalStore: TensorData.externalStore(filePath: inputFile)
@@ -89,6 +140,7 @@ struct Quantizer: ParsableCommand {
           // First convert the tensor to FP16, and then to q8p.
           let fp16 = Tensor<FloatType>(from: tensor)
           let shape = fp16.shape
+          let shapeArray = shape.map { Int($0) }
           let squeezedDims = shape.reduce(0) { $1 > 1 ? 1 + $0 : $0 }
 
           if let forcedCodec {
@@ -102,6 +154,14 @@ struct Quantizer: ParsableCommand {
                 // Preserve clip-side feature extractor and connector weights verbatim.
                 // These tensors are consumed by TextEncoder.encodeLTX2 via filePaths[1],
                 // and recasting can distort payload/metadata for key rows.
+                traceLTXDecision(
+                  key: key,
+                  shape: shapeArray,
+                  squeezedDims: squeezedDims,
+                  decision: "preserve_original",
+                  reason: "forced_ltx_text_feature_path",
+                  forcedCodec: targetCodec.rawValue
+                )
                 $0.write(key, tensor: tensor)
                 continue
               }
@@ -109,16 +169,48 @@ struct Quantizer: ParsableCommand {
                 || key.contains("scale_shift_table") || key.contains("caption_projection")
                 || key.contains("patchify_proj") || key.contains("proj_out")
               {
+                traceLTXDecision(
+                  key: key,
+                  shape: shapeArray,
+                  squeezedDims: squeezedDims,
+                  decision: "fp16",
+                  reason: "forced_ltx_sensitive_projection",
+                  forcedCodec: targetCodec.rawValue
+                )
                 $0.write(key, tensor: fp16)
                 continue
               }
               if squeezedDims > 1 {
                 if key.contains("ada_ln") || key.contains("adaln") || shape.count == 4 {
+                  traceLTXDecision(
+                    key: key,
+                    shape: shapeArray,
+                    squeezedDims: squeezedDims,
+                    decision: "[q8p,ezm7]",
+                    reason: "forced_ltx_high_precision_path",
+                    forcedCodec: targetCodec.rawValue
+                  )
                   $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
                 } else {
+                  traceLTXDecision(
+                    key: key,
+                    shape: shapeArray,
+                    squeezedDims: squeezedDims,
+                    decision: "[\(targetCodec.rawValue),ezm7]",
+                    reason: "forced_ltx_default_quant_path",
+                    forcedCodec: targetCodec.rawValue
+                  )
                   $0.write(key, tensor: fp16, codec: [forcedCodec, .ezm7])
                 }
               } else {
+                traceLTXDecision(
+                  key: key,
+                  shape: shapeArray,
+                  squeezedDims: squeezedDims,
+                  decision: "ezm7",
+                  reason: "forced_ltx_scalar_path",
+                  forcedCodec: targetCodec.rawValue
+                )
                 $0.write(key, tensor: fp16, codec: .ezm7)
               }
               continue
@@ -355,19 +447,59 @@ struct Quantizer: ParsableCommand {
             }
           case .ltx2, .ltx2_3:
             if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
+              traceLTXDecision(
+                key: key,
+                shape: shapeArray,
+                squeezedDims: squeezedDims,
+                decision: "fp16",
+                reason: "auto_ltx_sensitive_projection",
+                forcedCodec: targetCodec.rawValue
+              )
               $0.write(key, tensor: fp16)
             } else {
               if squeezedDims > 1 {
                 if key.contains("ada_ln") {
+                  traceLTXDecision(
+                    key: key,
+                    shape: shapeArray,
+                    squeezedDims: squeezedDims,
+                    decision: "[q8p,ezm7]",
+                    reason: "auto_ltx_adaln_path",
+                    forcedCodec: targetCodec.rawValue
+                  )
                   $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
                 } else {
                   if shape.count == 4 {  // Convolution.
+                    traceLTXDecision(
+                      key: key,
+                      shape: shapeArray,
+                      squeezedDims: squeezedDims,
+                      decision: "[q8p,ezm7]",
+                      reason: "auto_ltx_conv_path",
+                      forcedCodec: targetCodec.rawValue
+                    )
                     $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
                   } else {
+                    traceLTXDecision(
+                      key: key,
+                      shape: shapeArray,
+                      squeezedDims: squeezedDims,
+                      decision: "[q6p,ezm7]",
+                      reason: "auto_ltx_default_quant_path",
+                      forcedCodec: targetCodec.rawValue
+                    )
                     $0.write(key, tensor: fp16, codec: [.q6p, .ezm7])
                   }
                 }
               } else {
+                traceLTXDecision(
+                  key: key,
+                  shape: shapeArray,
+                  squeezedDims: squeezedDims,
+                  decision: "ezm7",
+                  reason: "auto_ltx_scalar_path",
+                  forcedCodec: targetCodec.rawValue
+                )
                 $0.write(key, tensor: fp16, codec: .ezm7)
               }
             }

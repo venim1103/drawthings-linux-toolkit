@@ -732,3 +732,101 @@ bash tools/run_q6p_highlimit_rows_patch_canary.sh \
 - Current highest-signal conclusion:
   - Increasing timeout to final-mode (900s) is necessary for long validations but not sufficient for this failure path.
   - Latest branches fail by deterministic server SIGSEGV (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`) rather than timeout-only stall.
+
+## Run 018 - 2026-06-09 14:29 (UTC)
+
+- Goal: Execute the new generic LTX2.3 validity matrix with strict completion gates to lock a reproducible Phase 1 baseline.
+- Script path: `tools/run_ltx23_model_validity_matrix.sh`
+- Primary command:
+
+```bash
+tools/run_ltx23_model_validity_matrix.sh \
+  --f16-ckpt dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --q6p-ckpt dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
+  --source-safetensors dt-models/10_e_v1_bf16.safetensors \
+  --tag phase1_retry_20260609_143001
+```
+
+- Attempt note:
+  - initial tag `phase1_20260609_142934` failed early due pre-fix canary guard (`--max-responses must be >= 1` when strict mode set unlimited responses)
+  - rerun with patched canary completed end-to-end and produced definitive baseline outcome
+- Matrix summary (`phase1_retry_20260609_143001`):
+  - SQLite sanity:
+    - f16 tensor_count=5746, null_name_count=0
+    - q6p tensor_count=5746, null_name_count=0
+  - f16 validation:
+    - profile auto resolved to `ltx2_3`
+    - required LTX2.3 prefix checks passed
+    - `f16_validate_rc=0`
+  - strict f16 canary:
+    - `f16_canary_rc=0`
+    - stream finished with final output (`images written: 1`)
+  - strict q6p canary:
+    - `q6p_canary_rc=1`
+    - client observed `gRPC error: UNAVAILABLE: Socket closed`
+    - server SIGSEGV stack head:
+      - `ccv_nnc_tensor_read`
+      - `ccv_cnnp_model_read`
+  - final matrix result:
+    - `final_rc=1`
+    - `RESULT=FAIL`
+- Artifacts:
+  - matrix summary: `output/model_validity_ltx23_phase1_retry_20260609_143001/summary.md`
+  - matrix logs:
+    - `output/model_validity_ltx23_phase1_retry_20260609_143001/f16_validator.log`
+    - `output/model_validity_ltx23_phase1_retry_20260609_143001/f16_canary.log`
+    - `output/model_validity_ltx23_phase1_retry_20260609_143001/q6p_canary.log`
+  - canary logs:
+    - `output/q6p_canary_phase1_retry_20260609_143001_f16/client.log`
+    - `output/q6p_canary_phase1_retry_20260609_143001_f16/server.log`
+    - `output/q6p_canary_phase1_retry_20260609_143001_q6p/client.log`
+    - `output/q6p_canary_phase1_retry_20260609_143001_q6p/server.log`
+- Outcome: Phase 1 baseline is now locked with strict completion gating and still reproduces the deterministic q6p crash path.
+
+## Run 019 - 2026-06-10 07:43 (UTC)
+
+- Goal: Execute first-divergence stage instrumentation (Phase 2) to localize where baseline/candidate divergence first appears.
+- New tooling used:
+  - `tools/dt_export_ckpt_tensor_manifest.py`
+  - `tools/dt_compare_ckpt_tensor_manifests.py`
+  - `tools/run_ltx23_first_divergence_stage.sh`
+- Primary micro-run command:
+
+```bash
+tools/run_ltx23_first_divergence_stage.sh \
+  --baseline-f16 dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --candidate-f16 dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
+  --baseline-q6p dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
+  --candidate-q6p dt-models/10_e_v1_bf16_regen_0_q6p.pre_replay_replay_after_ab_20260605.ckpt \
+  --max-rows 128 \
+  --progress-every 0 \
+  --tag phase2_run019_micro_20260610_074323
+```
+
+- Results (`phase2_run019_micro_20260610_074323`):
+  - f16 compare:
+    - `mismatch_rows=0`
+    - `first_divergence=none`
+  - q6p compare:
+    - `mismatch_rows=128` (on first 128 rows)
+    - `field_mismatch_total=847`
+    - first divergence:
+      - `name=__dit__[t-a2v_adaln_single_0-0-0]`
+      - `field=metadata.type`
+      - baseline value: `258`
+      - candidate value: `38877129135357953`
+  - stage summary:
+    - `first_divergent_stage=q6p`
+    - `RESULT=PASS` (instrumentation runner succeeded)
+
+- Attempt note:
+  - full-row run tags `phase2_run019_20260610_073734` and `phase2_run019_quick_20260610_074155` were started but intentionally terminated to avoid long blocking exports after confirming throughput bottlenecks.
+
+- Artifacts:
+  - summary: `output/first_divergence_phase2_run019_micro_20260610_074323/summary.json`
+  - summary markdown: `output/first_divergence_phase2_run019_micro_20260610_074323/summary.md`
+  - f16 compare: `output/first_divergence_phase2_run019_micro_20260610_074323/compare_f16.json`
+  - q6p compare: `output/first_divergence_phase2_run019_micro_20260610_074323/compare_q6p.json`
+  - q6p mismatch names: `output/first_divergence_phase2_run019_micro_20260610_074323/compare_q6p_mismatch_names.txt`
+
+- Outcome: first-divergence instrumentation now provides deterministic stage localization; in this controlled run divergence is isolated to q6p stage while f16 remains parity-clean.

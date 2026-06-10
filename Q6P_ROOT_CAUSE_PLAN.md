@@ -68,4 +68,12 @@ Success means full generation completes (not only first streamed response) and n
 - 2026-06-09: Launched Phase 1 baseline run with generic matrix.
 	- Initial launch failed due stale filename assumptions.
 	- Relaunch tag: phase1_retry_20260609_143001.
-	- f16 validation and strict f16 canary passed; q6p strict canary running.
+	- f16 validation and strict f16 canary passed.
+	- q6p strict canary crashed with SIGSEGV (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`).
+- 2026-06-10: Added Phase 2 first-divergence instrumentation tooling.
+	- `tools/dt_export_ckpt_tensor_manifest.py`
+	- `tools/dt_compare_ckpt_tensor_manifests.py`
+	- `tools/run_ltx23_first_divergence_stage.sh`
+	- Smoke run (`phase2_smoke_20260610_073716`) passed with `first_divergent_stage=none` when baseline=candidate.
+- 2026-06-10: Run 019 micro divergence localization (`phase2_run019_micro_20260610_074323`) reported `first_divergent_stage=q6p` with first mismatch at `__dit__[t-a2v_adaln_single_0-0-0]` on `metadata.type`.
+- 2026-06-10: Added optional LTX quantizer decision trace output in `DRAW_THINGS_PATCH/Apps/ModelQuantizer/Quantizer.swift` via `--ltx-trace-output` JSONL.
