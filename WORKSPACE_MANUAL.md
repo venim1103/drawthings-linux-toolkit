@@ -100,6 +100,14 @@ Behavior:
 
 Run this after changing any patched files so the patch bundle stays current.
 
+### 3.3 Sync toolkit snapshots into draw-things-community and refresh patches
+
+  bash /workspaces/drawthings-linux-toolkit/tools/sync_drawthings_patch_bundle.sh
+
+Use this after editing files under `DRAW_THINGS_PATCH/`.
+It copies snapshot files into `draw-things-community` and regenerates
+`DRAW_THINGS_PATCH/patches/*.patch` in one step.
+
 ## 4) Build and use model-quantizer
 
 Build release binary:

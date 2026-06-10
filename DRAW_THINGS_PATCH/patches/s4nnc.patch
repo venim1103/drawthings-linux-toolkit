@@ -1,5 +1,5 @@
 diff --git a/Package.swift b/Package.swift
-index d1bdb8d..27e10d7 100644
+index d1bdb8db..27e10d70 100644
 --- a/Package.swift
 +++ b/Package.swift
 @@ -1,6 +1,34 @@

@@ -27,6 +27,15 @@ We keep two patch representations:
 bash /workspaces/drawthings-linux-toolkit/tools/apply_drawthings_quant_patch.sh
 ```
 
+## Sync toolkit snapshots into draw-things-community
+
+Use this after editing files under `DRAW_THINGS_PATCH/` so the working
+`draw-things-community` tree and unified patch files stay aligned.
+
+```bash
+bash /workspaces/drawthings-linux-toolkit/tools/sync_drawthings_patch_bundle.sh
+```
+
 ## Regenerate patches after edits
 
 ```bash
