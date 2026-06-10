@@ -120,7 +120,7 @@ restore_custom_json() {
   fi
 }
 
-trap restore_custom_json EXIT
+trap restore_custom_json EXIT INT TERM
 
 set_entry_fields() {
   local entry_name="$1"
