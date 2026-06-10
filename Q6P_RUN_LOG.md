@@ -1277,3 +1277,55 @@ bash tools/run_q6p_canary_once.sh \
   - `output/q6p_canary_run030_trace021_post_revert_control_20260610/server.log`
 
 - Outcome: traced q6p strict pass is restored when the local custom entry no longer matches the traced file key.
+
+## Run 031 - 2026-06-10 13:36 (UTC)
+
+- Goal: Derive a minimal safe local custom-entry schema for the traced q6p key by sweeping controlled field combinations and validating with strict final-mode canary.
+- New tooling:
+  - `tools/run_custom_alias_schema_probe.sh`
+  - mutates one named custom entry (`10_e_v1`) across predefined variants
+  - runs strict final-mode canary for each variant
+  - classifies failures (`loader_crash`, `textencoder_illegal`, `timeout`)
+  - restores `dt-models/custom.json` automatically on exit
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_schema_probe.sh \
+  --tag run031_alias_schema_probe_20260610 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run031_alias_schema_probe_20260610`):
+  - cases: 5
+  - pass: 1
+  - fail: 4
+  - model under test: `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+
+- Case results:
+  - `control_unmatched_oldq6p`
+    - entry `file=10_e_v1_bf16_regen_0_q6p.ckpt`
+    - entry `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+    - `RESULT=PASS`, `canary_rc=0`, `responses=10`, `images=1`
+  - `match_trace_clip_trace_scale1`
+    - entry `file=trace021`, `clip_encoder=trace021`, `default_scale=1`
+    - `RESULT=FAIL`, signature `loader_crash`, `canary_rc=124`
+  - `match_trace_clip_oldq6p_scale1`
+    - entry `file=trace021`, `clip_encoder=old_q6p`, `default_scale=1`
+    - `RESULT=FAIL`, signature `loader_crash`, `canary_rc=124`
+  - `match_trace_clip_official_scale1`
+    - entry `file=trace021`, `clip_encoder=official_1.1_q6p`, `default_scale=1`
+    - `RESULT=FAIL`, signature `textencoder_illegal`, `canary_rc=1`
+  - `match_trace_clip_trace_scale12`
+    - entry `file=trace021`, `clip_encoder=trace021`, `default_scale=12`
+    - `RESULT=FAIL`, signature `loader_crash`, `canary_rc=124`
+
+- Artifacts:
+  - summary: `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/summary.md`
+  - results table: `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/results.tsv`
+  - per-case logs: `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/cases/*.log`
+
+- Outcome:
+  - In tested dimensions (`file`, `clip_encoder`, `default_scale`), any variant where custom entry `file` matched traced key failed.
+  - Only unmatched-file control passed.
+  - Current best operational path: keep traced strict validation and usage on non-custom key path until deeper custom-entry path isolation is completed.

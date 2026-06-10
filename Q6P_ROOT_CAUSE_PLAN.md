@@ -121,3 +121,10 @@ Success means full generation completes (not only first streamed response) and n
 - 2026-06-10: Run 030 post-revert control passed.
 	- after reverting local custom entry file mapping away from traced key, strict final-mode canary for traced key passed again.
 	- Current causal branch: treat custom-entry/key-resolution path as independent failure surface; keep traced q6p validation on non-custom key path while deriving a safe custom.json alias schema.
+- 2026-06-10: Run 031 controlled custom alias schema probe (`run031_alias_schema_probe_20260610`) completed.
+	- Added `tools/run_custom_alias_schema_probe.sh` to sweep controlled entry variants and auto-restore `dt-models/custom.json`.
+	- Probe matrix result: 5 cases total, pass=1, fail=4.
+	- Only unmatched-file control passed (`file=10_e_v1_bf16_regen_0_q6p.ckpt`).
+	- All tested variants where entry `file` matched traced key failed (loader-path crash/timeout or `TextEncoder.encodeLTX2` illegal instruction).
+	- `default_scale` variation (1 vs 12) did not recover a pass when `file=traced`.
+	- Current causal branch: custom-entry match on traced file key is a high-confidence trigger under tested schema space; next isolation should target other entry fields (`version`, `modifier`, `objective`, `text_encoder`, `autoencoder`) and model-browser resolution semantics.

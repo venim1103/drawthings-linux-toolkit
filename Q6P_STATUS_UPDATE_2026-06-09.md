@@ -133,6 +133,19 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - after reverting local custom entry file mapping away from traced key, traced-key strict final-mode canary passed again
   - result: `canary_rc=0`, `post_echo_rc=0`, full stream + final image
 
+- Run 031 (`run031_alias_schema_probe_20260610`):
+  - added and executed controlled local alias schema probe for `10_e_v1` custom entry
+  - tool: `tools/run_custom_alias_schema_probe.sh`
+  - probe dimensions: entry `file`, entry `clip_encoder`, entry `default_scale`
+  - matrix result: `cases=5`, `pass=1`, `fail=4`
+  - pass case:
+    - unmatched-file control (`file=10_e_v1_bf16_regen_0_q6p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`)
+  - fail cases (all with `file=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`):
+    - `clip=trace021`, `default_scale=1` -> `loader_crash`, `canary_rc=124`
+    - `clip=old_q6p`, `default_scale=1` -> `loader_crash`, `canary_rc=124`
+    - `clip=official_1.1_q6p`, `default_scale=1` -> `textencoder_illegal`, `canary_rc=1`
+    - `clip=trace021`, `default_scale=12` -> `loader_crash`, `canary_rc=124`
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -142,6 +155,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Full-row phase-2 family signal still highlights connector families as high-value causal context, but successful traced candidate indicates previous q6p state likely carried stale/invalid encoding state beyond connector-only deltas.
 - Multi-case strict stability matrix now confirms the traced candidate is not a single-seed/single-size accidental pass under current gates.
 - New key-path control chain (Run 027/028/029/030) shows a second failure surface: custom-entry/key-resolution path can destabilize runtime independently of traced checkpoint tensor content.
+- Run031 probe narrows this further: in tested schema space, custom entry `file` matching traced key is the dominant trigger; changing `clip_encoder` and `default_scale` alone did not recover stability.
 
 ## 4) Key artifacts
 
@@ -219,6 +233,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run 030 artifacts:
   - `output/q6p_canary_run030_trace021_post_revert_control_20260610/client.log`
   - `output/q6p_canary_run030_trace021_post_revert_control_20260610/server.log`
+- Run 031 artifacts:
+  - `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/summary.md`
+  - `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/results.tsv`
+  - `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -227,7 +245,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - derive minimal safe custom-entry schema for traced q6p (key-resolution path) using run028 as pass control and run027/029 as fail controls
+  - extend custom-entry schema isolation beyond `file`/`clip_encoder`/`default_scale` to test `version`, `modifier`, `objective`, `text_encoder`, and `autoencoder` impact while keeping run028-style non-custom control
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 
