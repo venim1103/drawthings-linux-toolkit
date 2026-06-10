@@ -106,6 +106,33 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - `post_echo_rc=0`
     - final output present (`images=1`)
 
+- Run 025 (`run025_clipfix2_stability_20260610`):
+  - second-model strict matrix on `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+  - result: `pass=0`, `fail=6`
+  - all cases failed before streamed payload (`responses=0`, `images=0`)
+  - failure signature: `Illegal instruction` in `TextEncoder.encodeLTX2`
+
+- Run 026 (`run026_clipfix2_finalmode_canary_20260610`, `run026_official11_finalmode_canary_20260610`):
+  - strict final-mode single canaries on clipfix2 and official 1.1 q6p both failed
+  - both reproduced the same `TextEncoder.encodeLTX2` illegal-instruction crash
+  - this rules out a non-final-mode-only explanation for that branch
+
+- Run 027 (`run027_trace021_finalmode_control_20260610`):
+  - traced q6p canary under strict final-mode failed on loader-path crash
+  - signature: `ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`
+
+- Run 028 (`run028_trace021_tmpkey_control_20260610`):
+  - same traced q6p content under a temporary non-custom key passed strict final-mode canary
+  - result: `canary_rc=0`, `post_echo_rc=0`, full stream + final image
+
+- Run 029/029b (`run029_trace021_alias_clipoldq6p_20260610`, `run029b_trace021_alias_clipoldq6p_shorttimeout_20260610`):
+  - local alias variant (`file=traced`, `clip_encoder=old_q6p`) remained unstable
+  - short-timeout confirm run returned `canary_rc=124` (timeout), no streamed responses
+
+- Run 030 (`run030_trace021_post_revert_control_20260610`):
+  - after reverting local custom entry file mapping away from traced key, traced-key strict final-mode canary passed again
+  - result: `canary_rc=0`, `post_echo_rc=0`, full stream + final image
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -114,6 +141,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Same-model compare localizes the behavior shift to q6p stage only (f16 parity exact), with broad q6p metadata/payload rewrites.
 - Full-row phase-2 family signal still highlights connector families as high-value causal context, but successful traced candidate indicates previous q6p state likely carried stale/invalid encoding state beyond connector-only deltas.
 - Multi-case strict stability matrix now confirms the traced candidate is not a single-seed/single-size accidental pass under current gates.
+- New key-path control chain (Run 027/028/029/030) shows a second failure surface: custom-entry/key-resolution path can destabilize runtime independently of traced checkpoint tensor content.
 
 ## 4) Key artifacts
 
@@ -168,6 +196,29 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/q6p_strict_stability_run024_trace021_stability_20260610/summary.md`
   - `output/q6p_strict_stability_run024_trace021_stability_20260610/results.tsv`
   - `output/q6p_strict_stability_run024_trace021_stability_20260610/cases/*.log`
+- Run 025 artifacts:
+  - `output/q6p_strict_stability_run025_clipfix2_stability_20260610/summary.md`
+  - `output/q6p_strict_stability_run025_clipfix2_stability_20260610/results.tsv`
+  - `output/q6p_strict_stability_run025_clipfix2_stability_20260610/cases/*.log`
+- Run 026 artifacts:
+  - `output/q6p_canary_run026_clipfix2_finalmode_canary_20260610/client.log`
+  - `output/q6p_canary_run026_clipfix2_finalmode_canary_20260610/server.log`
+  - `output/q6p_canary_run026_official11_finalmode_canary_20260610/client.log`
+  - `output/q6p_canary_run026_official11_finalmode_canary_20260610/server.log`
+- Run 027 artifacts:
+  - `output/q6p_canary_run027_trace021_finalmode_control_20260610/client.log`
+  - `output/q6p_canary_run027_trace021_finalmode_control_20260610/server.log`
+- Run 028 artifacts:
+  - `output/q6p_canary_run028_trace021_tmpkey_control_20260610/client.log`
+  - `output/q6p_canary_run028_trace021_tmpkey_control_20260610/server.log`
+- Run 029 artifacts:
+  - `output/q6p_canary_run029_trace021_alias_clipoldq6p_20260610/client.log`
+  - `output/q6p_canary_run029_trace021_alias_clipoldq6p_20260610/server.log`
+  - `output/q6p_canary_run029b_trace021_alias_clipoldq6p_shorttimeout_20260610/client.log`
+  - `output/q6p_canary_run029b_trace021_alias_clipoldq6p_shorttimeout_20260610/server.log`
+- Run 030 artifacts:
+  - `output/q6p_canary_run030_trace021_post_revert_control_20260610/client.log`
+  - `output/q6p_canary_run030_trace021_post_revert_control_20260610/server.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -176,9 +227,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - derive minimal q6p policy slice from old-vs-new mismatch clusters and run021 trace records
+  - derive minimal safe custom-entry schema for traced q6p (key-resolution path) using run028 as pass control and run027/029 as fail controls
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
-  - promote traced q6p candidate naming/versioning in `dt-models/custom.json` after deciding the release label
+  - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 
 ## 6) Phase-2 instrumentation added (2026-06-10)
 

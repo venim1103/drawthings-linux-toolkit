@@ -105,3 +105,19 @@ Success means full generation completes (not only first streamed response) and n
 	- coverage: 3 seeds x 2 sizes (6 cases total)
 	- all cases passed (`canary_rc=0`, `post_echo_rc=0`, final image output present)
 	- Current causal branch: derive minimal policy slice from run021 trace/compare deltas, then productize traced-q6p generation as default path for custom LTX2.3.
+- 2026-06-10: Run 025 second-model strict matrix (`run025_clipfix2_stability_20260610`) failed 6/6.
+	- model: `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+	- failure signature: `Illegal instruction` in `TextEncoder.encodeLTX2` (no streamed payloads).
+- 2026-06-10: Run 026 final-mode single-canary checks on clipfix2 and official-1.1 q6p both failed.
+	- clipfix2 and `ltx_2.3_22b_distilled_1.1_q6p.ckpt` reproduced the same `TextEncoder.encodeLTX2` illegal-instruction crash.
+	- indicates failure is not explained by non-final-mode-only execution.
+- 2026-06-10: Run 027 traced-key final-mode control failed after local alias experiment.
+	- `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` hit loader-path crash (`ccv_nnc_tensor_read` -> `ccv_cnnp_model_read`).
+- 2026-06-10: Run 028 tmp-key hardlink control passed.
+	- same traced content under non-custom key (`..._tmpkey.ckpt`) passed strict final-mode canary.
+	- isolates instability to model-key/custom-entry path rather than traced checkpoint content.
+- 2026-06-10: Run 029 local alias variant (`file=traced`, `clip_encoder=old_q6p`) remained unstable.
+	- produced stalled/no-stream behavior; short-timeout confirm run (`run029b...`) failed with timeout.
+- 2026-06-10: Run 030 post-revert control passed.
+	- after reverting local custom entry file mapping away from traced key, strict final-mode canary for traced key passed again.
+	- Current causal branch: treat custom-entry/key-resolution path as independent failure surface; keep traced q6p validation on non-custom key path while deriving a safe custom.json alias schema.

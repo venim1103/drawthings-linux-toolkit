@@ -1104,3 +1104,176 @@ bash tools/run_q6p_strict_stability_matrix.sh \
   - per-case logs: `output/q6p_strict_stability_run024_trace021_stability_20260610/cases/*.log`
 
 - Outcome: traced q6p candidate passes strict runtime gates across multi-seed and multi-size coverage in this matrix.
+
+## Run 025 - 2026-06-10 13:10 (UTC)
+
+- Goal: Validate whether a second LTX2.3 q6p artifact is stable under the same strict multi-case matrix used for traced custom q6p.
+- Script path: `tools/run_q6p_strict_stability_matrix.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_strict_stability_matrix.sh \
+  --model ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt \
+  --tag run025_clipfix2_stability_20260610 \
+  --seeds 4242,7777,1337 \
+  --sizes 256x256,384x704 \
+  --steps 4 \
+  --timeout-sec 240
+```
+
+- Matrix summary (`run025_clipfix2_stability_20260610`):
+  - cases: 6
+  - pass: 0
+  - fail: 6
+  - all cases failed before any stream payload (`responses=0`, `images=0`)
+- Primary failure signature:
+  - server crash in `TextEncoder.encodeLTX2`
+  - signal: `Illegal instruction`
+  - client observed: `gRPC error: UNAVAILABLE: Socket closed`
+
+- Artifacts:
+  - summary: `output/q6p_strict_stability_run025_clipfix2_stability_20260610/summary.md`
+  - case table: `output/q6p_strict_stability_run025_clipfix2_stability_20260610/results.tsv`
+  - per-case logs: `output/q6p_strict_stability_run025_clipfix2_stability_20260610/cases/*.log`
+
+- Outcome: second-model strict matrix failed 6/6 with deterministic early crash pattern.
+
+## Run 026 - 2026-06-10 13:20 (UTC)
+
+- Goal: Determine whether run025 failures were caused by non-final-mode settings or by model family behavior.
+- Script path: `tools/run_q6p_canary_once.sh`
+- Commands:
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt \
+  --timeout-sec 240 --max-responses 0 \
+  --require-complete-stream --require-final-output --final-mode \
+  --tag run026_clipfix2_finalmode_canary_20260610
+
+bash tools/run_q6p_canary_once.sh \
+  --model ltx_2.3_22b_distilled_1.1_q6p.ckpt \
+  --timeout-sec 240 --max-responses 0 \
+  --require-complete-stream --require-final-output --final-mode \
+  --tag run026_official11_finalmode_canary_20260610
+```
+
+- Results:
+  - clipfix2: `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL`
+  - official 1.1 q6p: `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL`
+  - both failed with the same `Illegal instruction` crash in `TextEncoder.encodeLTX2`
+
+- Artifacts:
+  - `output/q6p_canary_run026_clipfix2_finalmode_canary_20260610/client.log`
+  - `output/q6p_canary_run026_clipfix2_finalmode_canary_20260610/server.log`
+  - `output/q6p_canary_run026_official11_finalmode_canary_20260610/client.log`
+  - `output/q6p_canary_run026_official11_finalmode_canary_20260610/server.log`
+
+- Outcome: failure is not explained by non-final-mode-only behavior; it persists with `--final-mode` and reproduces across two non-traced q6p artifacts.
+
+## Run 027 - 2026-06-10 13:22 (UTC)
+
+- Goal: Re-check traced q6p candidate under strict final-mode after local custom alias promotion experiment.
+- Script path: `tools/run_q6p_canary_once.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --timeout-sec 240 --max-responses 0 \
+  --require-complete-stream --require-final-output --final-mode \
+  --tag run027_trace021_finalmode_control_20260610
+```
+
+- Result:
+  - `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL`
+  - crash signature shifted to loader path:
+    - `ccv_nnc_tensor_read`
+    - `ccv_cnnp_model_read`
+
+- Artifacts:
+  - `output/q6p_canary_run027_trace021_finalmode_control_20260610/client.log`
+  - `output/q6p_canary_run027_trace021_finalmode_control_20260610/server.log`
+
+- Outcome: traced q6p stability became sensitive after local alias experiment; this prompted an isolation control.
+
+## Run 028 - 2026-06-10 13:25 (UTC)
+
+- Goal: Isolate whether the traced checkpoint itself regressed or whether key-path/custom-entry resolution was the destabilizer.
+- Method:
+  - temporary hardlink key (same inode/content):
+    - `10_e_v1_bf16_regen_0_q6p_trace021_20260610_tmpkey.ckpt`
+  - run strict final-mode canary with the temporary key.
+- Script path: `tools/run_q6p_canary_once.sh`
+- Command:
+
+```bash
+ln dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610_tmpkey.ckpt
+
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610_tmpkey.ckpt \
+  --timeout-sec 240 --max-responses 0 \
+  --require-complete-stream --require-final-output --final-mode \
+  --tag run028_trace021_tmpkey_control_20260610
+```
+
+- Result:
+  - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+  - complete stream with final image output (`responses=10`, `images written=1`)
+
+- Artifacts:
+  - `output/q6p_canary_run028_trace021_tmpkey_control_20260610/client.log`
+  - `output/q6p_canary_run028_trace021_tmpkey_control_20260610/server.log`
+
+- Outcome: traced checkpoint content remains viable; instability is tied to the model-key/custom-entry path, not raw tensor content.
+
+## Run 029 - 2026-06-10 13:25 (UTC)
+
+- Goal: Test whether changing `clip_encoder` in local `dt-models/custom.json` can stabilize traced-file key path.
+- Local alias variant tested:
+  - entry file: `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+  - entry clip_encoder: `10_e_v1_bf16_regen_0_q6p.ckpt`
+- Script path: `tools/run_q6p_canary_once.sh`
+
+- Observed behavior:
+  - long stall with no streamed responses from client
+  - server showed loader-path crash stack in log during one run attempt
+  - short-timeout confirmation run (`run029b_trace021_alias_clipoldq6p_shorttimeout_20260610`) returned:
+    - `canary_rc=124` (timeout)
+    - `post_echo_rc=0`
+    - `RESULT=FAIL canary timed out (60s)`
+
+- Artifacts:
+  - `output/q6p_canary_run029_trace021_alias_clipoldq6p_20260610/client.log`
+  - `output/q6p_canary_run029_trace021_alias_clipoldq6p_20260610/server.log`
+  - `output/q6p_canary_run029b_trace021_alias_clipoldq6p_shorttimeout_20260610/client.log`
+  - `output/q6p_canary_run029b_trace021_alias_clipoldq6p_shorttimeout_20260610/server.log`
+
+- Outcome: this local alias variant did not produce a stable strict pass.
+
+## Run 030 - 2026-06-10 13:30 (UTC)
+
+- Goal: Confirm traced-key stability after reverting local custom entry file mapping away from traced key.
+- Local config action:
+  - reverted `dt-models/custom.json` 10_e_v1 entry `file` back to `10_e_v1_bf16_regen_0_q6p.ckpt`.
+- Script path: `tools/run_q6p_canary_once.sh`
+- Command:
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --timeout-sec 240 --max-responses 0 \
+  --require-complete-stream --require-final-output --final-mode \
+  --tag run030_trace021_post_revert_control_20260610
+```
+
+- Result:
+  - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+  - full streamed completion with final image output (`responses=10`, `images=1`)
+
+- Artifacts:
+  - `output/q6p_canary_run030_trace021_post_revert_control_20260610/client.log`
+  - `output/q6p_canary_run030_trace021_post_revert_control_20260610/server.log`
+
+- Outcome: traced q6p strict pass is restored when the local custom entry no longer matches the traced file key.
