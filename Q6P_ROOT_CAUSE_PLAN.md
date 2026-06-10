@@ -128,3 +128,16 @@ Success means full generation completes (not only first streamed response) and n
 	- All tested variants where entry `file` matched traced key failed (loader-path crash/timeout or `TextEncoder.encodeLTX2` illegal instruction).
 	- `default_scale` variation (1 vs 12) did not recover a pass when `file=traced`.
 	- Current causal branch: custom-entry match on traced file key is a high-confidence trigger under tested schema space; next isolation should target other entry fields (`version`, `modifier`, `objective`, `text_encoder`, `autoencoder`) and model-browser resolution semantics.
+- 2026-06-10: Run 032b extended-field custom alias schema probe (`run032b_alias_schema_extended_fields_20260610`) completed.
+	- Extended `tools/run_custom_alias_schema_probe.sh` with `--matrix core|extended-fields` and per-case mutation support for `version`, `modifier`, `objective`, `text_encoder`, `autoencoder`.
+	- Added periodic heartbeat output per case for unattended long runs.
+	- Extended probe matrix result: 10 cases total, pass=1, fail=9.
+	- Only unmatched-file control passed (same as run031).
+	- All nine variants with entry `file=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` failed with timeout signature (`canary_rc=124`, no streamed payloads), including mutations of:
+		- `modifier` (`none`, `kontext_kv`)
+		- `version` (`ltx2`)
+		- `objective` (set `u.condition_scale=1`, removed)
+		- `text_encoder` (removed)
+		- `autoencoder` (removed)
+	- Refined causal branch: in tested custom schema space, the file-key match/resolution axis remains the dominant trigger; secondary entry-field mutations above are not sufficient to restore stability.
+	- Next isolation target: model-resolution semantics and mapping collisions around `specificationForModel(file)` keying (custom entry shadowing by `file`) rather than additional per-entry parameter tweaks.

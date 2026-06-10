@@ -146,6 +146,25 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - `clip=official_1.1_q6p`, `default_scale=1` -> `textencoder_illegal`, `canary_rc=1`
     - `clip=trace021`, `default_scale=12` -> `loader_crash`, `canary_rc=124`
 
+- Run 032b (`run032b_alias_schema_extended_fields_20260610`):
+  - extended and executed custom alias probe on additional schema fields for `10_e_v1`
+  - tool update: `tools/run_custom_alias_schema_probe.sh` now supports `--matrix core|extended-fields`, extra field mutations, and per-case heartbeat logging
+  - probe dimensions (added): `version`, `modifier`, `objective`, `text_encoder`, `autoencoder`
+  - matrix result: `cases=10`, `pass=1`, `fail=9`
+  - pass case:
+    - unmatched-file control (`file=10_e_v1_bf16_regen_0_q6p.ckpt`)
+  - fail cases:
+    - all `file=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` variants failed with timeout signature (`canary_rc=124`, no streamed payloads)
+    - included mutations:
+      - `modifier=none`
+      - `modifier=kontext_kv`
+      - `version=ltx2`
+      - `objective.u.condition_scale=1`
+      - objective removed
+      - text_encoder removed
+      - autoencoder removed
+      - text_encoder + autoencoder removed
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -156,6 +175,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Multi-case strict stability matrix now confirms the traced candidate is not a single-seed/single-size accidental pass under current gates.
 - New key-path control chain (Run 027/028/029/030) shows a second failure surface: custom-entry/key-resolution path can destabilize runtime independently of traced checkpoint tensor content.
 - Run031 probe narrows this further: in tested schema space, custom entry `file` matching traced key is the dominant trigger; changing `clip_encoder` and `default_scale` alone did not recover stability.
+- Run032b extends that result: broad secondary field changes (`version`, `modifier`, `objective`, `text_encoder`, `autoencoder`) still did not recover any matched-trace pass, reinforcing file-key resolution as the dominant trigger.
 
 ## 4) Key artifacts
 
@@ -237,6 +257,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/summary.md`
   - `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/results.tsv`
   - `output/custom_alias_schema_probe_run031_alias_schema_probe_20260610/cases/*.log`
+- Run 032b artifacts:
+  - `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/summary.md`
+  - `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/results.tsv`
+  - `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -245,7 +269,8 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - extend custom-entry schema isolation beyond `file`/`clip_encoder`/`default_scale` to test `version`, `modifier`, `objective`, `text_encoder`, and `autoencoder` impact while keeping run028-style non-custom control
+  - pivot from per-entry parameter sweeps to model-resolution semantics tests around custom-entry file-key shadowing (`specificationForModel(file)` path)
+  - design minimal probes for mapping-collision hypotheses (same file under multiple names, non-shadowing alias indirection, key-path hardlink identity)
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 

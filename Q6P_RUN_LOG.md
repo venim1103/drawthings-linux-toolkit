@@ -1329,3 +1329,54 @@ bash tools/run_custom_alias_schema_probe.sh \
   - In tested dimensions (`file`, `clip_encoder`, `default_scale`), any variant where custom entry `file` matched traced key failed.
   - Only unmatched-file control passed.
   - Current best operational path: keep traced strict validation and usage on non-custom key path until deeper custom-entry path isolation is completed.
+
+## Run 032b - 2026-06-10 14:14 (UTC)
+
+- Goal: Extend custom-entry schema isolation beyond `file`/`clip_encoder`/`default_scale` to test `version`, `modifier`, `objective`, `text_encoder`, and `autoencoder` impact while keeping strict final-mode canary gates.
+- Tooling update:
+  - `tools/run_custom_alias_schema_probe.sh` now supports:
+    - `--matrix core|extended-fields`
+    - per-case mutation of `version`, `modifier`, `text_encoder`, `autoencoder`, `objective`
+    - periodic case heartbeat lines (`case=<id> status=running`) for unattended long runs
+    - additional `missing_file` signature bucket
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_schema_probe.sh \
+  --matrix extended-fields \
+  --tag run032b_alias_schema_extended_fields_20260610 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run032b_alias_schema_extended_fields_20260610`):
+  - cases: 10
+  - pass: 1
+  - fail: 9
+  - model under test: `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+
+- Case highlights:
+  - `control_unmatched_oldq6p`:
+    - entry `file=10_e_v1_bf16_regen_0_q6p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+    - `RESULT=PASS`, `canary_rc=0`, `responses=10`, `images=1`
+  - All nine `file=trace021` variants failed with the same observed canary outcome:
+    - `RESULT=FAIL`, signature `timeout`, `canary_rc=124`, `responses=0`, `images=0`
+    - variants swept:
+      - baseline matched trace
+      - `modifier=none`
+      - `modifier=kontext_kv`
+      - `version=ltx2`
+      - `objective.u.condition_scale=1`
+      - `objective` removed
+      - `text_encoder` removed
+      - `autoencoder` removed
+      - `text_encoder` and `autoencoder` both removed
+
+- Artifacts:
+  - summary: `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/summary.md`
+  - results table: `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/results.tsv`
+  - per-case logs: `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/cases/*.log`
+
+- Outcome:
+  - Extending schema mutations across `version`/`modifier`/`objective`/`text_encoder`/`autoencoder` did not recover any matched-trace pass.
+  - Current evidence strengthens the hypothesis that the destabilizing axis is custom-entry file-key match/resolution itself rather than these secondary entry fields.
