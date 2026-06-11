@@ -2351,3 +2351,84 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/cases/*.log`
+
+## Run 058 (2026-06-11): Compact Text-Gate Boundary Matrix
+
+- Goal:
+  - Run a compact matrix that toggles only text pin (`A` vs `B`) under matched traced-clip conditions, with and without `modifier+autoencoder` bundle.
+
+- Harness update:
+  - `tools/run_custom_alias_resolution_probe.sh` gained matrix:
+    - `--matrix ltx23-textgate`
+  - Cases:
+    - control
+    - traced-clip pin-a baseline
+    - traced-clip pin-b baseline
+    - traced-clip pin-a + mod+auto
+    - traced-clip pin-b + mod+auto
+    - full-base
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-textgate \
+  --timeout-sec 75 \
+  --tag run058_wrapper_ltx23_textgate_20260611
+```
+
+- Probe summary (`run058_wrapper_ltx23_textgate_20260611`):
+  - cases: 6
+  - pass: 1
+  - fail: 5
+
+- Outcome map:
+  - pin-a baseline => `loader_crash`
+  - pin-b baseline => `timeout`
+  - pin-a + mod+auto => `timeout`
+  - pin-b + mod+auto => `timeout`
+  - full-base => `loader_crash`
+
+- Key finding:
+  - Text identity remains a dominant branch gate under traced-clip two-file path, but one additive case (`pin-b + mod+auto`) required reproducibility check.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run058_wrapper_ltx23_textgate_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run058_wrapper_ltx23_textgate_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run058_wrapper_ltx23_textgate_20260611/cases/*.log`
+
+## Run 059 (2026-06-11): Text-Gate Reproducibility Recheck
+
+- Goal:
+  - Repeat run058 unchanged to classify stable vs drifting signature cases.
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-textgate \
+  --timeout-sec 75 \
+  --tag run059_wrapper_ltx23_textgate_recheck_20260611
+```
+
+- Probe summary (`run059_wrapper_ltx23_textgate_recheck_20260611`):
+  - cases: 6
+  - pass: 1
+  - fail: 5
+
+- Stable cases across run058/run059:
+  - pin-a baseline => `loader_crash`
+  - pin-b baseline => `timeout`
+  - pin-a + mod+auto => `timeout`
+  - full-base => `loader_crash`
+
+- Drift case:
+  - pin-b + mod+auto switched from `timeout` (run058) to `loader_crash` (run059).
+
+- Key finding:
+  - Majority of text-gate signatures are reproducible; one mixed pin-b additive case remains state/noise sensitive and should be treated as non-deterministic until repeated further.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/cases/*.log`

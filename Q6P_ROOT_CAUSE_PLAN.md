@@ -307,3 +307,13 @@ Success means full generation completes (not only first streamed response) and n
 	- Updated causal branch: text-encoder identity is now a primary branch gate for traced-clip two-file path.
 		- `text_pin_a`: baseline timeout, loader-crash activated by modifier/autoencoder.
 		- `text_pin_b`: baseline loader-crash regardless of modifier/autoencoder toggles.
+- 2026-06-11: Added compact text-gate boundary matrix and executed run058/run059.
+	- New matrix: `--matrix ltx23-textgate` (pin-a vs pin-b under matched traced-clip path, with and without mod+auto bundle).
+	- Reproducible across run058/run059:
+		- pin-a baseline => loader-crash
+		- pin-b baseline => timeout
+		- pin-a + mod+auto => timeout
+		- full-base => loader-crash
+	- Non-deterministic case so far:
+		- pin-b + mod+auto toggled timeout (run058) vs loader-crash (run059).
+	- Updated causal branch: text identity plus additive field bundle controls most branch outcomes, but at least one pin-b additive branch remains state/noise sensitive and requires additional repeated controls before policy hard-coding.

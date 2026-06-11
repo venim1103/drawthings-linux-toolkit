@@ -498,6 +498,33 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - text-pin-b traced-clip path is loader-crash by default; modifier/autoencoder toggles do not materially change this branch
 
+- Run 058 (`run058_wrapper_ltx23_textgate_20260611`):
+  - added compact boundary matrix:
+    - `tools/run_custom_alias_resolution_probe.sh --matrix ltx23-textgate`
+  - purpose:
+    - isolate text pin A vs B under matched traced-clip two-file conditions
+    - include a single additive bundle (`modifier+autoencoder`) for both pins
+  - result: `cases=6`, `pass=1`, `fail=5`
+  - signatures:
+    - pin-a baseline => `loader_crash`
+    - pin-b baseline => `timeout`
+    - pin-a + mod+auto => `timeout`
+    - pin-b + mod+auto => `timeout`
+    - full-base => `loader_crash`
+
+- Run 059 (`run059_wrapper_ltx23_textgate_recheck_20260611`):
+  - repeated run058 unchanged for reproducibility
+  - result: `cases=6`, `pass=1`, `fail=5`
+  - stable signatures across run058/run059:
+    - pin-a baseline => `loader_crash`
+    - pin-b baseline => `timeout`
+    - pin-a + mod+auto => `timeout`
+    - full-base => `loader_crash`
+  - drift case:
+    - pin-b + mod+auto shifted `timeout` -> `loader_crash`
+  - interpretation:
+    - most text-gate boundaries are reproducible; one pin-b additive case remains state-sensitive/noisy
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -531,6 +558,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run053/055 confirm focused split reproducibility under wrapper runtime; run054 showed a transient but non-persistent two-file traced-clip timeout drift.
 - Run056 isolates a new field-composition trigger: on traced-clip + text-pin-a two-file entries, adding either `modifier` or `autoencoder` flips timeout to loader-crash.
 - Run057 adds the symmetric contrast: on traced-clip + text-pin-b two-file entries, baseline is already loader-crash and remains loader-crash with modifier/autoencoder toggles.
+- Run058/059 refine this with an A/B boundary matrix: text identity remains a primary gate, but pin-b + additive bundle still shows one non-deterministic branch requiring repeat controls before hard policy rules.
 
 ## 4) Key artifacts
 
@@ -707,6 +735,14 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/cases/*.log`
+- Run 058 artifacts:
+  - `output/custom_alias_resolution_probe_run058_wrapper_ltx23_textgate_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run058_wrapper_ltx23_textgate_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run058_wrapper_ltx23_textgate_20260611/cases/*.log`
+- Run 059 artifacts:
+  - `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -725,7 +761,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - run focused gate (`--matrix ltx23-focused`) before broad ltx23 matrices to quickly verify branch-shape stability
   - keep branch-comparison matrices on wrapper/runtime-equivalent binaries; do not interpret source-built OpenBLAS runs as direct equivalents of deployed CUDA-linked behavior
   - prioritize loader-branch isolation on wrapper runtime: test text-pin-a traced-clip variants with controlled `modifier` and `autoencoder` toggles as a precondition map
-  - prioritize source-level instrumentation that compares pin-a baseline timeout vs pin-b baseline loader-crash on the same traced-clip two-file path
+  - prioritize source-level instrumentation that compares stable text-gate anchors on traced-clip path:
+    - pin-a baseline (`loader_crash`) vs pin-b baseline (`timeout`)
+    - pin-a + mod+auto (`timeout`) vs full-base (`loader_crash`)
+  - keep pin-b + mod+auto under repeated control runs until signature stabilizes
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
