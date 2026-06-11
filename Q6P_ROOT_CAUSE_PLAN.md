@@ -160,3 +160,16 @@ Success means full generation completes (not only first streamed response) and n
 	- Failures occurred only when both probe aliases were active simultaneously (`alias_both`), with loader-crash signature and `canary_rc/post_echo_rc=124`.
 	- Refined causal branch: trigger is not global alias contamination from one key; failure emerges under multi-entry shadowing/collision conditions, pointing to lookup/selection behavior when overlapping custom entries are active together.
 	- Next isolation target: add source-level instrumentation around ModelZoo resolution map construction/lookup order (`availableSpecifications` -> `specificationMapping[file]`) and validate winner selection under overlapping alias sets.
+- 2026-06-11: Run 035 core alias-resolution matrix with winner-context instrumentation (`run035_alias_resolution_core_ctx_20260611`) completed.
+	- Added resolution-context export in `tools/run_custom_alias_resolution_probe.sh` (`arg_source`, resolved file, per-key match counts, winner name/modifier).
+	- Matrix result: 9 cases total, pass=2, fail=7 (same pass/fail shape as run033b).
+	- Passing controls had `arg_match_count=0` (no custom winner for requested file key).
+	- Every failing case had `arg_match_count>=1` with an active winner entry for the resolved file key.
+	- Duplicate alias ordering changed winner identity (`ab` vs `ba`) but did not change fail outcome.
+	- Refined causal branch: winner identity differences are secondary; the dominant trigger is presence of an active custom winner over the requested file key path.
+- 2026-06-11: Run 036 cross-file alias-resolution matrix with winner-context instrumentation (`run036_alias_resolution_crossfile_ctx_20260611`) completed.
+	- Matrix result: 9 cases total, pass=5, fail=4 (reproduces run034).
+	- Cross-file single-alias requests passed while requested key still had `arg_match_count=0` (no active winner on requested key), even when the other key had active matches.
+	- All `alias_both` failures had simultaneous overlap (`trace_match_count=1` and `tmpkey_match_count=1`) plus active arg winner.
+	- In `alias_both`, file-key requests failed as timeouts while alias-name requests failed as loader-crash; both remain terminal FAIL signatures.
+	- Next isolation target (unchanged, now stronger): instrument `ModelZoo.specificationForModel(file)` / `specificationMapping[file]` map construction and winner replacement behavior under overlapping entries to identify first control-flow divergence.

@@ -1475,3 +1475,64 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - Single-key alias activation does not globally poison other keys (cross-file single-alias cases passed).
   - Failure reappears when both matching probe aliases are active together, indicating a stronger mapping-collision/selection interaction than simple one-alias presence.
   - This narrows the next isolation target to resolution behavior under multi-entry shadowing rather than broad custom-entry presence.
+
+## Run 035 (2026-06-11): Core Alias-Resolution Matrix with Winner Context
+
+- Tool update:
+  - `tools/run_custom_alias_resolution_probe.sh` now emits per-case resolution context columns in `results.tsv`:
+    - `arg_source`, `arg_resolved_file`, `arg_match_count`, `arg_winner_name`, `arg_winner_modifier`
+    - `trace_match_count`, `trace_winner_name`
+    - `tmpkey_match_count`, `tmpkey_winner_name`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix core \
+  --tag run035_alias_resolution_core_ctx_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run035_alias_resolution_core_ctx_20260611`):
+  - cases: 9
+  - pass: 2
+  - fail: 7
+
+- Context highlights:
+  - PASS controls (`control_trace_noncustom`, `control_tmpkey_noncustom`) both had `arg_match_count=0` and no custom winner.
+  - All FAIL cases had `arg_match_count>=1` with an active winning custom entry for the resolved file key.
+  - Duplicate-order probes showed winner flip by insertion order (`ab` winner=`probe_trace_alias_b`, `ba` winner=`probe_trace_alias_a`), but both still failed.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run035_alias_resolution_core_ctx_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run035_alias_resolution_core_ctx_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run035_alias_resolution_core_ctx_20260611/cases/*.log`
+
+## Run 036 (2026-06-11): Cross-File Alias-Resolution Matrix with Winner Context
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix cross-file \
+  --tag run036_alias_resolution_crossfile_ctx_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run036_alias_resolution_crossfile_ctx_20260611`):
+  - cases: 9
+  - pass: 5
+  - fail: 4
+
+- Context highlights:
+  - Cross-file single-alias requests remained PASS when request-file had `arg_match_count=0`, even while the other key had active matches (`trace_match_count` or `tmpkey_match_count` > 0).
+  - All `alias_both` cases failed; each failure had simultaneous overlap (`trace_match_count=1` and `tmpkey_match_count=1`) with an active arg winner.
+  - In `alias_both`, file-arg variants failed as `timeout`, while alias-name variants failed as `loader_crash`.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run036_alias_resolution_crossfile_ctx_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run036_alias_resolution_crossfile_ctx_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run036_alias_resolution_crossfile_ctx_20260611/cases/*.log`
+
+- Outcome:
+  - The trigger remains tied to overlapping multi-entry winner selection state, not global contamination from any one alias and not tensor payload validity.

@@ -256,6 +256,72 @@ classify_signature() {
   echo "unknown"
 }
 
+resolve_context() {
+  local model_arg="$1"
+
+  python3 - "$CUSTOM_JSON" "$model_arg" "$TRACE_MODEL_KEY" "$TMPKEY_MODEL_KEY" <<'PY'
+import json
+import pathlib
+import sys
+
+custom_json = pathlib.Path(sys.argv[1])
+model_arg = sys.argv[2].strip()
+trace_key = sys.argv[3].strip()
+tmpkey_key = sys.argv[4].strip()
+
+try:
+    payload = json.loads(custom_json.read_text(encoding="utf-8"))
+except Exception:
+    payload = []
+
+if not isinstance(payload, list):
+    payload = []
+
+entries = [e for e in payload if isinstance(e, dict)]
+
+def clean(value):
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\n", " ").strip()
+
+arg_source = "file"
+arg_resolved_file = model_arg
+for entry in entries:
+    if clean(entry.get("name", "")) != model_arg:
+        continue
+    model_file = clean(entry.get("file", ""))
+    if model_file:
+        arg_source = "custom_name"
+        arg_resolved_file = model_file
+        break
+
+def match_list(file_key: str):
+    key = clean(file_key)
+    return [e for e in entries if clean(e.get("file", "")) == key]
+
+arg_matches = match_list(arg_resolved_file)
+trace_matches = match_list(trace_key)
+tmp_matches = match_list(tmpkey_key)
+
+arg_winner = arg_matches[-1] if arg_matches else None
+trace_winner = trace_matches[-1] if trace_matches else None
+tmp_winner = tmp_matches[-1] if tmp_matches else None
+
+fields = [
+    arg_source,
+    arg_resolved_file,
+    str(len(arg_matches)),
+    clean(arg_winner.get("name", "") if arg_winner else ""),
+    clean(arg_winner.get("modifier", "") if arg_winner else ""),
+    str(len(trace_matches)),
+    clean(trace_winner.get("name", "") if trace_winner else ""),
+    str(len(tmp_matches)),
+    clean(tmp_winner.get("name", "") if tmp_winner else ""),
+]
+print("\t".join(fields))
+PY
+}
+
 run_case() {
   local case_id="$1"
   local custom_mode="$2"
@@ -273,6 +339,9 @@ run_case() {
 
   set_custom_mode "$custom_mode"
   python3 -m json.tool "$CUSTOM_JSON" >/dev/null
+
+  local resolution_context
+  resolution_context="$(resolve_context "$model_arg")"
 
   echo "== case: $case_id =="
   echo "custom_mode=$custom_mode model_arg=$model_arg ensure_tmpkey=$ensure_tmpkey"
@@ -318,7 +387,7 @@ run_case() {
   local signature
   signature="$(classify_signature "$case_log")"
 
-  echo -e "${case_id}\t${custom_mode}\t${model_arg}\t${ensure_tmpkey}\t${rc}\t${result}\t${signature}\t${canary_rc}\t${post_echo_rc}\t${responses}\t${images}\t${audio}\t${case_tag}" >> "$RESULTS_TSV"
+  echo -e "${case_id}\t${custom_mode}\t${model_arg}\t${ensure_tmpkey}\t${resolution_context}\t${rc}\t${result}\t${signature}\t${canary_rc}\t${post_echo_rc}\t${responses}\t${images}\t${audio}\t${case_tag}" >> "$RESULTS_TSV"
 }
 
 echo "== custom alias resolution probe =="
@@ -331,7 +400,7 @@ echo "timeout_sec=$TIMEOUT_SEC"
 echo "host=$HOST"
 echo "work_dir=$WORK_DIR"
 
-echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"
+echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\targ_source\targ_resolved_file\targ_match_count\targ_winner_name\targ_winner_modifier\ttrace_match_count\ttrace_winner_name\ttmpkey_match_count\ttmpkey_winner_name\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"
 
 if [[ "$MATRIX" == "core" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
@@ -359,8 +428,8 @@ else
   run_case "cross_both_aliases_request_tmpkey_name" "alias_both" "$PROBE_TMP_ALIAS" "1"
 fi
 
-pass_count="$(awk -F'\t' 'NR>1 && $6=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
-fail_count="$(awk -F'\t' 'NR>1 && $6!="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
+pass_count="$(awk -F'\t' 'NR>1 && $15=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
+fail_count="$(awk -F'\t' 'NR>1 && $15!="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
 case_count="$(awk 'END{print NR-1}' "$RESULTS_TSV")"
 
 {
@@ -380,9 +449,9 @@ case_count="$(awk 'END{print NR-1}' "$RESULTS_TSV")"
   echo
   echo "## Results"
   echo
-  echo "| case | custom_mode | model_arg | tmpkey | rc | result | signature | canary_rc | post_echo_rc | responses | images | audio |"
-  echo "|---|---|---|---:|---:|---|---|---:|---:|---:|---:|---:|"
-  awk -F'\t' 'NR>1 {printf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)}' "$RESULTS_TSV"
+  echo "| case | custom_mode | model_arg | tmpkey | arg_source | arg_resolved_file | arg_match_count | arg_winner_name | arg_winner_modifier | trace_match_count | trace_winner_name | tmpkey_match_count | tmpkey_winner_name | rc | result | signature | canary_rc | post_echo_rc | responses | images | audio |"
+  echo "|---|---|---|---:|---|---|---:|---|---|---:|---|---:|---|---:|---|---|---:|---:|---:|---:|---:|"
+  awk -F'\t' 'NR>1 {printf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)}' "$RESULTS_TSV"
   echo
   echo "- results_tsv: $RESULTS_TSV"
   echo "- cases_dir: $CASES_DIR"

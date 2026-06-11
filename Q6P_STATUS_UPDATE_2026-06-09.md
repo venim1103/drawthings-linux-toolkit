@@ -201,6 +201,27 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - one-key alias activation is not globally poisoning other keys
     - failure emerges under simultaneous overlapping alias activity, indicating multi-entry shadowing/collision behavior
 
+- Run 035 (`run035_alias_resolution_core_ctx_20260611`):
+  - reran core matrix with explicit winner-context columns exported in probe results
+  - tool update: `tools/run_custom_alias_resolution_probe.sh` now records `arg_source`, resolved file key, match counts, and winner name/modifier for requested/trace/tmpkey paths
+  - matrix result: `cases=9`, `pass=2`, `fail=7`
+  - context evidence:
+    - pass controls had `arg_match_count=0` (no custom winner on requested key)
+    - all fail cases had `arg_match_count>=1` with an active winner entry on requested key
+    - duplicate order (`ab` vs `ba`) flipped winner identity but both remained fail
+  - interpretation:
+    - active winner presence on the requested file key is a stronger predictor than winner identity itself
+
+- Run 036 (`run036_alias_resolution_crossfile_ctx_20260611`):
+  - reran cross-file matrix with the same winner-context instrumentation
+  - matrix result: `cases=9`, `pass=5`, `fail=4` (reproduces run034)
+  - context evidence:
+    - cross-file single-alias requests pass when requested key has `arg_match_count=0`, even if non-requested key has active matches
+    - all `alias_both` fails show simultaneous overlap (`trace_match_count=1`, `tmpkey_match_count=1`) plus active winner on requested key
+    - `alias_both` file-arg requests fail with timeout; name-arg requests fail with loader-crash
+  - interpretation:
+    - failure is tied to overlapping multi-entry winner state, not one-alias global contamination
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -214,6 +235,8 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run032b extends that result: broad secondary field changes (`version`, `modifier`, `objective`, `text_encoder`, `autoencoder`) still did not recover any matched-trace pass, reinforcing file-key resolution as the dominant trigger.
 - Run033b confirms this across argument forms and tmpkey hardlink controls: non-custom controls pass for identical content, while introducing matching custom probe entries consistently reintroduces failure.
 - Run034 narrows it further: cross-file single-alias activity stays stable; the crash trigger appears when overlapping aliases for both key paths are active together.
+- Run035 adds winner-context evidence: fail cases correlate with active winner on requested key (`arg_match_count>=1`) while pass controls keep `arg_match_count=0`.
+- Run036 confirms the same pattern in cross-file mode: overlap across both key domains (`trace` + `tmpkey`) under `alias_both` remains the deterministic trigger.
 
 ## 4) Key artifacts
 
@@ -307,6 +330,14 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/cases/*.log`
+- Run 035 artifacts:
+  - `output/custom_alias_resolution_probe_run035_alias_resolution_core_ctx_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run035_alias_resolution_core_ctx_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run035_alias_resolution_core_ctx_20260611/cases/*.log`
+- Run 036 artifacts:
+  - `output/custom_alias_resolution_probe_run036_alias_resolution_crossfile_ctx_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run036_alias_resolution_crossfile_ctx_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run036_alias_resolution_crossfile_ctx_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -315,7 +346,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run034 completed cross-file discrimination and points to multi-entry shadowing/collision as the highest-signal trigger
+  - run034/035/036 together now isolate the trigger to overlapping multi-entry winner state on requested file-key paths
   - instrument/inspect ModelZoo mapping construction and lookup winner selection under overlapping alias sets (`availableSpecifications` order and `specificationMapping[file]` replacement behavior)
   - design minimal source-level probes for first behavioral divergence in selection path with simultaneous aliases active
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
