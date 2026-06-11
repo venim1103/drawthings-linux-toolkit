@@ -366,6 +366,15 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - instrumentation is active, but source-built Linux runtime introduces a new instability confound (baseline control no longer healthy), so run045 signatures are not directly comparable to run044.
 
+- Run 046 (`run046_control_wrapper_20260611` and `run046_control_sourcebuild_trace_20260611`):
+  - executed strict one-case control A/B to isolate run045 confound
+  - Control A (default wrapper binary path): PASS
+    - `canary_rc=0`, `post_echo_rc=0`, full stream + final image output
+  - Control B (local source-built binary path + `DT_LTX23_TRACE=1`): FAIL
+    - `canary_rc=1`, `post_echo_rc=1`, deterministic abort/core dump with libc crash tail
+  - interpretation:
+    - source-built binary path is a first-order instability confound independent of alias-matrix branch logic
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -390,6 +399,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run043 restores deterministic split under pinned text encoders: one-file clip_vit reproduces immediate illegal-instruction, one-file gemma yields timeout.
 - Run044 extends pinned control and recovers full three-way branch mapping (one-file illegal, two-file traced-clip loader crash, two-file companion timeout).
 - Run045 confirms source-level tracing is active, but also introduces a new binary/runtime confound: baseline non-custom control fails under local source-built Linux binary.
+- Run046 confirms the confound directly: stable wrapper binary passes strict control while local source-built binary fails the same control deterministically.
 
 ## 4) Key artifacts
 
@@ -527,6 +537,11 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/cases/*.log`
+- Run 046 artifacts:
+  - `output/q6p_canary_run046_control_wrapper_20260611/client.log`
+  - `output/q6p_canary_run046_control_wrapper_20260611/server.log`
+  - `output/q6p_canary_run046_control_sourcebuild_trace_20260611/client.log`
+  - `output/q6p_canary_run046_control_sourcebuild_trace_20260611/server.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -539,6 +554,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - instrument post-encode path for two-file traced-clip vs two-file companion cases to capture first branch divergence leading to loader-crash vs timeout (pre-stream)
   - keep pinned-matrix harness as regression control while adding source-level traces
   - keep binary-path control explicit (stable wrapper binary vs locally built source binary) to avoid mixing run044 branch evidence with run045 source-build instability
+  - until source-built runtime is stabilized, use stable wrapper binary for branch-comparison matrices and reserve source-built runs for focused tracing probes only
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized

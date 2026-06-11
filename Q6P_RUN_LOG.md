@@ -1938,3 +1938,48 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/cases/*.log`
+
+## Run 046 (2026-06-11): Binary-Path Control A/B for Source-Build Confound
+
+- Goal:
+  - Isolate whether run045 regressions are caused by alias-matrix changes or by binary/runtime path (`/usr/local/bin/gRPCServerCLI` vs local source-built binary).
+
+- Control A (default wrapper binary):
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --final-mode \
+  --require-complete-stream \
+  --require-final-output \
+  --max-responses 0 \
+  --timeout-sec 75 \
+  --tag run046_control_wrapper_20260611
+```
+
+- Control B (local source-built binary + trace env):
+
+```bash
+PATH="/workspaces/drawthings-linux-toolkit/draw-things-community/.build/release:$PATH" \
+DT_LTX23_TRACE=1 \
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --final-mode \
+  --require-complete-stream \
+  --require-final-output \
+  --max-responses 0 \
+  --timeout-sec 75 \
+  --tag run046_control_sourcebuild_trace_20260611
+```
+
+- Results:
+  - Control A: PASS (`canary_rc=0`, `post_echo_rc=0`, streamed responses and final image output).
+  - Control B: FAIL (`canary_rc=1`, `post_echo_rc=1`, server abort/core dump with libc crash tail, client `UNAVAILABLE: Socket closed`).
+
+- Key finding:
+  - The source-built Linux binary path is itself a deterministic failure confound for current strict control.
+  - run045 matrix failures cannot be interpreted as pure alias-resolution branch evidence until this binary-path instability is isolated or removed.
+
+- Artifacts:
+  - wrapper control: `output/q6p_canary_run046_control_wrapper_20260611/{client.log,server.log}`
+  - source-build control: `output/q6p_canary_run046_control_sourcebuild_trace_20260611/{client.log,server.log}`

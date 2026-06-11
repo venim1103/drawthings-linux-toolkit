@@ -245,3 +245,7 @@ Success means full generation completes (not only first streamed response) and n
 	- `DT_LTX23_TRACE` logs confirmed active instrumentation (`textEncoderFiles`, `beforeTextEncode`, `encodeLTX2.begin`, `encodeLTX2.loading_text_model`) before timeout in `probe_trace_ltx23_full_base`.
 	- Updated causal branch: source-built Linux runtime introduces a confounding instability layer (libc abort / no-stream) that masks run044 branch discrimination.
 	- Next isolation target: run minimal single-case trace with stable server binary path as control, then selectively A/B one traced-clip and one companion case under identical binary/runtime to recover comparable post-encode branch evidence.
+- 2026-06-11: Run 046 binary-path control A/B completed.
+	- Strict control canary on default wrapper binary path passed (`canary_rc=0`, full stream, final image output).
+	- Strict control canary on local source-built binary path failed deterministically (`canary_rc=1`, libc abort/core dump, socket closed).
+	- Updated causal branch: treat source-built Linux runtime stabilization as a prerequisite for source-instrumented matrix interpretation; keep branch-behavior comparisons on stable binary path until then.
