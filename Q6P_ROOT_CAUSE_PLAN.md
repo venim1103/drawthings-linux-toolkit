@@ -349,3 +349,17 @@ Success means full generation completes (not only first streamed response) and n
 	- Outcome reproduced expected focused split: control pass, traced-clip loader-crash, companion timeout.
 	- No `DT_LTX23_TRACE` markers appeared in wrapper logs.
 	- Updated causal branch: selector plumbing is validated for matrix workflows; wrapper runtime remains baseline for branch mapping but still does not expose newly added source instrumentation markers.
+- 2026-06-11: Added source-runtime tuning options to canary/probe harnesses.
+	- `tools/run_q6p_canary_once.sh`: `--server-gpu`, `--server-cpu-offload`, `--server-no-flash-attention`, `--server-weights-cache`.
+	- `tools/run_custom_alias_resolution_probe.sh` now forwards these options to canary runs.
+- 2026-06-11: Run 067 source runtime sweep + discriminator completed.
+	- Source-build sweeps for trace021 file-key path (`default`, `cpu-offload`, `no-flash`, `weights-cache=1`, combo) all stayed abort class (`canary_rc=1`, `post_echo_rc=1`).
+	- Discriminator runs with mapped model keys (`10_e_v1`, `10_e_v1_bf16_regen_0_q6p.ckpt`) shifted to timeout class (`canary_rc=124`, `post_echo_rc=0`).
+	- Source traces established first deterministic split:
+		- trace021 unresolved key => repeated `ModelZoo.specificationForModel ... source=miss` then abort
+		- mapped key => `source=mapping` and progression through `LocalImageGenerator.*` and `encodeLTX2.begin/loading_text_model` before timeout.
+	- Updated causal branch: model-resolution miss vs mapping is now a high-signal source-runtime branch gate, stronger than tested server-launch tuning flags.
+- 2026-06-11: Run 068 focused matrix via explicit source selector completed.
+	- Focused control (`baseline_only` trace021 key) remained abort class (`canary_rc=1`, `post_echo_rc=1`).
+	- Alias-driven two-file focused cases shifted to timeout class (`canary_rc=124`, `post_echo_rc=124`).
+	- Updated causal branch: source-runtime focused behavior is consistent with run067 miss-vs-mapping split; next instrumentation should target why unresolved file-key path stays in miss/abort loop.

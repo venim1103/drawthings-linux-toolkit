@@ -18,6 +18,10 @@ NO_TIMEOUT=0
 REQUIRE_COMPLETE_STREAM=0
 REQUIRE_FINAL_OUTPUT=0
 ALLOW_MISSING_MODEL=0
+SERVER_GPU=0
+SERVER_CPU_OFFLOAD=0
+SERVER_NO_FLASH_ATTENTION=0
+SERVER_WEIGHTS_CACHE=""
 
 WIDTH=256
 HEIGHT=256
@@ -42,6 +46,12 @@ Options:
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
   --grpc-bin <path|name>    gRPC server launcher binary
                             (default: DRAWTHINGS_GRPC_BIN or drawthings-grpc).
+  --server-gpu <n>          GPU id passed to server launcher (default: 0).
+  --server-cpu-offload      Pass --cpu-offload to server launcher.
+  --server-no-flash-attention
+                            Pass --no-flash-attention to server launcher.
+  --server-weights-cache <gib>
+                            Pass --weights-cache <gib> to server launcher.
   --width <n>               Pixel width for request config (default: 256).
   --height <n>              Pixel height for request config (default: 256).
   --steps <n>               Sampling steps for request config (default: 4).
@@ -82,6 +92,22 @@ if [[ $# -gt 0 ]]; then
         ;;
       --grpc-bin)
         GRPC_BIN="${2:-}"
+        shift 2
+        ;;
+      --server-gpu)
+        SERVER_GPU="${2:-}"
+        shift 2
+        ;;
+      --server-cpu-offload)
+        SERVER_CPU_OFFLOAD=1
+        shift
+        ;;
+      --server-no-flash-attention)
+        SERVER_NO_FLASH_ATTENTION=1
+        shift
+        ;;
+      --server-weights-cache)
+        SERVER_WEIGHTS_CACHE="${2:-}"
         shift 2
         ;;
       --width)
@@ -181,6 +207,16 @@ else
   fi
 fi
 
+if ! [[ "$SERVER_GPU" =~ ^[0-9]+$ ]]; then
+  echo "error: --server-gpu must be a non-negative integer" >&2
+  exit 1
+fi
+
+if [[ -n "$SERVER_WEIGHTS_CACHE" ]] && ! [[ "$SERVER_WEIGHTS_CACHE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "error: --server-weights-cache must be a non-negative number" >&2
+  exit 1
+fi
+
 if [[ "$NO_TIMEOUT" != "1" && "$TIMEOUT_SEC" -lt 1 ]]; then
   echo "error: --timeout-sec must be >= 1 unless --no-timeout is used" >&2
   exit 1
@@ -241,6 +277,10 @@ echo "== q6p canary once =="
 echo "model=$MODEL_KEY"
 echo "host=$HOST"
 echo "grpc_bin=$GRPC_BIN"
+echo "server_gpu=$SERVER_GPU"
+echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
+echo "server_no_flash_attention=$SERVER_NO_FLASH_ATTENTION"
+echo "server_weights_cache=${SERVER_WEIGHTS_CACHE:-default}"
 echo "final_mode=$FINAL_MODE"
 if [[ "$NO_TIMEOUT" == "1" ]]; then
   echo "timeout_sec=none"
@@ -255,7 +295,26 @@ echo "work_dir=$WORK_DIR"
 pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
 pkill -9 -f 'dt_api_client.py .*generate-raw' || true
 
-nohup "$GRPC_BIN" --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression "$ROOT/dt-models" > "$SERVER_LOG" 2>&1 &
+server_args=(
+  --address 127.0.0.1
+  --port 7861
+  --gpu "$SERVER_GPU"
+  --no-tls
+  --model-browser
+  --no-response-compression
+)
+if [[ "$SERVER_CPU_OFFLOAD" == "1" ]]; then
+  server_args+=(--cpu-offload)
+fi
+if [[ "$SERVER_NO_FLASH_ATTENTION" == "1" ]]; then
+  server_args+=(--no-flash-attention)
+fi
+if [[ -n "$SERVER_WEIGHTS_CACHE" ]]; then
+  server_args+=(--weights-cache "$SERVER_WEIGHTS_CACHE")
+fi
+server_args+=("$ROOT/dt-models")
+
+nohup "$GRPC_BIN" "${server_args[@]}" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "server_pid=$SERVER_PID"
 

@@ -2664,3 +2664,85 @@ DT_LTX23_TRACE=1 tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run066_wrapper_selector_focused_trace/summary.md`
   - results table: `output/custom_alias_resolution_probe_run066_wrapper_selector_focused_trace/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run066_wrapper_selector_focused_trace/cases/*.log`
+
+## Run 067 (2026-06-11): Source Runtime Tuning Sweep + Key-Path Discriminator
+
+- Goal:
+  - Test whether source-build abort behavior can be changed by server launch flags.
+  - Compare source trace path for unresolved trace-key requests vs mapped model-key requests.
+
+- Harness update used:
+  - `tools/run_q6p_canary_once.sh` now supports:
+    - `--server-gpu`
+    - `--server-cpu-offload`
+    - `--server-no-flash-attention`
+    - `--server-weights-cache`
+  - `tools/run_custom_alias_resolution_probe.sh` forwards these server options.
+
+- Sweep commands (source runtime, same trace021 model file key):
+  - `run067a_source_default`
+  - `run067b_source_cpuoffload`
+  - `run067c_source_noflash`
+  - `run067d_source_wcache1`
+  - `run067e_source_combo`
+
+- Sweep result:
+  - all five cases failed identically: `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL canary rc=1`
+  - tuning flags did not change abort class for trace021 file-key path.
+
+- Follow-up discriminator runs:
+  - `run067f_source_alias_model` (`--model 10_e_v1`) => timeout branch (`canary_rc=124`, `post_echo_rc=0`)
+  - `run067g_source_mapped_file` (`--model 10_e_v1_bf16_regen_0_q6p.ckpt`) => timeout branch (`canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - Source traces now show a deterministic split by model-resolution path:
+    - unresolved trace key path logs repeated `ModelZoo.specificationForModel ... source=miss` then abort class
+    - mapped key path (`source=mapping`) advances into:
+      - `LocalImageGenerator.textEncoderFiles`
+      - `LocalImageGenerator.modelContext`
+      - `LocalImageGenerator.textEncoderInit`
+      - `encodeLTX2.begin`
+      - `encodeLTX2.loading_text_model`
+      then stalls/timeouts.
+
+- Artifacts:
+  - `output/q6p_canary_run067a_source_default/{client.log,server.log}`
+  - `output/q6p_canary_run067b_source_cpuoffload/{client.log,server.log}`
+  - `output/q6p_canary_run067c_source_noflash/{client.log,server.log}`
+  - `output/q6p_canary_run067d_source_wcache1/{client.log,server.log}`
+  - `output/q6p_canary_run067e_source_combo/{client.log,server.log}`
+  - `output/q6p_canary_run067f_source_alias_model/{client.log,server.log}`
+  - `output/q6p_canary_run067g_source_mapped_file/{client.log,server.log}`
+
+## Run 068 (2026-06-11): Focused Matrix via Explicit Source Selector
+
+- Goal:
+  - Re-run focused probe matrix on source-selected runtime to compare control miss-path vs alias-mapped paths under one harness.
+
+- Command:
+
+```bash
+DT_LTX23_TRACE=1 tools/run_custom_alias_resolution_probe.sh \
+  --grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI \
+  --matrix ltx23-focused \
+  --timeout-sec 45 \
+  --tag run068_source_selector_focused_trace
+```
+
+- Probe summary (`run068_source_selector_focused_trace`):
+  - cases: 3
+  - pass: 0
+  - fail: 3
+
+- Outcome map:
+  - control trace noncustom => `canary_rc=1`, `post_echo_rc=1`, signature `unknown`
+  - traced-clip pin-a alias => timeout (`canary_rc=124`, `post_echo_rc=124`)
+  - companion-a pin-a alias => timeout (`canary_rc=124`, `post_echo_rc=124`)
+
+- Key finding:
+  - Under source runtime, focused control still aborts while alias-driven two-file branches shift to timeout class, consistent with run067 miss-vs-mapping split.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run068_source_selector_focused_trace/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run068_source_selector_focused_trace/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run068_source_selector_focused_trace/cases/*.log`

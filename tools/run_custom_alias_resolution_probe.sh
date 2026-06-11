@@ -13,6 +13,10 @@ TAG="$(date +%Y%m%d_%H%M%S)"
 TIMEOUT_SEC=75
 HOST="127.0.0.1:7861"
 GRPC_BIN="${DRAWTHINGS_GRPC_BIN:-drawthings-grpc}"
+SERVER_GPU=0
+SERVER_CPU_OFFLOAD=0
+SERVER_NO_FLASH_ATTENTION=0
+SERVER_WEIGHTS_CACHE=""
 MATRIX="core"
 
 PROBE_ALIAS_A="probe_trace_alias_a"
@@ -51,6 +55,12 @@ Options:
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
   --grpc-bin <path|name>    gRPC server launcher binary forwarded to canary
                             (default: DRAWTHINGS_GRPC_BIN or drawthings-grpc).
+  --server-gpu <n>          GPU id passed to canary server launcher (default: 0).
+  --server-cpu-offload      Pass --server-cpu-offload to canary.
+  --server-no-flash-attention
+                            Pass --server-no-flash-attention to canary.
+  --server-weights-cache <gib>
+                            Pass --server-weights-cache <gib> to canary.
   --companion-clip-a <file> LTX2.3 companion clip candidate A
                              (default: ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt).
   --companion-clip-b <file> LTX2.3 companion clip candidate B
@@ -109,6 +119,22 @@ while [[ $# -gt 0 ]]; do
       GRPC_BIN="${2:-}"
       shift 2
       ;;
+    --server-gpu)
+      SERVER_GPU="${2:-}"
+      shift 2
+      ;;
+    --server-cpu-offload)
+      SERVER_CPU_OFFLOAD=1
+      shift
+      ;;
+    --server-no-flash-attention)
+      SERVER_NO_FLASH_ATTENTION=1
+      shift
+      ;;
+    --server-weights-cache)
+      SERVER_WEIGHTS_CACHE="${2:-}"
+      shift 2
+      ;;
     --companion-clip-a)
       COMPANION_CLIP_A="${2:-}"
       shift 2
@@ -148,6 +174,16 @@ fi
 
 if [[ -z "$GRPC_BIN" ]]; then
   echo "error: --grpc-bin cannot be empty" >&2
+  exit 1
+fi
+
+if ! [[ "$SERVER_GPU" =~ ^[0-9]+$ ]]; then
+  echo "error: --server-gpu must be a non-negative integer" >&2
+  exit 1
+fi
+
+if [[ -n "$SERVER_WEIGHTS_CACHE" ]] && ! [[ "$SERVER_WEIGHTS_CACHE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "error: --server-weights-cache must be a non-negative number" >&2
   exit 1
 fi
 
@@ -612,16 +648,29 @@ run_case() {
   echo "== case: $case_id =="
   echo "custom_mode=$custom_mode model_arg=$model_arg ensure_tmpkey=$ensure_tmpkey"
 
+  local canary_extra_args=()
+  if [[ "$SERVER_CPU_OFFLOAD" == "1" ]]; then
+    canary_extra_args+=(--server-cpu-offload)
+  fi
+  if [[ "$SERVER_NO_FLASH_ATTENTION" == "1" ]]; then
+    canary_extra_args+=(--server-no-flash-attention)
+  fi
+  if [[ -n "$SERVER_WEIGHTS_CACHE" ]]; then
+    canary_extra_args+=(--server-weights-cache "$SERVER_WEIGHTS_CACHE")
+  fi
+
   set +e
   bash "$CANARY_SCRIPT" \
     --model "$model_arg" \
     --host "$HOST" \
     --grpc-bin "$GRPC_BIN" \
+    --server-gpu "$SERVER_GPU" \
     --timeout-sec "$TIMEOUT_SEC" \
     --max-responses 0 \
     --require-complete-stream \
     --require-final-output \
     --final-mode \
+    "${canary_extra_args[@]}" \
     --tag "$case_tag" > "$case_log" 2>&1 &
   local canary_pid=$!
   while kill -0 "$canary_pid" >/dev/null 2>&1; do
@@ -666,6 +715,10 @@ echo "tag=$TAG"
 echo "timeout_sec=$TIMEOUT_SEC"
 echo "host=$HOST"
 echo "grpc_bin=$GRPC_BIN"
+echo "server_gpu=$SERVER_GPU"
+echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
+echo "server_no_flash_attention=$SERVER_NO_FLASH_ATTENTION"
+echo "server_weights_cache=${SERVER_WEIGHTS_CACHE:-default}"
 echo "work_dir=$WORK_DIR"
 
 echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\targ_source\targ_resolved_file\targ_match_count\targ_winner_name\targ_winner_modifier\ttrace_match_count\ttrace_winner_name\ttmpkey_match_count\ttmpkey_winner_name\targ_winner_version\targ_winner_text_encoder\targ_winner_clip_encoder\targ_winner_autoencoder\targ_text_files_count\targ_text_file0\targ_text_file1\targ_ltx23_textfiles_ok\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"

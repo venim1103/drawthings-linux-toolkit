@@ -859,3 +859,32 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - companion-a pin-a => timeout
   - no `DT_LTX23_TRACE` markers observed in wrapper logs.
   - interpretation: probe-level selector is validated in full matrix flow; wrapper remains branch-map baseline but non-instrumented for new source markers.
+
+- Server-runtime tuning harness update (2026-06-11):
+  - `tools/run_q6p_canary_once.sh` now supports:
+    - `--server-gpu`
+    - `--server-cpu-offload`
+    - `--server-no-flash-attention`
+    - `--server-weights-cache`
+  - `tools/run_custom_alias_resolution_probe.sh` forwards these flags to canary.
+
+- run067 source-runtime sweep + discriminator:
+  - sweep over source runtime launch variants on trace021 file-key path:
+    - default / cpu-offload / no-flash / weights-cache=1 / combo
+    - all remained abort class (`canary_rc=1`, `post_echo_rc=1`)
+  - mapped-key discriminator runs:
+    - `--model 10_e_v1`
+    - `--model 10_e_v1_bf16_regen_0_q6p.ckpt`
+    - both moved to timeout class (`canary_rc=124`, `post_echo_rc=0`)
+  - source traces now visible on source runtime and show split:
+    - unresolved trace021 key path => repeated `ModelZoo.specificationForModel ... source=miss` then abort
+    - mapped key path => `source=mapping` and progress into `LocalImageGenerator.*` + `encodeLTX2.begin/loading_text_model` before timeout.
+
+- run068 source-focused selector matrix (`run068_source_selector_focused_trace`):
+  - control trace noncustom remained abort class (`canary_rc=1`, `post_echo_rc=1`)
+  - alias-focused two-file cases shifted to timeout class (`canary_rc=124`, `post_echo_rc=124`)
+  - interpretation: source-runtime focused behavior matches the miss-vs-mapping branch split from run067.
+
+- Updated near-term recommendation:
+  - Use source runtime primarily for source-level branch isolation with the new miss-vs-mapping discriminator.
+  - Keep wrapper runtime as regression branch-map baseline for user-facing equivalence checks.
