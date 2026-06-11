@@ -2746,3 +2746,52 @@ DT_LTX23_TRACE=1 tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run068_source_selector_focused_trace/summary.md`
   - results table: `output/custom_alias_resolution_probe_run068_source_selector_focused_trace/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run068_source_selector_focused_trace/cases/*.log`
+
+## Run 069 (2026-06-11): Targeted Same-Arg Source A/B (Trace-Key Mapping Toggle)
+
+- Goal:
+  - Validate whether mapping alone flips source-runtime behavior for the same trace021 model argument.
+
+- Method:
+  - Keep `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` constant in both cases.
+  - Case A (`run069c`): baseline `dt-models/custom.json` (no trace-key mapping entry).
+  - Case B (`run069d`): temporarily inject one explicit custom entry mapping trace key, then rerun same command.
+  - Runtime fixed to source binary selector: `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`.
+
+- Commands:
+
+```bash
+# Case A: unresolved baseline
+DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
+  --grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --final-mode --require-complete-stream --require-final-output --max-responses 0 \
+  --timeout-sec 75 --soft-fail --tag run069c_source_trace_unresolved
+
+# Case B: same model arg, with temporary trace-key mapping entry present
+DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
+  --grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --final-mode --require-complete-stream --require-final-output --max-responses 0 \
+  --timeout-sec 75 --soft-fail --tag run069d_source_trace_mapped_filearg
+```
+
+- Results:
+  - `run069c_source_trace_unresolved`: `canary_rc=1`, `post_echo_rc=1`, abort/core-dump class.
+  - `run069d_source_trace_mapped_filearg`: `canary_rc=124`, `post_echo_rc=124`, timeout class.
+
+- Trace discriminator:
+  - unresolved case: repeated `ModelZoo.specificationForModel ... source=miss`.
+  - mapped case: `source=mapping` with winner `probe_trace021_map_only_run069`, then progression into:
+    - `LocalImageGenerator.textEncoderInit`
+    - `LocalImageGenerator.beforeTextEncode`
+    - `encodeLTX2.begin`
+    - `encodeLTX2.loading_text_model`
+
+- Key finding:
+  - With model argument held constant, adding/removing trace-key mapping entry alone flips source runtime from miss/abort branch to mapping/timeout branch.
+
+- Artifacts:
+  - case A dir: `output/q6p_canary_run069c_source_trace_unresolved`
+  - case B dir: `output/q6p_canary_run069d_source_trace_mapped_filearg`
+  - captured console summaries: `output/run069c_console.log`, `output/run069d_console.log`

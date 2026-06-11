@@ -363,3 +363,8 @@ Success means full generation completes (not only first streamed response) and n
 	- Focused control (`baseline_only` trace021 key) remained abort class (`canary_rc=1`, `post_echo_rc=1`).
 	- Alias-driven two-file focused cases shifted to timeout class (`canary_rc=124`, `post_echo_rc=124`).
 	- Updated causal branch: source-runtime focused behavior is consistent with run067 miss-vs-mapping split; next instrumentation should target why unresolved file-key path stays in miss/abort loop.
+- 2026-06-11: Run 069 targeted source A/B with same model argument completed.
+	- Held request constant at `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` in both cases on source-selected runtime.
+	- Case A (baseline custom, no trace-key mapping entry): abort class (`canary_rc=1`, `post_echo_rc=1`) with repeated `source=miss`.
+	- Case B (temporary explicit trace-key mapping entry present): timeout class (`canary_rc=124`, `post_echo_rc=124`) with `source=mapping` and progression through `LocalImageGenerator.*` and `encodeLTX2.begin/loading_text_model`.
+	- Updated causal branch: mapping presence alone (with fixed model argument) is sufficient to switch source runtime from miss/abort branch to mapping/timeout branch.

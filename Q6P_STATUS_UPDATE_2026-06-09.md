@@ -888,3 +888,19 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Updated near-term recommendation:
   - Use source runtime primarily for source-level branch isolation with the new miss-vs-mapping discriminator.
   - Keep wrapper runtime as regression branch-map baseline for user-facing equivalence checks.
+
+- run069 targeted same-arg source A/B (`run069c_source_trace_unresolved`, `run069d_source_trace_mapped_filearg`):
+  - objective: validate whether mapping alone flips source branch when model argument is held constant.
+  - both cases used:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+    - strict final-mode canary gates.
+  - case A (baseline custom, no trace-key mapping entry):
+    - `canary_rc=1`, `post_echo_rc=1`
+    - repeated `ModelZoo.specificationForModel ... source=miss`
+    - abort/core-dump class.
+  - case B (temporary explicit trace-key mapping entry present):
+    - `canary_rc=124`, `post_echo_rc=124`
+    - `source=mapping` winner `probe_trace021_map_only_run069`
+    - progressed into `LocalImageGenerator.textEncoderInit`, `beforeTextEncode`, `encodeLTX2.begin`, `encodeLTX2.loading_text_model`, then timeout.
+  - interpretation: with request key fixed, mapping-entry presence alone is sufficient to switch source branch from miss/abort to mapping/timeout.
