@@ -2076,3 +2076,44 @@ bash tools/run_q6p_canary_once.sh \
 
 - Key finding:
   - Guardrail works as intended and prevents silent fallback contamination in control canaries.
+
+## Run 050 (2026-06-11): Focused Wrapper-Path Branch Gate
+
+- Goal:
+  - Establish a lightweight regression gate for the highest-signal two-file branch split under stable wrapper runtime.
+
+- Harness update:
+  - `tools/run_custom_alias_resolution_probe.sh` gained a focused matrix mode:
+    - `--matrix ltx23-focused`
+  - Cases in this mode:
+    - `control_trace_noncustom`
+    - `probe_trace_ltx23_text_clip_trace_pin_a`
+    - `probe_trace_ltx23_text_clip_companion_a_pin_a`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-focused \
+  --timeout-sec 75 \
+  --tag run050_wrapper_ltx23_focused_20260611
+```
+
+- Probe summary (`run050_wrapper_ltx23_focused_20260611`):
+  - cases: 3
+  - pass: 1
+  - fail: 2
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS (`canary_rc=0`, `post_echo_rc=0`, `responses=10`, `images=1`)
+  - `probe_trace_ltx23_text_clip_trace_pin_a`: FAIL (`loader_crash`, `canary_rc=124`, `post_echo_rc=124`, `ccv_nnc_tensor_read`)
+  - `probe_trace_ltx23_text_clip_companion_a_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - Focused matrix reliably reproduces the traced-clip loader-crash vs companion-timeout split with healthy control PASS.
+  - This is now the fastest stable regression gate for branch-shape verification before broader matrices.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/cases/*.log`

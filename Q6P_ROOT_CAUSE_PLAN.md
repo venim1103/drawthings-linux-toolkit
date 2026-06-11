@@ -264,3 +264,10 @@ Success means full generation completes (not only first streamed response) and n
 	- New default behavior: file-like model keys (`*.ckpt`, `*.safetensors`) must exist locally or the canary exits before server launch.
 	- Added override flag `--allow-missing-model` for intentional fallback-resolution experiments.
 	- Validation run (`run049_preflight_missing_model_check_20260611`) confirmed fail-fast behavior.
+- 2026-06-11: Added focused branch-gate matrix in `tools/run_custom_alias_resolution_probe.sh`.
+	- New matrix: `--matrix ltx23-focused` (3 cases: control + traced-clip pin + companion-A pin).
+	- Validation run (`run050_wrapper_ltx23_focused_20260611`) reproduced expected split:
+		- control PASS
+		- traced clip => loader-crash
+		- companion A => timeout
+	- Updated causal branch: use run050 focused matrix as fast preflight/regression gate before wider ltx23 matrices.

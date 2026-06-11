@@ -405,6 +405,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - validation result:
     - fail-fast triggered as expected for missing `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
 
+- Run 050 (`run050_wrapper_ltx23_focused_20260611`):
+  - added focused matrix mode to probe harness:
+    - `tools/run_custom_alias_resolution_probe.sh --matrix ltx23-focused`
+  - focused cases:
+    - `control_trace_noncustom`
+    - `probe_trace_ltx23_text_clip_trace_pin_a`
+    - `probe_trace_ltx23_text_clip_companion_a_pin_a`
+  - result: `cases=3`, `pass=1`, `fail=2`
+  - signatures:
+    - control: PASS (`canary_rc=0`, `post_echo_rc=0`, final output present)
+    - traced clip pin: `loader_crash` (`canary_rc=124`, `post_echo_rc=124`, `ccv_nnc_tensor_read`)
+    - companion A pin: `timeout` (`canary_rc=124`, `post_echo_rc=0`)
+  - interpretation:
+    - focused matrix is now a fast and stable regression gate for core branch-shape validation
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -433,6 +448,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run047 confirms branch behavior remains stable when run on wrapper binary path and matches run044 three-way split.
 - Run048 adds a separate confound class: model-resolution fallback (q6p request resolving to q8p) can invalidate source-build control conclusions.
 - Run049 closes that gap in the harness by turning missing file-like model requests into explicit preflight failures.
+- Run050 adds a lightweight branch-shape gate that preserves the highest-signal traced-vs-companion split with minimal runtime cost.
 
 ## 4) Key artifacts
 
@@ -582,6 +598,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run 048 artifacts:
   - `output/q6p_canary_run048_sourcebuild_official_control_20260611/client.log`
   - `output/q6p_canary_run048_sourcebuild_official_control_20260611/server.log`
+- Run 050 artifacts:
+  - `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -597,6 +617,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - until source-built runtime is stabilized, use stable wrapper binary for branch-comparison matrices and reserve source-built runs for focused tracing probes only
   - use run047 as the current regression baseline for pinned-companion branch mapping
   - add an explicit preflight gate for source-build controls: fail fast if requested model file is missing locally (to prevent q8p/default fallback contamination)
+  - run focused gate (`--matrix ltx23-focused`) before broad ltx23 matrices to quickly verify branch-shape stability
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
