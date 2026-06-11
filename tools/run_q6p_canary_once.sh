@@ -16,6 +16,7 @@ FINAL_MODE=0
 NO_TIMEOUT=0
 REQUIRE_COMPLETE_STREAM=0
 REQUIRE_FINAL_OUTPUT=0
+ALLOW_MISSING_MODEL=0
 
 WIDTH=256
 HEIGHT=256
@@ -53,6 +54,9 @@ Options:
                             max responses to 0 (unlimited).
   --require-final-output    Require at least one non-preview output payload
                             (generated image or audio).
+  --allow-missing-model     Allow missing file-like model keys (e.g. *.ckpt) and
+                            continue. By default, missing file-like model keys
+                            fail fast to prevent silent fallback confounds.
   --tag <value>             Output folder tag (default: current timestamp).
   --soft-fail               Always exit 0; still prints RESULT=FAIL on failures.
   -h, --help                Show this help.
@@ -115,6 +119,10 @@ if [[ $# -gt 0 ]]; then
         REQUIRE_FINAL_OUTPUT=1
         shift
         ;;
+      --allow-missing-model)
+        ALLOW_MISSING_MODEL=1
+        shift
+        ;;
       --tag)
         TAG="${2:-}"
         shift 2
@@ -157,6 +165,19 @@ fi
 if [[ "$MAX_RESPONSES" -lt 0 ]]; then
   echo "error: --max-responses must be >= 0" >&2
   exit 1
+fi
+
+if [[ "$ALLOW_MISSING_MODEL" != "1" ]]; then
+  case "$MODEL_KEY" in
+    *.ckpt|*.safetensors)
+      MODEL_FILE="$ROOT/dt-models/$MODEL_KEY"
+      if [[ ! -f "$MODEL_FILE" ]]; then
+        echo "error: model file not found: $MODEL_FILE" >&2
+        echo "hint: use --allow-missing-model to permit fallback-resolution tests" >&2
+        exit 1
+      fi
+      ;;
+  esac
 fi
 
 if ! [[ "$WIDTH" =~ ^[0-9]+$ ]] || [[ "$WIDTH" -lt 64 ]]; then

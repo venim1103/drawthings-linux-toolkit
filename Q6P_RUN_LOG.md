@@ -2020,3 +2020,59 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/cases/*.log`
+
+## Run 048 (2026-06-11): Source-Build Official-Control Check (Availability Confound)
+
+- Goal:
+  - Test source-built runtime on an official control model to check whether run046 crash behavior is global.
+
+- Command:
+
+```bash
+PATH="/workspaces/drawthings-linux-toolkit/draw-things-community/.build/release:$PATH" \
+DT_LTX23_TRACE=1 \
+bash tools/run_q6p_canary_once.sh \
+  --model ltx_2.3_22b_distilled_1.1_q6p.ckpt \
+  --final-mode \
+  --require-complete-stream \
+  --require-final-output \
+  --max-responses 0 \
+  --timeout-sec 75 \
+  --tag run048_sourcebuild_official_control_20260611
+```
+
+- Result:
+  - FAIL (`canary_rc=124`, `post_echo_rc=0`, timeout, no streamed responses).
+
+- Critical trace note:
+  - `DT_LTX23_TRACE` shows resolved model path was `ltx_2.3_22b_distilled_1.1_q8p.ckpt` (not requested q6p), with one-file text list.
+  - This indicates model-resolution fallback occurred, so run048 is an availability/resolution confound and not a clean official-q6p source-build A/B.
+
+- Key finding:
+  - Source-built path remains unstable/confounded; run048 adds evidence that model availability/resolution must be pinned before interpreting source-build behavior.
+
+- Artifacts:
+  - `output/q6p_canary_run048_sourcebuild_official_control_20260611/{client.log,server.log}`
+
+## Run 049 (2026-06-11): Canary Preflight Guard Validation
+
+- Goal:
+  - Verify fail-fast guard for missing file-like model keys in canary harness.
+
+- Command:
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model ltx_2.3_22b_distilled_1.1_q6p.ckpt \
+  --timeout-sec 75 \
+  --max-responses 0 \
+  --tag run049_preflight_missing_model_check_20260611
+```
+
+- Result:
+  - FAIL-FAST (expected):
+    - `error: model file not found: /workspaces/drawthings-linux-toolkit/dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - `hint: use --allow-missing-model to permit fallback-resolution tests`
+
+- Key finding:
+  - Guardrail works as intended and prevents silent fallback contamination in control canaries.

@@ -256,3 +256,11 @@ Success means full generation completes (not only first streamed response) and n
 		- two-file traced clip => `loader_crash`
 		- two-file companions => `timeout`
 	- Updated causal branch: run044 branch separation remains valid; run045 regressions are runtime-path confound, not branch-model drift.
+- 2026-06-11: Run 048 source-build official-control check (`run048_sourcebuild_official_control_20260611`) completed.
+	- Result timed out (`canary_rc=124`, `post_echo_rc=0`) with no streamed responses.
+	- `DT_LTX23_TRACE` showed requested q6p control resolved to q8p fallback (`ltx_2.3_22b_distilled_1.1_q8p.ckpt`), so this run is confounded by model availability/resolution and not a clean official-q6p control.
+	- Updated causal branch: enforce local model-file existence checks before source-build A/B controls; otherwise fallback behavior can mask runtime interpretation.
+- 2026-06-11: Added canary preflight model-file guard in `tools/run_q6p_canary_once.sh`.
+	- New default behavior: file-like model keys (`*.ckpt`, `*.safetensors`) must exist locally or the canary exits before server launch.
+	- Added override flag `--allow-missing-model` for intentional fallback-resolution experiments.
+	- Validation run (`run049_preflight_missing_model_check_20260611`) confirmed fail-fast behavior.

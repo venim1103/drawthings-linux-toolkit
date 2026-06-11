@@ -387,6 +387,24 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - confirms run044 branch map is still valid on stable runtime path
     - confirms run045 all-fail profile was runtime-path confound, not alias-branch drift
 
+- Run 048 (`run048_sourcebuild_official_control_20260611`):
+  - attempted source-built official control canary with requested model `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+  - result: FAIL timeout (`canary_rc=124`, `post_echo_rc=0`, no streamed responses)
+  - critical trace observation:
+    - `DT_LTX23_TRACE` reported resolved model path `ltx_2.3_22b_distilled_1.1_q8p.ckpt`
+    - indicates model-resolution fallback (requested q6p not used), making this run an availability confound rather than clean official-q6p A/B
+  - interpretation:
+    - source-build evaluation must include explicit local model-file existence checks to avoid fallback-induced false attribution
+
+- Run 049 (`run049_preflight_missing_model_check_20260611`):
+  - hardened canary harness `tools/run_q6p_canary_once.sh` with missing-model preflight
+  - new default behavior:
+    - if `--model` is file-like (`*.ckpt` or `*.safetensors`) and file is missing under `dt-models`, exit before launch
+  - added opt-out for intentional fallback tests:
+    - `--allow-missing-model`
+  - validation result:
+    - fail-fast triggered as expected for missing `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -413,6 +431,8 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run045 confirms source-level tracing is active, but also introduces a new binary/runtime confound: baseline non-custom control fails under local source-built Linux binary.
 - Run046 confirms the confound directly: stable wrapper binary passes strict control while local source-built binary fails the same control deterministically.
 - Run047 confirms branch behavior remains stable when run on wrapper binary path and matches run044 three-way split.
+- Run048 adds a separate confound class: model-resolution fallback (q6p request resolving to q8p) can invalidate source-build control conclusions.
+- Run049 closes that gap in the harness by turning missing file-like model requests into explicit preflight failures.
 
 ## 4) Key artifacts
 
@@ -559,6 +579,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/cases/*.log`
+- Run 048 artifacts:
+  - `output/q6p_canary_run048_sourcebuild_official_control_20260611/client.log`
+  - `output/q6p_canary_run048_sourcebuild_official_control_20260611/server.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -573,6 +596,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - keep binary-path control explicit (stable wrapper binary vs locally built source binary) to avoid mixing run044 branch evidence with run045 source-build instability
   - until source-built runtime is stabilized, use stable wrapper binary for branch-comparison matrices and reserve source-built runs for focused tracing probes only
   - use run047 as the current regression baseline for pinned-companion branch mapping
+  - add an explicit preflight gate for source-build controls: fail fast if requested model file is missing locally (to prevent q8p/default fallback contamination)
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
