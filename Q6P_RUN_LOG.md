@@ -1573,3 +1573,46 @@ bash tools/run_custom_alias_resolution_probe.sh \
 - Outcome:
   - Winner presence (`arg_match_count>=1`) and overlap alone are not sufficient to trigger failure.
   - Prior failures require one or more LTX-style custom-entry fields used in earlier modes (`version=ltx2.3`, `modifier=kontext/none`, `clip_encoder=file`, `default_scale=1`, and related fields).
+
+## Run 038 (2026-06-11): Additive LTX Field Ladder from Minimal-v1 Baseline
+
+- Tool update:
+  - `tools/run_custom_alias_resolution_probe.sh` now supports `--matrix field-ladder`.
+  - Added additive modes for trace-key custom entry:
+    - `alias_trace_ladder_ltx23_min`
+    - `alias_trace_ladder_ltx23_modifier`
+    - `alias_trace_ladder_ltx23_modifier_scale1`
+    - `alias_trace_ladder_ltx23_modifier_scale1_clip`
+    - `alias_trace_a` (full base clone)
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix field-ladder \
+  --tag run038_alias_resolution_field_ladder_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run038_alias_resolution_field_ladder_20260611`):
+  - cases: 7
+  - pass: 2
+  - fail: 5
+
+- Transition results:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_minv1` (custom winner, `version=v1` minimal schema): PASS
+  - `probe_trace_ladder_v_ltx23` (only `version` switched to `ltx2.3`): FAIL (`textencoder_illegal`)
+  - `probe_trace_ladder_v_ltx23_modifier`: FAIL (`textencoder_illegal`)
+  - `probe_trace_ladder_v_ltx23_modifier_scale1`: FAIL (`textencoder_illegal`)
+  - `probe_trace_ladder_v_ltx23_modifier_scale1_clip`: FAIL (`timeout`)
+  - `probe_trace_ladder_full_base`: FAIL (`timeout`)
+
+- Key finding:
+  - First failing transition is `version: v1 -> ltx2.3` alone, even with otherwise minimal/default-like entry.
+  - Additional LTX-style fields change failure signature (`textencoder_illegal` to timeout) but are not required to trigger failure.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/cases/*.log`

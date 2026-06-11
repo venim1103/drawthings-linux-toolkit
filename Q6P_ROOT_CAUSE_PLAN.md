@@ -180,3 +180,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Crucial discriminator: even with active winners (`arg_match_count=1`) and simultaneous overlap (`trace_match_count=1`, `tmpkey_match_count=1`), all cases stayed PASS.
 	- Revised causal branch: custom winner/overlap state alone is insufficient; failure requires one or more LTX-style custom-entry fields from earlier failing modes (most likely among `version=ltx2.3`, `clip_encoder=file`, `modifier`, `default_scale`, and associated LTX config fields).
 	- Next isolation target: run additive field-ladder from minimal-v1 baseline to prior failing alias schema to identify first failing field transition.
+- 2026-06-11: Run 038 additive field-ladder matrix (`run038_alias_resolution_field_ladder_20260611`) completed.
+	- Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix field-ladder` and additive trace-entry modes.
+	- Matrix result: 7 cases total, pass=2, fail=5.
+	- First-fail transition identified: switching only `version` from `v1` to `ltx2.3` (`alias_trace_ladder_ltx23_min`) already fails with `textencoder_illegal`.
+	- Subsequent additions (`modifier=kontext`, `default_scale=1`) remained `textencoder_illegal`; adding `clip_encoder=file` shifted signature to timeout, matching full-base alias behavior.
+	- Updated causal branch: dominant trigger is LTX2.3 custom-version path activation itself; clip/default-scale/modifier modulate signature severity but are not required for failure onset.
+	- Next isolation target: instrument or emulate the LTX2.3 version-driven text-encoder selection path under custom entries (especially TextEncoder.encodeLTX2 file list construction and fallback rules).

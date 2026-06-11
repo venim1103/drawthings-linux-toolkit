@@ -234,6 +234,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - winner presence/overlap is not sufficient by itself
     - failure requires one or more LTX-style custom fields used in prior failing modes
 
+- Run 038 (`run038_alias_resolution_field_ladder_20260611`):
+  - added and executed `field-ladder` matrix in `tools/run_custom_alias_resolution_probe.sh`
+  - additive ladder from passing minimal-v1 custom entry toward prior failing full-base alias schema
+  - matrix result: `cases=7`, `pass=2`, `fail=5`
+  - first-fail transition:
+    - `probe_trace_minv1` (`version=v1`) => PASS
+    - `probe_trace_ladder_v_ltx23` (only `version=ltx2.3`) => FAIL (`textencoder_illegal`)
+  - additional ladder behavior:
+    - adding `modifier=kontext` and `default_scale=1` stayed `textencoder_illegal`
+    - adding `clip_encoder=file` shifted signature to timeout
+    - full-base alias remained timeout
+  - interpretation:
+    - primary trigger is activation of the LTX2.3 custom-version path itself
+    - clip/modifier/default-scale shape the failure signature but are not required for onset
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -250,6 +265,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run035 adds winner-context evidence: fail cases correlate with active winner on requested key (`arg_match_count>=1`) while pass controls keep `arg_match_count=0`.
 - Run036 confirms the same pattern in cross-file mode: overlap across both key domains (`trace` + `tmpkey`) under `alias_both` remains the deterministic trigger.
 - Run037 refines and overrides that partial hypothesis: when custom winners use minimal v1-like entries, all cases pass (including overlap), so the true trigger is field-content dependent rather than winner-state alone.
+- Run038 identifies the earliest causal field transition: `version=v1 -> ltx2.3` alone flips PASS to FAIL.
 
 ## 4) Key artifacts
 
@@ -355,6 +371,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run037_alias_resolution_minv1_ctx_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run037_alias_resolution_minv1_ctx_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run037_alias_resolution_minv1_ctx_20260611/cases/*.log`
+- Run 038 artifacts:
+  - `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -363,9 +383,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run037 shows winner-state is not sufficient; pivot to additive field-ladder isolation from the minimal-v1 passing baseline
-  - introduce one LTX-style field at a time (`version=ltx2.3`, `modifier`, `default_scale`, `clip_encoder`, `objective`, `text_encoder`, `autoencoder`) and capture first failing transition
-  - keep winner-context columns enabled in resolution probe for each ladder step
+  - run038 isolated first failure to `version=ltx2.3`; pivot to version-path instrumentation around LTX2.3 handling
+  - inspect and probe TextEncoder/LTX2.3 selection path for custom entries (file list build, clip/text encoder fallbacks)
+  - run targeted follow-up matrix varying `text_encoder`, `autoencoder`, and `clip_encoder` while keeping `version=ltx2.3` fixed to separate immediate illegal-instruction trigger from timeout variants
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 

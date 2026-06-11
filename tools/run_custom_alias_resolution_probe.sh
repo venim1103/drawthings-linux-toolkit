@@ -31,7 +31,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -103,8 +103,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder" >&2
   exit 1
 fi
 
@@ -202,6 +202,26 @@ def alias_min_v1(name: str, file_key: str):
         "default_scale": 8,
     }
 
+def alias_ladder_ltx23_min(name: str, file_key: str):
+    entry = alias_min_v1(name, file_key)
+    entry["version"] = "ltx2.3"
+    return entry
+
+def alias_ladder_ltx23_modifier(name: str, file_key: str):
+    entry = alias_ladder_ltx23_min(name, file_key)
+    entry["modifier"] = "kontext"
+    return entry
+
+def alias_ladder_ltx23_modifier_scale1(name: str, file_key: str):
+    entry = alias_ladder_ltx23_modifier(name, file_key)
+    entry["default_scale"] = 1
+    return entry
+
+def alias_ladder_ltx23_modifier_scale1_clip(name: str, file_key: str):
+    entry = alias_ladder_ltx23_modifier_scale1(name, file_key)
+    entry["clip_encoder"] = file_key
+    return entry
+
 filtered = []
 probe_names = {alias_a, alias_b, tmp_alias}
 for entry in payload:
@@ -236,6 +256,14 @@ elif mode == "alias_tmpkey_min_v1":
 elif mode == "alias_both_min_v1":
     filtered.append(alias_min_v1(alias_a, trace_key))
     filtered.append(alias_min_v1(tmp_alias, tmpkey_key))
+elif mode == "alias_trace_ladder_ltx23_min":
+    filtered.append(alias_ladder_ltx23_min(alias_a, trace_key))
+elif mode == "alias_trace_ladder_ltx23_modifier":
+    filtered.append(alias_ladder_ltx23_modifier(alias_a, trace_key))
+elif mode == "alias_trace_ladder_ltx23_modifier_scale1":
+    filtered.append(alias_ladder_ltx23_modifier_scale1(alias_a, trace_key))
+elif mode == "alias_trace_ladder_ltx23_modifier_scale1_clip":
+    filtered.append(alias_ladder_ltx23_modifier_scale1_clip(alias_a, trace_key))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -444,7 +472,7 @@ elif [[ "$MATRIX" == "cross-file" ]]; then
 
   run_case "cross_both_aliases_request_trace_name" "alias_both" "$PROBE_ALIAS_A" "1"
   run_case "cross_both_aliases_request_tmpkey_name" "alias_both" "$PROBE_TMP_ALIAS" "1"
-else
+elif [[ "$MATRIX" == "minimal-v1" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_minv1_model_filearg" "alias_trace_min_v1" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_minv1_model_namearg" "alias_trace_min_v1" "$PROBE_ALIAS_A" "0"
@@ -453,6 +481,14 @@ else
   run_case "probe_tmpkey_minv1_model_namearg" "alias_tmpkey_min_v1" "$PROBE_TMP_ALIAS" "1"
   run_case "probe_both_minv1_trace_filearg" "alias_both_min_v1" "$TRACE_MODEL_KEY" "1"
   run_case "probe_both_minv1_tmpkey_filearg" "alias_both_min_v1" "$TMPKEY_MODEL_KEY" "1"
+else
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_minv1" "alias_trace_min_v1" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ladder_v_ltx23" "alias_trace_ladder_ltx23_min" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ladder_v_ltx23_modifier" "alias_trace_ladder_ltx23_modifier" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ladder_v_ltx23_modifier_scale1" "alias_trace_ladder_ltx23_modifier_scale1" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ladder_v_ltx23_modifier_scale1_clip" "alias_trace_ladder_ltx23_modifier_scale1_clip" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ladder_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 
 pass_count="$(awk -F'\t' 'NR>1 && $15=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
