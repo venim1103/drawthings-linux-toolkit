@@ -1745,3 +1745,49 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run041_ltx23_companion/summary.md`
   - results table: `output/custom_alias_resolution_probe_run041_ltx23_companion/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run041_ltx23_companion/cases/*.log`
+
+## Run 042 (2026-06-11): LTX2.3 Two-File Ordering Matrix
+
+- Tool update:
+  - Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix ltx23-order`.
+  - Added explicit ordering modes to separate `text_encoder` vs `clip_encoder` assignment while keeping requested model fixed to traced q6p key:
+    - `alias_trace_ltx23_text_swap_companion_a`
+    - `alias_trace_ltx23_text_swap_companion_b`
+    - `alias_trace_ltx23_text_swap_companion_c`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-order \
+  --timeout-sec 75 \
+  --tag run042_ltx23_order
+```
+
+- Probe summary (`run042_ltx23_order`):
+  - cases: 8
+  - pass: 1
+  - fail: 7
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_ltx23_min_text` (ltx2.3 + one text file): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_trace`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_swap_companion_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_swap_companion_b`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_swap_companion_c`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_full_base`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Context note (important drift):
+  - Current local base entry `10_e_v1` resolves `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`.
+  - In run042, one-file ltx2.3 case used `arg_text_file0=gemma_3_12b_it_qat_q8p.ckpt` and did not reproduce immediate `textencoder_illegal`; it timed out instead.
+
+- Key finding:
+  - Under current base-entry state, all ltx2.3 custom variants converge to timeout before first streamed response, regardless of two-file ordering (`text_encoder` first vs companion first).
+  - Ordering across tested companions did not separate timeout vs loader-crash in this run; state-sensitive encoder selection remains a likely confound.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run042_ltx23_order/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run042_ltx23_order/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run042_ltx23_order/cases/*.log`

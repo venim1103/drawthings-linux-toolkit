@@ -212,3 +212,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Two-file ltx2.3 cases avoided immediate illegal-instruction but bifurcated into timeout (`canary_rc=124`, `post_echo_rc=0`) and loader-crash (`canary_rc=124`, `post_echo_rc=124`, `ccv_nnc_tensor_read`) depending on companion clip choice.
 	- Updated causal branch: second-file precondition is necessary to avoid immediate encode crash but not sufficient for end-to-end pass; a downstream load/inference branch remains unresolved.
 	- Next isolation target: add source-level instrumentation in ltx2.3 load path to capture first divergence after two-file list construction (file ordering, model-read path, and connector loading interactions).
+- 2026-06-11: Run 042 ltx2.3 ordering matrix (`run042_ltx23_order`) completed.
+	- Extended probe harness with `--matrix ltx23-order` and explicit text/clip swap modes for companion files.
+	- Matrix result: 8 cases total, pass=1, fail=7.
+	- Under current local base-entry state, all failing variants converged to timeout (`canary_rc=124`, `post_echo_rc=0`), including one-file ltx2.3 case.
+	- Drift note: local `10_e_v1` now resolves `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`; one-file case did not reproduce prior immediate `TextEncoder.encodeLTX2` illegal-instruction.
+	- Updated causal branch: companion ordering alone did not explain downstream split in this state; active text-encoder source/value is a strong state-sensitive confound.
+	- Next isolation target: pin text-encoder field explicitly in probe modes (legacy clip-vs-gemma controls) and rerun one-file/two-file matrix to separate true ordering effects from base-entry drift.

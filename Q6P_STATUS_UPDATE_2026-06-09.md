@@ -291,6 +291,22 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - confirms one-file list as immediate illegal-instruction trigger
     - two-file precondition is necessary but not sufficient; downstream failure branch persists and is companion-dependent
 
+- Run 042 (`run042_ltx23_order`):
+  - added and executed explicit ordering matrix (`ltx23-order`)
+  - tool update: `tools/run_custom_alias_resolution_probe.sh`
+    - new matrix: `--matrix ltx23-order`
+    - new swap modes: `alias_trace_ltx23_text_swap_companion_a|b|c`
+  - matrix result: `cases=8`, `pass=1`, `fail=7`
+  - signatures:
+    - all failing cases converged to `timeout` with `canary_rc=124`, `post_echo_rc=0`
+    - includes one-file ltx2.3 (`probe_trace_ltx23_min_text`) and all two-file ordering variants
+  - context drift captured:
+    - local base entry `10_e_v1` currently resolves `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`
+    - one-file case used `arg_text_file0=gemma_3_12b_it_qat_q8p.ckpt` and no longer reproduced immediate `textencoder_illegal`
+  - interpretation:
+    - tested text/clip ordering did not separate timeout vs loader-crash in current state
+    - base-entry text-encoder value is likely a state-sensitive confound that must be pinned for deterministic branch isolation
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -311,6 +327,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run039 confirms the transition is robust across encoder variants and narrows next work to source-level LTX2.3 encoder-path control flow.
 - Run040 adds direct resolved-file evidence tying illegal-instruction to one-file ltx2.3 text-encoder lists.
 - Run041 confirms two-file ltx2.3 custom entries avoid immediate `encodeLTX2` illegal-instruction, but still fail later with companion-dependent timeout vs loader-crash signatures.
+- Run042 shows current local state has drifted: one-file and two-file ltx2.3 variants now uniformly timeout, and ordering swaps alone do not explain failure split.
 
 ## 4) Key artifacts
 
@@ -432,6 +449,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run041_ltx23_companion/summary.md`
   - `output/custom_alias_resolution_probe_run041_ltx23_companion/results.tsv`
   - `output/custom_alias_resolution_probe_run041_ltx23_companion/cases/*.log`
+- Run 042 artifacts:
+  - `output/custom_alias_resolution_probe_run042_ltx23_order/summary.md`
+  - `output/custom_alias_resolution_probe_run042_ltx23_order/results.tsv`
+  - `output/custom_alias_resolution_probe_run042_ltx23_order/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -440,8 +461,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run040/run041 establish split branch: one-file ltx2.3 => immediate illegal; two-file ltx2.3 => timeout/loader-crash
-  - instrument post-precondition path to capture first downstream divergence for two-file ltx2.3 cases
+  - run040/run041/run042 indicate branch behavior is highly state-sensitive to resolved `text_encoder`
+  - pin text-encoder values explicitly in probe modes (legacy clip-vs-gemma) and rerun one-file/two-file controls to recover deterministic split mapping
+  - once pinned, instrument post-precondition path to capture first downstream divergence for two-file ltx2.3 cases
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
