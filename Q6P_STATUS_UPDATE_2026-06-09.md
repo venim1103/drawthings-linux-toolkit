@@ -420,6 +420,22 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - focused matrix is now a fast and stable regression gate for core branch-shape validation
 
+- Run 051 (`run051_sourcebuild_notrace_control_20260611`):
+  - source-built strict control rerun without `DT_LTX23_TRACE`
+  - result: FAIL (`canary_rc=1`, `post_echo_rc=1`, abort/core dump)
+  - interpretation:
+    - source-build abort is not dependent on trace logging overhead
+
+- Run 052 (binary/linkage forensics):
+  - compared deployed default binary and source-built binary
+  - observed major provenance/runtime deltas:
+    - size: default ~829MB vs source-built ~217MB
+    - linkage: default links CUDA/CUDNN runtime libs; source-built links OpenBLAS and no CUDA runtime libs
+  - evidence from ccv SwiftPM rules on Linux:
+    - `.build/checkouts/ccv/Package.swift` links OpenBLAS on Linux and excludes GPU/CUDA source paths
+  - interpretation:
+    - source-built binary in this workflow is backend-incompatible with the deployed wrapper binary and should not be used as a drop-in for branch-comparison conclusions
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -449,6 +465,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run048 adds a separate confound class: model-resolution fallback (q6p request resolving to q8p) can invalidate source-build control conclusions.
 - Run049 closes that gap in the harness by turning missing file-like model requests into explicit preflight failures.
 - Run050 adds a lightweight branch-shape gate that preserves the highest-signal traced-vs-companion split with minimal runtime cost.
+- Run051/052 together isolate source-build instability cause class: runtime backend mismatch (CUDA-linked deployed binary vs OpenBLAS-linked source build), not trace-logging side effect.
 
 ## 4) Key artifacts
 
@@ -602,6 +619,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/cases/*.log`
+- Run 051 artifacts:
+  - `output/q6p_canary_run051_sourcebuild_notrace_control_20260611/client.log`
+  - `output/q6p_canary_run051_sourcebuild_notrace_control_20260611/server.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -618,6 +638,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - use run047 as the current regression baseline for pinned-companion branch mapping
   - add an explicit preflight gate for source-build controls: fail fast if requested model file is missing locally (to prevent q8p/default fallback contamination)
   - run focused gate (`--matrix ltx23-focused`) before broad ltx23 matrices to quickly verify branch-shape stability
+  - keep branch-comparison matrices on wrapper/runtime-equivalent binaries; do not interpret source-built OpenBLAS runs as direct equivalents of deployed CUDA-linked behavior
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized

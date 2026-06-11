@@ -2117,3 +2117,54 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run050_wrapper_ltx23_focused_20260611/cases/*.log`
+
+## Run 051 (2026-06-11): Source-Build Control Without Trace Logging
+
+- Goal:
+  - Verify whether source-built crash depends on `DT_LTX23_TRACE` instrumentation overhead.
+
+- Command:
+
+```bash
+PATH="/workspaces/drawthings-linux-toolkit/draw-things-community/.build/release:$PATH" \
+bash tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --final-mode \
+  --require-complete-stream \
+  --require-final-output \
+  --max-responses 0 \
+  --timeout-sec 75 \
+  --tag run051_sourcebuild_notrace_control_20260611
+```
+
+- Result:
+  - FAIL (`canary_rc=1`, `post_echo_rc=1`, server abort/core dump, client `UNAVAILABLE: Socket closed`).
+
+- Key finding:
+  - Source-built runtime abort reproduces even without trace logging; `DT_LTX23_TRACE` is not the primary trigger.
+
+- Artifacts:
+  - `output/q6p_canary_run051_sourcebuild_notrace_control_20260611/{client.log,server.log}`
+
+## Run 052 (2026-06-11): Binary/Linkage Forensics (Default vs Source-Build)
+
+- Goal:
+  - Compare working default binary and failing source-built binary to find structural runtime differences.
+
+- Binary provenance snapshot:
+  - default: `/usr/local/bin/gRPCServerCLI` (size `829,369,480` bytes)
+  - source-built: `draw-things-community/.build/x86_64-unknown-linux-gnu/release/gRPCServerCLI` (size `217,319,528` bytes)
+  - hashes differ:
+    - default: `6d33b751f5b8b72a1e72fb9e70d5c94b6f8b5f7dc2a043deaa5f7d247ec3e717`
+    - source: `ff5181f437b33a4b92aed3c68f6bf2f3cee30f316aa8bfa9e223ac24989b8b87`
+
+- Linkage difference summary (`ldd`):
+  - default binary links CUDA/CUDNN stack (`libcublas`, `libcudart`, `libcudnn`, `libcurand`, etc.)
+  - source-built binary links `libopenblas` and does not link CUDA runtime libraries.
+
+- Build-rule evidence from ccv SwiftPM package:
+  - Linux host path in `.build/checkouts/ccv/Package.swift` sets OpenBLAS linker path and excludes GPU/CUDA sources (`gpu`, `cmd/*/gpu`, `cuda`).
+
+- Key finding:
+  - Source-built binary is not runtime-equivalent to the working deployed binary; it is effectively a different backend build profile (CPU/OpenBLAS vs CUDA-linked).
+  - This is a high-confidence root confound for interpreting source-build canary behavior against wrapper-binary branch results.

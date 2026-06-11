@@ -271,3 +271,11 @@ Success means full generation completes (not only first streamed response) and n
 		- traced clip => loader-crash
 		- companion A => timeout
 	- Updated causal branch: use run050 focused matrix as fast preflight/regression gate before wider ltx23 matrices.
+- 2026-06-11: Run 051 source-build no-trace control (`run051_sourcebuild_notrace_control_20260611`) completed.
+	- Source-built control still aborted (`canary_rc=1`, `post_echo_rc=1`) without `DT_LTX23_TRACE`.
+	- Updated causal branch: source-built instability is not caused by trace logging overhead.
+- 2026-06-11: Run 052 binary/linkage forensics completed.
+	- Default working binary (`/usr/local/bin/gRPCServerCLI`) and source-built binary have large size/hash divergence.
+	- `ldd` shows default binary links CUDA/CUDNN stack, while source-built links OpenBLAS and no CUDA runtime libraries.
+	- ccv SwiftPM rules under Linux (`.build/checkouts/ccv/Package.swift`) explicitly exclude GPU/CUDA source paths and link OpenBLAS.
+	- Updated causal branch: source-built binary is backend-incompatible with deployed wrapper binary on Linux; treat it as a different runtime class rather than a drop-in for branch-comparison runs.
