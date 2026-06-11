@@ -1616,3 +1616,44 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/cases/*.log`
+
+## Run 039 (2026-06-11): LTX2.3 Encoder-Path Variants (Version Fixed)
+
+- Tool update:
+  - `tools/run_custom_alias_resolution_probe.sh` now supports `--matrix ltx23-encoders`.
+  - Added ltx2.3-fixed minimal variants:
+    - `alias_trace_ltx23_min_text`
+    - `alias_trace_ltx23_min_auto`
+    - `alias_trace_ltx23_min_text_auto`
+    - `alias_trace_ltx23_min_clip`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-encoders \
+  --tag run039_alias_resolution_ltx23_encoders_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run039_alias_resolution_ltx23_encoders_20260611`):
+  - cases: 7
+  - pass: 1
+  - fail: 6
+
+- Variant outcomes (all with `version=ltx2.3`):
+  - `probe_trace_ltx23_min`: FAIL (`textencoder_illegal`)
+  - `probe_trace_ltx23_min_text`: FAIL (`timeout`)
+  - `probe_trace_ltx23_min_auto`: FAIL (`textencoder_illegal`)
+  - `probe_trace_ltx23_min_text_auto`: FAIL (`timeout`)
+  - `probe_trace_ltx23_min_clip`: FAIL (`timeout`)
+  - `probe_trace_ltx23_full_base`: FAIL (`timeout`)
+
+- Key finding:
+  - Keeping `version=ltx2.3` is sufficient for deterministic failure across encoder variants.
+  - Adding `text_encoder` and/or `clip_encoder` shifts signature from immediate `textencoder_illegal` toward timeout-style failure, but does not recover PASS.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/cases/*.log`

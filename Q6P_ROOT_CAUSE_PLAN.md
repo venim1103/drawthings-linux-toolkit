@@ -187,3 +187,12 @@ Success means full generation completes (not only first streamed response) and n
 	- Subsequent additions (`modifier=kontext`, `default_scale=1`) remained `textencoder_illegal`; adding `clip_encoder=file` shifted signature to timeout, matching full-base alias behavior.
 	- Updated causal branch: dominant trigger is LTX2.3 custom-version path activation itself; clip/default-scale/modifier modulate signature severity but are not required for failure onset.
 	- Next isolation target: instrument or emulate the LTX2.3 version-driven text-encoder selection path under custom entries (especially TextEncoder.encodeLTX2 file list construction and fallback rules).
+- 2026-06-11: Run 039 LTX2.3 encoder-path variant matrix (`run039_alias_resolution_ltx23_encoders_20260611`) completed.
+	- Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix ltx23-encoders` and ltx2.3-fixed variant modes (`min_text`, `min_auto`, `min_text_auto`, `min_clip`).
+	- Matrix result: 7 cases total, pass=1, fail=6.
+	- Control remained PASS only without custom ltx2.3 entry.
+	- All ltx2.3 custom variants failed; signature split observed:
+		- `textencoder_illegal`: minimal ltx2.3, ltx2.3+autoencoder
+		- `timeout`: ltx2.3+text_encoder, ltx2.3+text_encoder+autoencoder, ltx2.3+clip_encoder, full-base
+	- Refined branch: ltx2.3 custom-version path is necessary and sufficient for failure onset in this harness; encoder-related fields change failure manifestation but not pass/fail outcome.
+	- Next isolation target: source-level instrumentation around LTX2.3 text-encoder file-path assembly and encoder loading in LocalImageGenerator/TextEncoder to explain illegal-instruction vs timeout bifurcation.

@@ -31,7 +31,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -103,8 +103,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders" >&2
   exit 1
 fi
 
@@ -222,6 +222,32 @@ def alias_ladder_ltx23_modifier_scale1_clip(name: str, file_key: str):
     entry["clip_encoder"] = file_key
     return entry
 
+def alias_ltx23_min_text(name: str, file_key: str):
+  entry = alias_ladder_ltx23_min(name, file_key)
+  text_encoder = str(base_entry.get("text_encoder", "")).strip()
+  if text_encoder:
+    entry["text_encoder"] = text_encoder
+  return entry
+
+def alias_ltx23_min_auto(name: str, file_key: str):
+  entry = alias_ladder_ltx23_min(name, file_key)
+  autoencoder = str(base_entry.get("autoencoder", "")).strip()
+  if autoencoder:
+    entry["autoencoder"] = autoencoder
+  return entry
+
+def alias_ltx23_min_text_auto(name: str, file_key: str):
+  entry = alias_ltx23_min_text(name, file_key)
+  autoencoder = str(base_entry.get("autoencoder", "")).strip()
+  if autoencoder:
+    entry["autoencoder"] = autoencoder
+  return entry
+
+def alias_ltx23_min_clip(name: str, file_key: str):
+  entry = alias_ladder_ltx23_min(name, file_key)
+  entry["clip_encoder"] = file_key
+  return entry
+
 filtered = []
 probe_names = {alias_a, alias_b, tmp_alias}
 for entry in payload:
@@ -264,6 +290,14 @@ elif mode == "alias_trace_ladder_ltx23_modifier_scale1":
     filtered.append(alias_ladder_ltx23_modifier_scale1(alias_a, trace_key))
 elif mode == "alias_trace_ladder_ltx23_modifier_scale1_clip":
     filtered.append(alias_ladder_ltx23_modifier_scale1_clip(alias_a, trace_key))
+elif mode == "alias_trace_ltx23_min_text":
+  filtered.append(alias_ltx23_min_text(alias_a, trace_key))
+elif mode == "alias_trace_ltx23_min_auto":
+  filtered.append(alias_ltx23_min_auto(alias_a, trace_key))
+elif mode == "alias_trace_ltx23_min_text_auto":
+  filtered.append(alias_ltx23_min_text_auto(alias_a, trace_key))
+elif mode == "alias_trace_ltx23_min_clip":
+  filtered.append(alias_ltx23_min_clip(alias_a, trace_key))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -481,7 +515,7 @@ elif [[ "$MATRIX" == "minimal-v1" ]]; then
   run_case "probe_tmpkey_minv1_model_namearg" "alias_tmpkey_min_v1" "$PROBE_TMP_ALIAS" "1"
   run_case "probe_both_minv1_trace_filearg" "alias_both_min_v1" "$TRACE_MODEL_KEY" "1"
   run_case "probe_both_minv1_tmpkey_filearg" "alias_both_min_v1" "$TMPKEY_MODEL_KEY" "1"
-else
+elif [[ "$MATRIX" == "field-ladder" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_minv1" "alias_trace_min_v1" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ladder_v_ltx23" "alias_trace_ladder_ltx23_min" "$TRACE_MODEL_KEY" "0"
@@ -489,6 +523,14 @@ else
   run_case "probe_trace_ladder_v_ltx23_modifier_scale1" "alias_trace_ladder_ltx23_modifier_scale1" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ladder_v_ltx23_modifier_scale1_clip" "alias_trace_ladder_ltx23_modifier_scale1_clip" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ladder_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
+else
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_min" "alias_trace_ladder_ltx23_min" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_min_text" "alias_trace_ltx23_min_text" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_min_auto" "alias_trace_ltx23_min_auto" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_min_text_auto" "alias_trace_ltx23_min_text_auto" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_min_clip" "alias_trace_ltx23_min_clip" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 
 pass_count="$(awk -F'\t' 'NR>1 && $15=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"

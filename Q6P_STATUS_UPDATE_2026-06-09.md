@@ -249,6 +249,19 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - primary trigger is activation of the LTX2.3 custom-version path itself
     - clip/modifier/default-scale shape the failure signature but are not required for onset
 
+- Run 039 (`run039_alias_resolution_ltx23_encoders_20260611`):
+  - added and executed `ltx23-encoders` matrix in `tools/run_custom_alias_resolution_probe.sh`
+  - fixed `version=ltx2.3` and varied encoder-related fields (`text_encoder`, `autoencoder`, `clip_encoder`)
+  - matrix result: `cases=7`, `pass=1`, `fail=6`
+  - outcomes:
+    - all ltx2.3 custom variants failed (only non-custom control passed)
+    - signature split:
+      - `textencoder_illegal`: minimal ltx2.3 and ltx2.3+autoencoder
+      - `timeout`: ltx2.3+text_encoder, ltx2.3+text_encoder+autoencoder, ltx2.3+clip_encoder, full-base
+  - interpretation:
+    - ltx2.3 custom-version activation remains sufficient for failure onset
+    - encoder fields modulate failure manifestation (illegal-instruction vs timeout) but do not recover pass
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -266,6 +279,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run036 confirms the same pattern in cross-file mode: overlap across both key domains (`trace` + `tmpkey`) under `alias_both` remains the deterministic trigger.
 - Run037 refines and overrides that partial hypothesis: when custom winners use minimal v1-like entries, all cases pass (including overlap), so the true trigger is field-content dependent rather than winner-state alone.
 - Run038 identifies the earliest causal field transition: `version=v1 -> ltx2.3` alone flips PASS to FAIL.
+- Run039 confirms the transition is robust across encoder variants and narrows next work to source-level LTX2.3 encoder-path control flow.
 
 ## 4) Key artifacts
 
@@ -375,6 +389,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run038_alias_resolution_field_ladder_20260611/cases/*.log`
+- Run 039 artifacts:
+  - `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -383,9 +401,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run038 isolated first failure to `version=ltx2.3`; pivot to version-path instrumentation around LTX2.3 handling
-  - inspect and probe TextEncoder/LTX2.3 selection path for custom entries (file list build, clip/text encoder fallbacks)
-  - run targeted follow-up matrix varying `text_encoder`, `autoencoder`, and `clip_encoder` while keeping `version=ltx2.3` fixed to separate immediate illegal-instruction trigger from timeout variants
+  - run039 completed encoder-variant discrimination under fixed ltx2.3 failure state
+  - pivot to source-level instrumentation in LocalImageGenerator/TextEncoder LTX2.3 path (exact file list and load order per variant)
+  - log/compare first divergence between `textencoder_illegal` and timeout variants to identify where control flow departs
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 
