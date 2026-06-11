@@ -499,6 +499,298 @@ index 7f3969b1..79799e8e 100644
            case .flux2, .flux2_9b, .flux2_4b:
              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
                $0.write(key, tensor: fp16)
+diff --git a/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift b/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift
+index 00400482..cdc2706e 100644
+--- a/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift
++++ b/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift
+@@ -39,7 +39,8 @@ public class GRPCServerAdvertiser {
+     }
+     private let queue: DispatchQueue
+     private var phase: AdvertisingPhase = .none
+-  #else
++    private var nameHostnameIPAndPort: (String, String, String, UInt16)?
++  #elseif canImport(ObjectiveC)
+     private var netService: NetService?
+     private let objCResponder: ObjCResponder
+ 
+@@ -58,33 +59,35 @@ public class GRPCServerAdvertiser {
+     self.name = name
+     #if canImport(C_DNSAdvertiser)
+       queue = DispatchQueue(label: "com.draw-things.advertise", qos: .default)
+-    #else
++    #elseif canImport(ObjectiveC)
+       objCResponder = ObjCResponder()
+       objCResponder.advertiser = self
+     #endif
+   }
+ 
+-  private var nameHostnameIPAndPort: (String, String, String, UInt16)?
+-
+   public func startAdvertising(port: Int32, TLS: Bool) {
+-    let name = TLS ? "\(name)_tls" : "\(name)_notls"
++    let serviceName = TLS ? "\(name)_tls" : "\(name)_notls"
+     #if canImport(C_DNSAdvertiser)
+       if let IP = IP(), let localhost = localhost() {
+         let hostname = localhost + ".local"
+-        nameHostnameIPAndPort = (name, hostname, IP, UInt16(port))
++        nameHostnameIPAndPort = (serviceName, hostname, IP, UInt16(port))
+         queue.async { [weak self] in
+           guard let self = self else { return }
+           self.phase = .probe(0)
+-          self.advertise(name: name, hostname: hostname, IP: IP, port: UInt16(port))
++          self.advertise(name: serviceName, hostname: hostname, IP: IP, port: UInt16(port))
+         }
+       }
+-    #else
++    #elseif canImport(ObjectiveC)
+       let serviceType = "_dt-grpc._tcp."
+       let serviceDomain = "local."
+-      let netService = NetService(domain: serviceDomain, type: serviceType, name: name, port: port)
++      let netService = NetService(
++        domain: serviceDomain, type: serviceType, name: serviceName, port: port)
+       self.netService = netService
+       netService.delegate = objCResponder
+       netService.publish()  // Removed the options parameter
++    #else
++      _ = serviceName
++      _ = port
+     #endif
+   }
+ 
+@@ -103,9 +106,12 @@ public class GRPCServerAdvertiser {
+           advertise(name: name, hostname: hostname, IP: IP, port: port)
+         }
+       }
+-    #else
++    #elseif canImport(ObjectiveC)
+       netService?.stop()
+       netService = nil
++      completionHandler?()
++    #else
++      completionHandler?()
+     #endif
+   }
+ 
+@@ -151,7 +157,7 @@ extension GRPCServerAdvertiser {
+         phase = .none
+       }
+     }
+-  #else
++  #elseif canImport(ObjectiveC)
+     // NetServiceDelegate methods
+     func netServiceDidPublish(_ sender: NetService) {
+       print(
+diff --git a/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift b/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift
+index b5a7696d..758a3f10 100644
+--- a/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift
++++ b/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift
+@@ -20,39 +20,46 @@ public class GRPCServiceBrowser {
+     }
+   }
+ 
+-  private var serviceBrowser: NetServiceBrowser
+-  private var discoveredServices = [NetService]()
+-  private var discoveredDescriptors = [ServiceDescriptor]()
+   public weak var delegate: GRPCServiceBrowserDelegate?
+   let logger = Logger(label: "com.draw-things.grpc-service")
+ 
+-  private let objCResponder: ObjCResponder
++  #if canImport(ObjectiveC)
++    private var serviceBrowser: NetServiceBrowser
++    private var discoveredServices = [NetService]()
++    private var discoveredDescriptors = [ServiceDescriptor]()
++    private let objCResponder: ObjCResponder
+ 
+-  final class ObjCResponder: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+-    weak var serviceBrowser: GRPCServiceBrowser? = nil
+-    public func netServiceBrowser(
+-      _ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool
+-    ) {
+-      serviceBrowser?.netServiceBrowser(browser, didFind: service, moreComing: moreComing)
+-    }
+-    public func netServiceBrowser(
+-      _ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool
+-    ) {
+-      serviceBrowser?.netServiceBrowser(browser, didRemove: service, moreComing: moreComing)
+-    }
+-    public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+-      serviceBrowser?.netService(sender, didNotResolve: errorDict)
+-    }
+-    public func netServiceDidResolveAddress(_ sender: NetService) {
+-      serviceBrowser?.netServiceDidResolveAddress(sender)
++    final class ObjCResponder: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
++      weak var serviceBrowser: GRPCServiceBrowser? = nil
++      public func netServiceBrowser(
++        _ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool
++      ) {
++        serviceBrowser?.netServiceBrowser(browser, didFind: service, moreComing: moreComing)
++      }
++      public func netServiceBrowser(
++        _ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool
++      ) {
++        serviceBrowser?.netServiceBrowser(browser, didRemove: service, moreComing: moreComing)
++      }
++      public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
++        serviceBrowser?.netService(sender, didNotResolve: errorDict)
++      }
++      public func netServiceDidResolveAddress(_ sender: NetService) {
++        serviceBrowser?.netServiceDidResolveAddress(sender)
++      }
+     }
+-  }
++  #endif
++
+   public init() {
+-    serviceBrowser = NetServiceBrowser()
+-    objCResponder = ObjCResponder()
+-    objCResponder.serviceBrowser = self
+-    serviceBrowser.delegate = objCResponder
+-    serviceBrowser.searchForServices(ofType: "_dt-grpc._tcp.", inDomain: "local.")
++    #if canImport(ObjectiveC)
++      serviceBrowser = NetServiceBrowser()
++      objCResponder = ObjCResponder()
++      objCResponder.serviceBrowser = self
++      serviceBrowser.delegate = objCResponder
++      serviceBrowser.searchForServices(ofType: "_dt-grpc._tcp.", inDomain: "local.")
++    #else
++      logger.info("NetServiceBrowser unsupported on this platform; discovery disabled")
++    #endif
+   }
+ 
+   private static func nameAndTLS(name serviceName: String) -> (name: String, TLS: Bool?) {
+@@ -72,63 +79,65 @@ public class GRPCServiceBrowser {
+   }
+ 
+   // NetServiceBrowserDelegate method
+-  public func netServiceBrowser(
+-    _ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool
+-  ) {
+-    dispatchPrecondition(condition: .onQueue(.main))
+-    discoveredServices.append(service)
+-    let (name, TLS) = Self.nameAndTLS(name: service.name)
+-    discoveredDescriptors.append(
+-      ServiceDescriptor(name: name, host: service.hostName ?? "", port: service.port, TLS: TLS))
+-    service.delegate = objCResponder
+-    service.resolve(withTimeout: 5.0)
+-  }
++  #if canImport(ObjectiveC)
++    public func netServiceBrowser(
++      _ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool
++    ) {
++      dispatchPrecondition(condition: .onQueue(.main))
++      discoveredServices.append(service)
++      let (name, TLS) = Self.nameAndTLS(name: service.name)
++      discoveredDescriptors.append(
++        ServiceDescriptor(name: name, host: service.hostName ?? "", port: service.port, TLS: TLS))
++      service.delegate = objCResponder
++      service.resolve(withTimeout: 5.0)
++    }
+ 
+-  public func netServiceBrowser(
+-    _ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool
+-  ) {
+-    dispatchPrecondition(condition: .onQueue(.main))
+-    guard let firstIndex = discoveredServices.firstIndex(where: { $0 == service }) else {
+-      return
++    public func netServiceBrowser(
++      _ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool
++    ) {
++      dispatchPrecondition(condition: .onQueue(.main))
++      guard let firstIndex = discoveredServices.firstIndex(where: { $0 == service }) else {
++        return
++      }
++      let descriptor = discoveredDescriptors[firstIndex]
++      discoveredServices.remove(at: firstIndex)
++      discoveredDescriptors.remove(at: firstIndex)
++      delegate?.didRemoveService(descriptor)
+     }
+-    let descriptor = discoveredDescriptors[firstIndex]
+-    discoveredServices.remove(at: firstIndex)
+-    discoveredDescriptors.remove(at: firstIndex)
+-    delegate?.didRemoveService(descriptor)
+-  }
+ 
+-  // NetServiceDelegate method
+-  public func netServiceDidResolveAddress(_ sender: NetService) {
+-    dispatchPrecondition(condition: .onQueue(.main))
+-    if let addresses = sender.addresses, !addresses.isEmpty {
+-      if let hostname = sender.hostName, sender.port != 0 {
+-        let (name, TLS) = Self.nameAndTLS(name: sender.name)
+-        let descriptor = ServiceDescriptor(name: name, host: hostname, port: sender.port, TLS: TLS)
+-        if let firstIndex = discoveredServices.firstIndex(where: { $0 == sender }) {
+-          discoveredDescriptors[firstIndex] = descriptor  // Update the descriptor.
++    // NetServiceDelegate method
++    public func netServiceDidResolveAddress(_ sender: NetService) {
++      dispatchPrecondition(condition: .onQueue(.main))
++      if let addresses = sender.addresses, !addresses.isEmpty {
++        if let hostname = sender.hostName, sender.port != 0 {
++          let (name, TLS) = Self.nameAndTLS(name: sender.name)
++          let descriptor = ServiceDescriptor(name: name, host: hostname, port: sender.port, TLS: TLS)
++          if let firstIndex = discoveredServices.firstIndex(where: { $0 == sender }) {
++            discoveredDescriptors[firstIndex] = descriptor  // Update the descriptor.
++          }
++          delegate?.didFindService(descriptor)
+         }
+-        delegate?.didFindService(descriptor)
+       }
+     }
+-  }
+ 
+-  public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+-    dispatchPrecondition(condition: .onQueue(.main))
+-    logger.error("Failed to resolve service: \(errorDict)")
+-    if let hostName = sender.hostName, sender.port != 0 {
+-      let (_, TLS) = Self.nameAndTLS(name: sender.name)
+-      if let (decodedHostname, ipAddress) = GRPCHostnameUtils.decodeGRPCHostname(
+-        customizeHostname: hostName)
+-      {
+-        let descriptor = ServiceDescriptor(
+-          name: decodedHostname, host: ipAddress, port: sender.port, TLS: TLS)
+-        if let firstIndex = discoveredServices.firstIndex(where: { $0 == sender }) {
+-          discoveredDescriptors[firstIndex] = descriptor
+-          logger.info("fallback hostname: \(hostName) ipaddress:\(ipAddress)")
++    public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
++      dispatchPrecondition(condition: .onQueue(.main))
++      logger.error("Failed to resolve service: \(errorDict)")
++      if let hostName = sender.hostName, sender.port != 0 {
++        let (_, TLS) = Self.nameAndTLS(name: sender.name)
++        if let (decodedHostname, ipAddress) = GRPCHostnameUtils.decodeGRPCHostname(
++          customizeHostname: hostName)
++        {
++          let descriptor = ServiceDescriptor(
++            name: decodedHostname, host: ipAddress, port: sender.port, TLS: TLS)
++          if let firstIndex = discoveredServices.firstIndex(where: { $0 == sender }) {
++            discoveredDescriptors[firstIndex] = descriptor
++            logger.info("fallback hostname: \(hostName) ipaddress:\(ipAddress)")
++          }
+         }
+-      }
+ 
++      }
+     }
+-  }
++  #endif
+ 
+ }
+diff --git a/Libraries/LocalImageGenerator/Sources/ImageConverter.swift b/Libraries/LocalImageGenerator/Sources/ImageConverter.swift
+index ceb75819..ddfa97d6 100644
+--- a/Libraries/LocalImageGenerator/Sources/ImageConverter.swift
++++ b/Libraries/LocalImageGenerator/Sources/ImageConverter.swift
+@@ -1,3 +1,4 @@
++#if canImport(CoreGraphics) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+ import CoreGraphics
+ import DataModels
+ import Diffusion
+@@ -2229,3 +2230,9 @@ public enum ImageConverter {
+     return (savedPositivePrompt, savedNegativePrompt, previousConfiguration)
+   }
+ }
++
++#else
++
++public enum ImageConverter {}
++
++#endif
 diff --git a/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift b/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
 index 6f266704..68a79a72 100644
 --- a/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
@@ -1684,7 +1976,7 @@ index 34bef46a..686eeeba 100644
        "identity" : "swift-system",
        "kind" : "remoteSourceControl",
 diff --git a/Package.swift b/Package.swift
-index 6ae4c90b..932b11a8 100644
+index 6ae4c90b..25f75ca3 100644
 --- a/Package.swift
 +++ b/Package.swift
 @@ -8,15 +8,17 @@ let package = Package(
@@ -1745,7 +2037,19 @@ index 6ae4c90b..932b11a8 100644
      ),
      .target(
        name: "Diffusion",
-@@ -335,7 +346,10 @@ let package = Package(
+@@ -166,7 +177,10 @@ let package = Package(
+       name: "DiffusionUNetWrapper",
+       dependencies: [
+         "Diffusion",
+-        "DiffusionCoreML",
++        .target(
++          name: "DiffusionCoreML",
++          condition: .when(platforms: [.macOS, .iOS, .tvOS, .visionOS])
++        ),
+         "DataModels",
+         .product(name: "Algorithms", package: "swift-algorithms"),
+         .product(name: "Atomics", package: "swift-atomics"),
+@@ -335,7 +349,10 @@ let package = Package(
          "DiffusionPreprocessors",
          "DiffusionUNetWrapper",
          "Upscaler",
@@ -1757,7 +2061,7 @@ index 6ae4c90b..932b11a8 100644
          .product(name: "Logging", package: "swift-log"),
          .product(name: "ccv", package: "ccv"),
          .product(name: "NNC", package: "s4nnc"),
-@@ -481,6 +495,28 @@ let package = Package(
+@@ -481,6 +498,28 @@ let package = Package(
        path: "Apps/DrawThingsCLI",
        sources: ["DrawThingsCLI.swift"]
      ),

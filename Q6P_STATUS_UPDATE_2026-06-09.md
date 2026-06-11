@@ -338,6 +338,34 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - with text identity pinned, secondary clip choice deterministically splits loader-crash vs timeout in two-file path
     - this is the clearest current boundary for targeted source instrumentation
 
+- Run 045 (`run045_ltx23_pinned_companion_trace_20260611`):
+  - fixed Linux source-build blockers and validated local build:
+    - `draw-things-community/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift`
+    - `draw-things-community/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift`
+    - `draw-things-community/Libraries/LocalImageGenerator/Sources/ImageConverter.swift`
+    - `draw-things-community/Package.swift`
+    - `swift build -c release --product gRPCServerCLI` => PASS
+  - synced toolkit patch bundle to include these files:
+    - `tools/generate_drawthings_quant_patches.sh`
+    - `tools/sync_drawthings_patch_bundle.sh`
+    - `tools/apply_drawthings_quant_patch.sh`
+    - regenerated `DRAW_THINGS_PATCH/patches/draw-things-community.patch`
+  - executed pinned-companion matrix using local built binary + instrumentation:
+    - `PATH=draw-things-community/.build/release:$PATH DT_LTX23_TRACE=1`
+    - matrix result: `cases=7`, `pass=0`, `fail=7`
+  - signatures:
+    - baseline control regressed: `control_trace_noncustom` => `canary_rc=1`, `post_echo_rc=1`
+    - most failing ltx2.3 probe variants: `timeout` with `canary_rc=124`, `post_echo_rc=124`
+    - `probe_trace_ltx23_full_base`: `timeout`, `post_echo_rc=0`
+  - stage evidence:
+    - `DT_LTX23_TRACE` lines observed in `probe_trace_ltx23_full_base` through:
+      - `LocalImageGenerator.textEncoderFiles`
+      - `LocalImageGenerator.beforeTextEncode`
+      - `encodeLTX2.begin`
+      - `encodeLTX2.loading_text_model`
+  - interpretation:
+    - instrumentation is active, but source-built Linux runtime introduces a new instability confound (baseline control no longer healthy), so run045 signatures are not directly comparable to run044.
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -361,6 +389,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run042 shows current local state has drifted: one-file and two-file ltx2.3 variants now uniformly timeout, and ordering swaps alone do not explain failure split.
 - Run043 restores deterministic split under pinned text encoders: one-file clip_vit reproduces immediate illegal-instruction, one-file gemma yields timeout.
 - Run044 extends pinned control and recovers full three-way branch mapping (one-file illegal, two-file traced-clip loader crash, two-file companion timeout).
+- Run045 confirms source-level tracing is active, but also introduces a new binary/runtime confound: baseline non-custom control fails under local source-built Linux binary.
 
 ## 4) Key artifacts
 
@@ -494,6 +523,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/summary.md`
   - `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/results.tsv`
   - `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/cases/*.log`
+- Run 045 artifacts:
+  - `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -505,6 +538,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - run044 confirms controlled three-way boundary under pinned text identity
   - instrument post-encode path for two-file traced-clip vs two-file companion cases to capture first branch divergence leading to loader-crash vs timeout (pre-stream)
   - keep pinned-matrix harness as regression control while adding source-level traces
+  - keep binary-path control explicit (stable wrapper binary vs locally built source binary) to avoid mixing run044 branch evidence with run045 source-build instability
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized

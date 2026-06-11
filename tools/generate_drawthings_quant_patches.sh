@@ -48,6 +48,16 @@ mkdir -p "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources"
 cp \
   "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" \
   "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift"
+cp \
+  "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/ImageConverter.swift" \
+  "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/ImageConverter.swift"
+mkdir -p "$PATCH_ROOT/Libraries/GRPC/Server/Sources"
+cp \
+  "$REPO_ROOT/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift" \
+  "$PATCH_ROOT/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift"
+cp \
+  "$REPO_ROOT/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift" \
+  "$PATCH_ROOT/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift"
 mkdir -p "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation"
 cp \
   "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" \
@@ -84,6 +94,9 @@ PATCH_TARGETS=(
   Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
   Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
   Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
+  Libraries/LocalImageGenerator/Sources/ImageConverter.swift
+  Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift
+  Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift
   Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
 )
 

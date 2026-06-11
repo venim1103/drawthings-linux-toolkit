@@ -177,7 +177,10 @@ let package = Package(
       name: "DiffusionUNetWrapper",
       dependencies: [
         "Diffusion",
-        "DiffusionCoreML",
+        .target(
+          name: "DiffusionCoreML",
+          condition: .when(platforms: [.macOS, .iOS, .tvOS, .visionOS])
+        ),
         "DataModels",
         .product(name: "Algorithms", package: "swift-algorithms"),
         .product(name: "Atomics", package: "swift-atomics"),

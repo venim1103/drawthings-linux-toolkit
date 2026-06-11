@@ -1882,3 +1882,59 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/summary.md`
   - results table: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/cases/*.log`
+
+## Run 045 (2026-06-11): Instrumented Linux Build + Pinned-Companion Replay
+
+- Build unblock fixes applied (source repo):
+  - `Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift`
+  - `Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift`
+  - `Libraries/LocalImageGenerator/Sources/ImageConverter.swift`
+  - `Package.swift` (platform-conditional `DiffusionCoreML` dependency)
+  - Result: `swift build -c release --product gRPCServerCLI` succeeded on Linux.
+
+- Patch-bundle sync updates (toolkit repo):
+  - Added the above GRPC/ImageConverter files to:
+    - `tools/generate_drawthings_quant_patches.sh`
+    - `tools/sync_drawthings_patch_bundle.sh`
+    - `tools/apply_drawthings_quant_patch.sh`
+  - Regenerated: `DRAW_THINGS_PATCH/patches/draw-things-community.patch`.
+
+- Command (instrumented replay using built binary via PATH):
+
+```bash
+PATH="/workspaces/drawthings-linux-toolkit/draw-things-community/.build/release:$PATH" \
+DT_LTX23_TRACE=1 \
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-pinned-companion \
+  --timeout-sec 75 \
+  --tag run045_ltx23_pinned_companion_trace_20260611
+```
+
+- Probe summary (`run045_ltx23_pinned_companion_trace_20260611`):
+  - cases: 7
+  - pass: 0
+  - fail: 7
+
+- Outcome map:
+  - `control_trace_noncustom`: FAIL (`unknown`, `canary_rc=1`, `post_echo_rc=1`)
+  - `probe_trace_ltx23_text_only_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_trace_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_a_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_b_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_c_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_full_base`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - Under the locally built instrumented Linux binary, baseline control stability regressed (non-custom control failed).
+  - Most failing cases now show server abort behavior in `server.log` (libc crash tail) and no streamed responses.
+  - `DT_LTX23_TRACE` evidence was captured in at least one case (`probe_trace_ltx23_full_base`) through:
+    - `LocalImageGenerator.textEncoderFiles`
+    - `LocalImageGenerator.beforeTextEncode`
+    - `encodeLTX2.begin`
+    - `encodeLTX2.loading_text_model`
+  - This confirms tracing hooks are active, but the broad regression means run045 cannot be compared directly against run044 branch signatures without controlling for source-built runtime instability.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run045_ltx23_pinned_companion_trace_20260611/cases/*.log`

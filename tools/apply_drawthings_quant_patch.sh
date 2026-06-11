@@ -94,6 +94,15 @@ if ! apply_git_patch "$REPO_ROOT" "$PATCHES_DIR/draw-things-community.patch" "dr
     "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" \
     "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" 1
   copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/ImageConverter.swift" \
+    "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/ImageConverter.swift" 1
+  copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift" \
+    "$REPO_ROOT/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift" 1
+  copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift" \
+    "$REPO_ROOT/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift" 1
+  copy_snapshot_patch \
     "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" \
     "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" 1
 fi

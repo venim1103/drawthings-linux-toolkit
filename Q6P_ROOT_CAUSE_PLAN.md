@@ -238,3 +238,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Stage note: all failing run044 variants ended before streamed signposts; branch separation is currently visible via crash signature and post-echo rc rather than stream progress milestones.
 	- Updated causal branch: with text identity pinned, secondary clip choice is sufficient to split loader-crash vs timeout branches in two-file ltx2.3 path.
 	- Next isolation target: instrument loader path for traced-clip two-file case versus companion two-file cases (same pinned text) to capture first branch point after `encodeLTX2` returns.
+- 2026-06-11: Linux source-build unblock + instrumented replay (`run045_ltx23_pinned_companion_trace_20260611`) completed.
+	- Build fixes added for Linux portability in GRPC NetService path and LocalImageGenerator image-converter gating; `swift build -c release --product gRPCServerCLI` now succeeds locally.
+	- Toolkit patch bundle now includes these files and regenerated `DRAW_THINGS_PATCH/patches/draw-things-community.patch`.
+	- Instrumented replay (PATH override to local built `gRPCServerCLI`, `DT_LTX23_TRACE=1`) produced 0/7 pass with baseline control regression (`control_trace_noncustom` failed).
+	- `DT_LTX23_TRACE` logs confirmed active instrumentation (`textEncoderFiles`, `beforeTextEncode`, `encodeLTX2.begin`, `encodeLTX2.loading_text_model`) before timeout in `probe_trace_ltx23_full_base`.
+	- Updated causal branch: source-built Linux runtime introduces a confounding instability layer (libc abort / no-stream) that masks run044 branch discrimination.
+	- Next isolation target: run minimal single-case trace with stable server binary path as control, then selectively A/B one traced-clip and one companion case under identical binary/runtime to recover comparable post-encode branch evidence.
