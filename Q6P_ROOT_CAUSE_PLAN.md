@@ -228,3 +228,12 @@ Success means full generation completes (not only first streamed response) and n
 	- Two-file pinned variants stayed timeout-only in this run.
 	- Updated causal branch: text-encoder identity (not just one-file count) is a primary branch selector for ltx2.3 custom failures.
 	- Next isolation target: source instrumentation and targeted matrix around one-file text identity + two-file secondary clip choices to localize where clip_vit path diverges to illegal-instruction.
+- 2026-06-11: Run 044 ltx2.3 pinned-companion boundary matrix (`run044_ltx23_pinned_companion`) completed.
+	- Extended probe harness with `--matrix ltx23-pinned-companion` and fixed-text companion variants (`text_encoder=$TEXT_PIN_A`).
+	- Matrix result: 7 cases total, pass=1, fail=6.
+	- Controlled three-way boundary established:
+		- one-file + clip_vit text pin => `textencoder_illegal`
+		- two-file + traced clip => `loader_crash` (`ccv_nnc_tensor_read`, `post_echo_rc=124`)
+		- two-file + companion A/B/C => `timeout` (`post_echo_rc=0`)
+	- Updated causal branch: with text identity pinned, secondary clip choice is sufficient to split loader-crash vs timeout branches in two-file ltx2.3 path.
+	- Next isolation target: instrument loader path for traced-clip two-file case versus companion two-file cases (same pinned text) to capture first branch point after `encodeLTX2` returns.

@@ -322,6 +322,20 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - text-encoder identity is a first-order branch selector in ltx2.3 custom failures
     - run041/run042 signature drift is explained by base-entry text_encoder state
 
+- Run 044 (`run044_ltx23_pinned_companion`):
+  - added and executed pinned companion boundary matrix (`ltx23-pinned-companion`)
+  - tool update: `tools/run_custom_alias_resolution_probe.sh`
+    - new matrix: `--matrix ltx23-pinned-companion`
+    - new modes: `alias_trace_ltx23_text_clip_companion_a|b|c_pin_a`
+  - matrix result: `cases=7`, `pass=1`, `fail=6`
+  - controlled branch split with text pin A (`clip_vit_l14_f16.ckpt`):
+    - one-file => `textencoder_illegal` (`post_echo_rc=1`)
+    - two-file + traced clip => `loader_crash` (`ccv_nnc_tensor_read`, `post_echo_rc=124`)
+    - two-file + companion A/B/C => `timeout` (`post_echo_rc=0`)
+  - interpretation:
+    - with text identity pinned, secondary clip choice deterministically splits loader-crash vs timeout in two-file path
+    - this is the clearest current boundary for targeted source instrumentation
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -344,6 +358,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run041 confirms two-file ltx2.3 custom entries avoid immediate `encodeLTX2` illegal-instruction, but still fail later with companion-dependent timeout vs loader-crash signatures.
 - Run042 shows current local state has drifted: one-file and two-file ltx2.3 variants now uniformly timeout, and ordering swaps alone do not explain failure split.
 - Run043 restores deterministic split under pinned text encoders: one-file clip_vit reproduces immediate illegal-instruction, one-file gemma yields timeout.
+- Run044 extends pinned control and recovers full three-way branch mapping (one-file illegal, two-file traced-clip loader crash, two-file companion timeout).
 
 ## 4) Key artifacts
 
@@ -473,6 +488,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run043_ltx23_textpin/summary.md`
   - `output/custom_alias_resolution_probe_run043_ltx23_textpin/results.tsv`
   - `output/custom_alias_resolution_probe_run043_ltx23_textpin/cases/*.log`
+- Run 044 artifacts:
+  - `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/summary.md`
+  - `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/results.tsv`
+  - `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -481,9 +500,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run043 confirms `text_encoder` identity is a deterministic one-file branch selector (clip_vit=>illegal vs gemma=>timeout)
-  - add focused two-file matrix with fixed text pin + varied secondary clip choices to map timeout vs loader-crash boundary under pinned conditions
-  - instrument post-precondition path to capture first downstream divergence for pinned two-file ltx2.3 cases
+  - run044 confirms controlled three-way boundary under pinned text identity
+  - instrument post-encode path for two-file traced-clip vs two-file companion cases to capture first branch divergence leading to loader-crash vs timeout
+  - keep pinned-matrix harness as regression control while adding source-level traces
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized

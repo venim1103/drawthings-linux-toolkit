@@ -37,7 +37,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin | ltx23-pinned-companion
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -54,7 +54,7 @@ Options:
                              (default: 10_e_v1_bf16_regen_0_q6p.ckpt).
   --companion-clip-c <file> LTX2.3 companion clip candidate C
                              (default: ltx_2.3_22b_distilled_f16.ckpt).
-  --text-pin-a <file>       Explicit text_encoder pin A for ltx23-textpin matrix
+  --text-pin-a <file>       Explicit text_encoder pin A for ltx23-textpin and ltx23-pinned-companion matrices
                              (default: clip_vit_l14_f16.ckpt).
   --text-pin-b <file>       Explicit text_encoder pin B for ltx23-textpin matrix
                              (default: gemma_3_12b_it_qat_q8p.ckpt).
@@ -139,8 +139,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" && "$MATRIX" != "ltx23-pinned-companion" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin, ltx23-pinned-companion" >&2
   exit 1
 fi
 
@@ -381,6 +381,12 @@ elif mode == "alias_trace_ltx23_text_clip_trace_pin_a":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, trace_key))
 elif mode == "alias_trace_ltx23_text_clip_trace_pin_b":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_b, trace_key))
+elif mode == "alias_trace_ltx23_text_clip_companion_a_pin_a":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, companion_clip_a))
+elif mode == "alias_trace_ltx23_text_clip_companion_b_pin_a":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, companion_clip_b))
+elif mode == "alias_trace_ltx23_text_clip_companion_c_pin_a":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, companion_clip_c))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -693,6 +699,14 @@ elif [[ "$MATRIX" == "ltx23-textpin" ]]; then
   run_case "probe_trace_ltx23_text_only_pin_b" "alias_trace_ltx23_text_only_pin_b" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_trace_pin_a" "alias_trace_ltx23_text_clip_trace_pin_a" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_trace_pin_b" "alias_trace_ltx23_text_clip_trace_pin_b" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
+elif [[ "$MATRIX" == "ltx23-pinned-companion" ]]; then
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_only_pin_a" "alias_trace_ltx23_text_only_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_a" "alias_trace_ltx23_text_clip_trace_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_companion_a_pin_a" "alias_trace_ltx23_text_clip_companion_a_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_companion_b_pin_a" "alias_trace_ltx23_text_clip_companion_b_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_companion_c_pin_a" "alias_trace_ltx23_text_clip_companion_c_pin_a" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 

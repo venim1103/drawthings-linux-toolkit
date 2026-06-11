@@ -1835,3 +1835,47 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run043_ltx23_textpin/summary.md`
   - results table: `output/custom_alias_resolution_probe_run043_ltx23_textpin/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run043_ltx23_textpin/cases/*.log`
+
+## Run 044 (2026-06-11): LTX2.3 Pinned-Companion Boundary Matrix
+
+- Tool update:
+  - Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix ltx23-pinned-companion`.
+  - Added pinned companion modes with fixed `text_encoder=$TEXT_PIN_A`:
+    - `alias_trace_ltx23_text_clip_companion_a_pin_a`
+    - `alias_trace_ltx23_text_clip_companion_b_pin_a`
+    - `alias_trace_ltx23_text_clip_companion_c_pin_a`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-pinned-companion \
+  --timeout-sec 75 \
+  --tag run044_ltx23_pinned_companion
+```
+
+- Probe summary (`run044_ltx23_pinned_companion`):
+  - cases: 7
+  - pass: 1
+  - fail: 6
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_ltx23_text_only_pin_a` (one-file, `text_encoder=clip_vit_l14_f16.ckpt`): FAIL (`textencoder_illegal`, `canary_rc=124`, `post_echo_rc=1`)
+  - `probe_trace_ltx23_text_clip_trace_pin_a` (two-file, clip_vit + traced clip): FAIL (`loader_crash`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_a_pin_a` (two-file, clip_vit + clipfix2 companion): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_b_pin_a` (two-file, clip_vit + regen0_q6p companion): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_c_pin_a` (two-file, clip_vit + distilled_f16 companion): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_full_base`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - With text identity pinned to clip_vit, run044 restores a deterministic three-branch boundary:
+    - one-file => `textencoder_illegal`
+    - two-file with traced clip => `loader_crash`
+    - two-file with non-trace companions => `timeout`
+  - This is the clearest controlled separation so far between immediate encode crash, loader crash, and stall branches.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/cases/*.log`
