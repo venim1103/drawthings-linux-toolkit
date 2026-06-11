@@ -2629,3 +2629,38 @@ DT_LTX23_TRACE=1 tools/run_q6p_canary_once.sh \
 - Artifacts:
   - client log: `output/q6p_canary_run065_source_bin_selector_smoke/client.log`
   - server log: `output/q6p_canary_run065_source_bin_selector_smoke/server.log`
+
+## Run 066 (2026-06-11): Focused Matrix via Explicit Wrapper Selector
+
+- Goal:
+  - Exercise the real probe matrix path with explicit wrapper runtime selection (`--grpc-bin`) and verify branch-map stability.
+
+- Command:
+
+```bash
+DT_LTX23_TRACE=1 tools/run_custom_alias_resolution_probe.sh \
+  --grpc-bin /usr/local/bin/drawthings-grpc \
+  --matrix ltx23-focused \
+  --tag run066_wrapper_selector_focused_trace
+```
+
+- Probe summary (`run066_wrapper_selector_focused_trace`):
+  - cases: 3
+  - pass: 1
+  - fail: 2
+
+- Outcome map:
+  - control => `pass`
+  - traced-clip pin-a => `loader_crash`
+  - companion-a pin-a => `timeout`
+
+- Trace check:
+  - No `DT_LTX23_TRACE` markers were present in run logs on wrapper runtime path.
+
+- Key finding:
+  - Probe-level binary selector works in full matrix flow, and branch mapping remains consistent with prior focused baseline while wrapper logs remain non-instrumented.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run066_wrapper_selector_focused_trace/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run066_wrapper_selector_focused_trace/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run066_wrapper_selector_focused_trace/cases/*.log`

@@ -851,3 +851,11 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - run064 (`run064_wrapper_bin_selector_smoke`): explicit wrapper bin passed (`canary_rc=0`, `post_echo_rc=0`).
   - run065 (`run065_source_bin_selector_smoke`): explicit source bin failed (`canary_rc=1`, `post_echo_rc=1`, socket closed, libc abort tail).
   - Interpretation: selector plumbing is correct; source-built Linux runtime confound remains unchanged.
+
+- run066 focused selector matrix (`run066_wrapper_selector_focused_trace`):
+  - explicit wrapper selector in probe flow reproduced focused baseline split:
+    - control pass
+    - traced-clip pin-a => loader_crash
+    - companion-a pin-a => timeout
+  - no `DT_LTX23_TRACE` markers observed in wrapper logs.
+  - interpretation: probe-level selector is validated in full matrix flow; wrapper remains branch-map baseline but non-instrumented for new source markers.

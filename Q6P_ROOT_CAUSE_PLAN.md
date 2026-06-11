@@ -344,3 +344,8 @@ Success means full generation completes (not only first streamed response) and n
 	- Run064 (`--grpc-bin /usr/local/bin/drawthings-grpc`) passed and reached streamed `textEncoded`.
 	- Run065 (`--grpc-bin .../.build/release/gRPCServerCLI`) failed with same abort/core-dump class.
 	- Updated causal branch: runtime choice is now deterministic at script level; source-built instability remains a backend/runtime issue rather than a selection ambiguity.
+- 2026-06-11: Run 066 focused matrix via explicit wrapper selector completed.
+	- Command used `--grpc-bin /usr/local/bin/drawthings-grpc` with `--matrix ltx23-focused` and `DT_LTX23_TRACE=1`.
+	- Outcome reproduced expected focused split: control pass, traced-clip loader-crash, companion timeout.
+	- No `DT_LTX23_TRACE` markers appeared in wrapper logs.
+	- Updated causal branch: selector plumbing is validated for matrix workflows; wrapper runtime remains baseline for branch mapping but still does not expose newly added source instrumentation markers.
