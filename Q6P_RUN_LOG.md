@@ -1380,3 +1380,52 @@ bash tools/run_custom_alias_schema_probe.sh \
 - Outcome:
   - Extending schema mutations across `version`/`modifier`/`objective`/`text_encoder`/`autoencoder` did not recover any matched-trace pass.
   - Current evidence strengthens the hypothesis that the destabilizing axis is custom-entry file-key match/resolution itself rather than these secondary entry fields.
+
+## Run 033b - 2026-06-11 (UTC)
+
+- Goal: Rerun the alias-resolution branch after crash interruption and verify whether failure follows custom-entry resolution semantics (not only traced-key naming).
+- New tooling:
+  - `tools/run_custom_alias_resolution_probe.sh`
+  - sweeps model argument forms (file key vs alias name), duplicate alias ordering, and tmpkey hardlink controls
+  - auto-restores `dt-models/custom.json` and removes temporary hardlink key on exit/interrupt
+  - classifies failure signatures (`loader_crash`, `timeout`, `textencoder_illegal`, `missing_file`)
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --tag run033b_alias_resolution_probe_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run033b_alias_resolution_probe_20260611`):
+  - cases: 9
+  - pass: 2
+  - fail: 7
+  - models under test:
+    - `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `10_e_v1_bf16_regen_0_q6p_trace021_run033_tmpkey.ckpt` (hardlink to same content)
+
+- Case highlights:
+  - PASS controls (no custom probe alias entries active):
+    - `control_trace_noncustom`: traced file key, `RESULT=PASS`, `responses=10`, `images=1`
+    - `control_tmpkey_noncustom`: tmpkey file key, `RESULT=PASS`, `responses=10`, `images=1`
+  - FAIL with custom probe entries enabled:
+    - `probe_trace_alias_model_filearg`: `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+    - `probe_trace_alias_model_namearg`: `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+    - `probe_trace_alias_clipold_model_filearg`: `timeout`, `canary_rc=124`, `post_echo_rc=0`
+    - `probe_trace_dupe_order_ab`: `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+    - `probe_trace_dupe_order_ba`: `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+    - `probe_tmpkey_alias_model_filearg`: `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+    - `probe_tmpkey_alias_model_namearg`: `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/cases/*.log`
+
+- Outcome:
+  - Two independent non-custom controls passed for the same traced tensor content (original traced key and tmpkey hardlink).
+  - Any probe scenario that introduces a custom alias entry keyed to that same file content failed, regardless of whether the request used file key or alias name.
+  - Duplicate alias ordering (`ab` vs `ba`) did not recover a pass.
+  - This strengthens the branch conclusion that the dominant trigger is custom-entry resolution/shadowing semantics around file-key lookup, rather than tensor payload validity or simple key-string identity.

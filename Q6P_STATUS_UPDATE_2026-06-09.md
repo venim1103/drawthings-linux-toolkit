@@ -165,6 +165,25 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
       - autoencoder removed
       - text_encoder + autoencoder removed
 
+- Run 033b (`run033b_alias_resolution_probe_20260611`):
+  - reran and completed model-resolution semantics probe after crash interruption
+  - tool: `tools/run_custom_alias_resolution_probe.sh`
+  - dimensions tested:
+    - traced file key vs alias-name model arguments
+    - duplicate alias order for same traced file (`ab` vs `ba`)
+    - tmpkey hardlink control with/without custom probe alias
+  - matrix result: `cases=9`, `pass=2`, `fail=7`
+  - pass cases:
+    - `control_trace_noncustom` (traced key without probe aliases)
+    - `control_tmpkey_noncustom` (tmpkey hardlink without probe aliases)
+  - fail cases:
+    - all scenarios with active custom probe alias entries failed
+    - dominant signature: `loader_crash` with `canary_rc=124`, `post_echo_rc=124`
+    - one variant (`probe_trace_alias_clipold_model_filearg`) failed as timeout (`canary_rc=124`, `post_echo_rc=0`)
+  - interpretation:
+    - custom-entry resolution/shadowing is the dominant trigger in this branch
+    - same tensor content remains stable when exercised without matching custom probe entries
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -176,6 +195,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - New key-path control chain (Run 027/028/029/030) shows a second failure surface: custom-entry/key-resolution path can destabilize runtime independently of traced checkpoint tensor content.
 - Run031 probe narrows this further: in tested schema space, custom entry `file` matching traced key is the dominant trigger; changing `clip_encoder` and `default_scale` alone did not recover stability.
 - Run032b extends that result: broad secondary field changes (`version`, `modifier`, `objective`, `text_encoder`, `autoencoder`) still did not recover any matched-trace pass, reinforcing file-key resolution as the dominant trigger.
+- Run033b confirms this across argument forms and tmpkey hardlink controls: non-custom controls pass for identical content, while introducing matching custom probe entries consistently reintroduces failure.
 
 ## 4) Key artifacts
 
@@ -261,6 +281,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/summary.md`
   - `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/results.tsv`
   - `output/custom_alias_schema_probe_run032b_alias_schema_extended_fields_20260610/cases/*.log`
+- Run 033b artifacts:
+  - `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -269,8 +293,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - pivot from per-entry parameter sweeps to model-resolution semantics tests around custom-entry file-key shadowing (`specificationForModel(file)` path)
-  - design minimal probes for mapping-collision hypotheses (same file under multiple names, non-shadowing alias indirection, key-path hardlink identity)
+  - run033b completed the model-resolution semantics probe branch and confirmed shadowing-trigger behavior
+  - instrument/inspect `specificationForModel(file)` and surrounding ModelZoo resolution path under duplicate/matching custom entries
+  - design minimal source-level probes for first behavioral divergence in lookup/selection (entry-match order, duplicate file-key handling, alias-name vs file-key request path)
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 

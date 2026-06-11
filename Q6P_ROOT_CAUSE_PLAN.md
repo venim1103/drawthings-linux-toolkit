@@ -141,3 +141,14 @@ Success means full generation completes (not only first streamed response) and n
 		- `autoencoder` (removed)
 	- Refined causal branch: in tested custom schema space, the file-key match/resolution axis remains the dominant trigger; secondary entry-field mutations above are not sufficient to restore stability.
 	- Next isolation target: model-resolution semantics and mapping collisions around `specificationForModel(file)` keying (custom entry shadowing by `file`) rather than additional per-entry parameter tweaks.
+- 2026-06-11: Run 033b alias-resolution semantics probe rerun (`run033b_alias_resolution_probe_20260611`) completed.
+	- Executed `tools/run_custom_alias_resolution_probe.sh` to test model argument path (file key vs alias), duplicate alias ordering, and tmpkey hardlink behavior under strict final-mode canary.
+	- Matrix result: 9 cases total, pass=2, fail=7.
+	- Passing controls:
+		- traced key with no probe aliases (`control_trace_noncustom`)
+		- tmpkey hardlink with no probe aliases (`control_tmpkey_noncustom`)
+	- Failing probes:
+		- all scenarios that introduced custom alias entries for traced or tmpkey file content failed (mostly `loader_crash`, one `timeout`), independent of request via file key or alias name.
+		- duplicate alias order (`ab` vs `ba`) did not change failure outcome.
+	- Refined causal branch: failure is strongly coupled to custom-entry resolution/shadowing semantics for model file lookup, not to traced tensor payload validity and not to key-string identity alone.
+	- Next isolation target: instrument and inspect `specificationForModel(file)`/resolution call path behavior under duplicate and probe alias entries in ModelZoo-facing code paths.
