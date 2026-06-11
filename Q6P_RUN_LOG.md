@@ -2168,3 +2168,143 @@ bash tools/run_q6p_canary_once.sh \
 - Key finding:
   - Source-built binary is not runtime-equivalent to the working deployed binary; it is effectively a different backend build profile (CPU/OpenBLAS vs CUDA-linked).
   - This is a high-confidence root confound for interpreting source-build canary behavior against wrapper-binary branch results.
+
+## Run 053 (2026-06-11): Focused Wrapper Matrix With Trace Env
+
+- Goal:
+  - Re-run focused stable wrapper matrix with `DT_LTX23_TRACE=1` to capture branch behavior under the same runtime class.
+
+- Command:
+
+```bash
+DT_LTX23_TRACE=1 \
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-focused \
+  --timeout-sec 75 \
+  --tag run053_wrapper_ltx23_focused_trace_20260611
+```
+
+- Probe summary (`run053_wrapper_ltx23_focused_trace_20260611`):
+  - cases: 3
+  - pass: 1
+  - fail: 2
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_ltx23_text_clip_trace_pin_a`: FAIL (`loader_crash`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_a_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - Focused branch split reproduces under wrapper runtime with trace env enabled.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run053_wrapper_ltx23_focused_trace_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run053_wrapper_ltx23_focused_trace_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run053_wrapper_ltx23_focused_trace_20260611/cases/*.log`
+
+## Run 054 (2026-06-11): Wrapper Text-Pin Matrix Refresh
+
+- Goal:
+  - Recheck text-pin branch behavior on stable wrapper runtime.
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-textpin \
+  --timeout-sec 75 \
+  --tag run054_wrapper_ltx23_textpin_20260611
+```
+
+- Probe summary (`run054_wrapper_ltx23_textpin_20260611`):
+  - cases: 6
+  - pass: 1
+  - fail: 5
+
+- Key observations:
+  - one-file `text_pin_a` stayed `textencoder_illegal`.
+  - one-file `text_pin_b` stayed `timeout`.
+  - both traced-clip two-file text-pin variants timed out in this run.
+  - full-base remained `loader_crash`.
+
+- Key finding:
+  - Text identity remains a strong selector for one-file branch behavior; two-file traced-clip signature showed transient drift and required immediate reproducibility recheck.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run054_wrapper_ltx23_textpin_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run054_wrapper_ltx23_textpin_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run054_wrapper_ltx23_textpin_20260611/cases/*.log`
+
+## Run 055 (2026-06-11): Focused Wrapper Recheck
+
+- Goal:
+  - Verify whether run054 two-file traced-clip timeout was persistent or transient.
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-focused \
+  --timeout-sec 75 \
+  --tag run055_wrapper_ltx23_focused_recheck_20260611
+```
+
+- Probe summary (`run055_wrapper_ltx23_focused_recheck_20260611`):
+  - cases: 3
+  - pass: 1
+  - fail: 2
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_ltx23_text_clip_trace_pin_a`: FAIL (`loader_crash`)
+  - `probe_trace_ltx23_text_clip_companion_a_pin_a`: FAIL (`timeout`)
+
+- Key finding:
+  - Focused gate reproducibility restored expected split; run054 two-file traced-clip timeout is treated as drift/noise until repeated.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run055_wrapper_ltx23_focused_recheck_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run055_wrapper_ltx23_focused_recheck_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run055_wrapper_ltx23_focused_recheck_20260611/cases/*.log`
+
+## Run 056 (2026-06-11): Loader-Branch Field Isolation Matrix
+
+- Goal:
+  - Isolate whether `modifier` and/or `autoencoder` fields activate loader-crash for traced-clip + `text_pin_a` two-file custom entries.
+
+- Harness update:
+  - `tools/run_custom_alias_resolution_probe.sh` gained:
+    - new matrix: `--matrix ltx23-loaderbranch`
+    - new modes:
+      - `alias_trace_ltx23_text_clip_trace_pin_a_mod`
+      - `alias_trace_ltx23_text_clip_trace_pin_a_auto`
+      - `alias_trace_ltx23_text_clip_trace_pin_a_mod_auto`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-loaderbranch \
+  --timeout-sec 75 \
+  --tag run056_wrapper_ltx23_loaderbranch_20260611
+```
+
+- Probe summary (`run056_wrapper_ltx23_loaderbranch_20260611`):
+  - cases: 6
+  - pass: 1
+  - fail: 5
+
+- Outcome map:
+  - baseline `text_pin_a + clip=trace` (no modifier, no autoencoder): `timeout`
+  - add `modifier=kontext` only: `loader_crash`
+  - add `autoencoder` only: `loader_crash`
+  - add both: `loader_crash`
+  - full-base (`text_pin_b` path): `timeout`
+
+- Key finding:
+  - In traced-clip + two-file + `text_pin_a` path, either `modifier` or `autoencoder` is sufficient to flip timeout into loader-crash; full-base still times out due a different field composition (`text_pin_b`).
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/cases/*.log`

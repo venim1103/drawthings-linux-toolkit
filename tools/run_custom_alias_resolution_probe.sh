@@ -37,7 +37,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin | ltx23-pinned-companion | ltx23-focused
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin | ltx23-pinned-companion | ltx23-focused | ltx23-loaderbranch
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -139,8 +139,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" && "$MATRIX" != "ltx23-pinned-companion" && "$MATRIX" != "ltx23-focused" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin, ltx23-pinned-companion, ltx23-focused" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" && "$MATRIX" != "ltx23-pinned-companion" && "$MATRIX" != "ltx23-focused" && "$MATRIX" != "ltx23-loaderbranch" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin, ltx23-pinned-companion, ltx23-focused, ltx23-loaderbranch" >&2
   exit 1
 fi
 
@@ -309,6 +309,23 @@ def alias_ltx23_text_clip_explicit(name: str, file_key: str, text_key: str, clip
     entry["clip_encoder"] = clip_clean
   return entry
 
+def alias_ltx23_text_clip_explicit_variant(
+  name: str,
+  file_key: str,
+  text_key: str,
+  clip_key: str,
+  modifier: str | None = None,
+  include_autoencoder: bool = False,
+):
+  entry = alias_ltx23_text_clip_explicit(name, file_key, text_key, clip_key)
+  if modifier is not None:
+    entry["modifier"] = clean(modifier)
+  if include_autoencoder:
+    autoencoder = clean(base_entry.get("autoencoder", ""))
+    if autoencoder:
+      entry["autoencoder"] = autoencoder
+  return entry
+
 filtered = []
 probe_names = {alias_a, alias_b, tmp_alias}
 for entry in payload:
@@ -381,6 +398,12 @@ elif mode == "alias_trace_ltx23_text_clip_trace_pin_a":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, trace_key))
 elif mode == "alias_trace_ltx23_text_clip_trace_pin_b":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_b, trace_key))
+elif mode == "alias_trace_ltx23_text_clip_trace_pin_a_mod":
+  filtered.append(alias_ltx23_text_clip_explicit_variant(alias_a, trace_key, text_pin_a, trace_key, modifier="kontext"))
+elif mode == "alias_trace_ltx23_text_clip_trace_pin_a_auto":
+  filtered.append(alias_ltx23_text_clip_explicit_variant(alias_a, trace_key, text_pin_a, trace_key, include_autoencoder=True))
+elif mode == "alias_trace_ltx23_text_clip_trace_pin_a_mod_auto":
+  filtered.append(alias_ltx23_text_clip_explicit_variant(alias_a, trace_key, text_pin_a, trace_key, modifier="kontext", include_autoencoder=True))
 elif mode == "alias_trace_ltx23_text_clip_companion_a_pin_a":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, companion_clip_a))
 elif mode == "alias_trace_ltx23_text_clip_companion_b_pin_a":
@@ -712,6 +735,13 @@ elif [[ "$MATRIX" == "ltx23-focused" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_trace_pin_a" "alias_trace_ltx23_text_clip_trace_pin_a" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_companion_a_pin_a" "alias_trace_ltx23_text_clip_companion_a_pin_a" "$TRACE_MODEL_KEY" "0"
+elif [[ "$MATRIX" == "ltx23-loaderbranch" ]]; then
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_a" "alias_trace_ltx23_text_clip_trace_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_a_mod" "alias_trace_ltx23_text_clip_trace_pin_a_mod" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_a_auto" "alias_trace_ltx23_text_clip_trace_pin_a_auto" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_a_mod_auto" "alias_trace_ltx23_text_clip_trace_pin_a_mod_auto" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 
 pass_count="$(awk -F'\t' 'NR>1 && $23=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"

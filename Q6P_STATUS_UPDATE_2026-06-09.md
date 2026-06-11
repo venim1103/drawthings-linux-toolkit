@@ -436,6 +436,52 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - source-built binary in this workflow is backend-incompatible with the deployed wrapper binary and should not be used as a drop-in for branch-comparison conclusions
 
+- Run 053 (`run053_wrapper_ltx23_focused_trace_20260611`):
+  - reran focused wrapper matrix with `DT_LTX23_TRACE=1`
+  - result: `cases=3`, `pass=1`, `fail=2`
+  - signatures:
+    - traced-clip pin-a => `loader_crash`
+    - companion-a pin-a => `timeout`
+  - interpretation:
+    - focused split persists on wrapper runtime even with trace env enabled
+
+- Run 054 (`run054_wrapper_ltx23_textpin_20260611`):
+  - refreshed wrapper text-pin matrix
+  - result: `cases=6`, `pass=1`, `fail=5`
+  - key signatures:
+    - one-file `text_pin_a` => `textencoder_illegal`
+    - one-file `text_pin_b` => `timeout`
+    - two-file traced-clip pin-a/pin-b => `timeout` in this run
+    - full-base => `loader_crash`
+  - interpretation:
+    - one-file text-identity split remains stable; two-file traced-clip branch showed transient signature drift needing immediate recheck
+
+- Run 055 (`run055_wrapper_ltx23_focused_recheck_20260611`):
+  - immediate focused reproducibility recheck after run054
+  - result: `cases=3`, `pass=1`, `fail=2`
+  - signatures restored:
+    - traced-clip pin-a => `loader_crash`
+    - companion-a pin-a => `timeout`
+  - interpretation:
+    - focused split remains the reliable regression shape; run054 traced-clip timeout is treated as non-persistent drift
+
+- Run 056 (`run056_wrapper_ltx23_loaderbranch_20260611`):
+  - added targeted loader-branch matrix to isolate field effects:
+    - `tools/run_custom_alias_resolution_probe.sh --matrix ltx23-loaderbranch`
+  - new isolated modes around traced-clip + text-pin-a:
+    - add `modifier` only
+    - add `autoencoder` only
+    - add both
+  - result: `cases=6`, `pass=1`, `fail=5`
+  - key signatures:
+    - baseline traced-clip pin-a (no modifier/autoencoder) => `timeout`
+    - +modifier only => `loader_crash`
+    - +autoencoder only => `loader_crash`
+    - +modifier+autoencoder => `loader_crash`
+    - full-base (`text_pin_b` composition) => `timeout`
+  - interpretation:
+    - in traced-clip two-file pin-a path, either `modifier` or `autoencoder` is sufficient to activate loader-crash
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -466,6 +512,8 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run049 closes that gap in the harness by turning missing file-like model requests into explicit preflight failures.
 - Run050 adds a lightweight branch-shape gate that preserves the highest-signal traced-vs-companion split with minimal runtime cost.
 - Run051/052 together isolate source-build instability cause class: runtime backend mismatch (CUDA-linked deployed binary vs OpenBLAS-linked source build), not trace-logging side effect.
+- Run053/055 confirm focused split reproducibility under wrapper runtime; run054 showed a transient but non-persistent two-file traced-clip timeout drift.
+- Run056 isolates a new field-composition trigger: on traced-clip + text-pin-a two-file entries, adding either `modifier` or `autoencoder` flips timeout to loader-crash.
 
 ## 4) Key artifacts
 
@@ -622,6 +670,22 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run 051 artifacts:
   - `output/q6p_canary_run051_sourcebuild_notrace_control_20260611/client.log`
   - `output/q6p_canary_run051_sourcebuild_notrace_control_20260611/server.log`
+- Run 053 artifacts:
+  - `output/custom_alias_resolution_probe_run053_wrapper_ltx23_focused_trace_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run053_wrapper_ltx23_focused_trace_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run053_wrapper_ltx23_focused_trace_20260611/cases/*.log`
+- Run 054 artifacts:
+  - `output/custom_alias_resolution_probe_run054_wrapper_ltx23_textpin_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run054_wrapper_ltx23_textpin_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run054_wrapper_ltx23_textpin_20260611/cases/*.log`
+- Run 055 artifacts:
+  - `output/custom_alias_resolution_probe_run055_wrapper_ltx23_focused_recheck_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run055_wrapper_ltx23_focused_recheck_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run055_wrapper_ltx23_focused_recheck_20260611/cases/*.log`
+- Run 056 artifacts:
+  - `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -639,6 +703,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - add an explicit preflight gate for source-build controls: fail fast if requested model file is missing locally (to prevent q8p/default fallback contamination)
   - run focused gate (`--matrix ltx23-focused`) before broad ltx23 matrices to quickly verify branch-shape stability
   - keep branch-comparison matrices on wrapper/runtime-equivalent binaries; do not interpret source-built OpenBLAS runs as direct equivalents of deployed CUDA-linked behavior
+  - prioritize loader-branch isolation on wrapper runtime: test text-pin-a traced-clip variants with controlled `modifier` and `autoencoder` toggles as a precondition map
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized

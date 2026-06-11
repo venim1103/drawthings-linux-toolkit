@@ -1,6 +1,6 @@
 # Q6P Root-Cause Plan for Custom LTX2.3
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 Status: Active
 Owner: Copilot + user
 
@@ -279,3 +279,23 @@ Success means full generation completes (not only first streamed response) and n
 	- `ldd` shows default binary links CUDA/CUDNN stack, while source-built links OpenBLAS and no CUDA runtime libraries.
 	- ccv SwiftPM rules under Linux (`.build/checkouts/ccv/Package.swift`) explicitly exclude GPU/CUDA source paths and link OpenBLAS.
 	- Updated causal branch: source-built binary is backend-incompatible with deployed wrapper binary on Linux; treat it as a different runtime class rather than a drop-in for branch-comparison runs.
+- 2026-06-11: Run 053 focused wrapper replay with trace env (`run053_wrapper_ltx23_focused_trace_20260611`) completed.
+	- Focused split reproduced on wrapper runtime with trace env enabled: traced-clip case loader-crash, companion-A case timeout, control pass.
+	- Updated causal branch: keep focused gate as first regression check even when enabling trace env.
+- 2026-06-11: Run 054 text-pin refresh + run 055 focused recheck completed.
+	- Run054 showed a transient signature drift where traced-clip pin-a case timed out.
+	- Run055 immediately restored expected focused split (traced-clip loader-crash vs companion timeout).
+	- Updated causal branch: treat isolated timeout-only flips in traced-clip two-file case as noise until reproduced across focused rechecks.
+- 2026-06-11: Added loader-branch isolation matrix in `tools/run_custom_alias_resolution_probe.sh` and executed run056 (`run056_wrapper_ltx23_loaderbranch_20260611`).
+	- New matrix: `--matrix ltx23-loaderbranch`.
+	- New alias modes isolate additive fields on traced-clip + text-pin-a two-file path:
+		- `alias_trace_ltx23_text_clip_trace_pin_a_mod`
+		- `alias_trace_ltx23_text_clip_trace_pin_a_auto`
+		- `alias_trace_ltx23_text_clip_trace_pin_a_mod_auto`
+	- Run056 finding:
+		- baseline traced-clip pin-a (no modifier/autoencoder) => timeout
+		- add modifier only => loader-crash
+		- add autoencoder only => loader-crash
+		- add both => loader-crash
+		- full-base (text-pin-b composition) => timeout
+	- Updated causal branch: in traced-clip two-file pin-a path, either `modifier` or `autoencoder` is sufficient to activate loader-crash branch; timeout vs loader-crash now appears field-composition dependent beyond clip target alone.
