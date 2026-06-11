@@ -805,3 +805,49 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Smoke validation:
   - run tag `phase2_smoke_20260610_073716`
   - baseline=candidate at both stages correctly produced `first_divergent_stage=none`
+
+## 7) Addendum (2026-06-11 late)
+
+- Source instrumentation was added in community runtime code paths for first-divergence tracing:
+  - `draw-things-community/Libraries/ModelZoo/Sources/ModelZoo.swift`
+  - `draw-things-community/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift`
+  - `draw-things-community/Libraries/SwiftDiffusion/Sources/TextEncoder.swift`
+- Source build check passed for `gRPCServerCLI`.
+
+- Run 062 (`run062_ltx23_pinb_noise_trace`):
+  - command used trace env on wrapper matrix:
+    - `DT_LTX23_TRACE=1 tools/run_custom_alias_resolution_probe.sh --matrix ltx23-pinb-noise --tag run062_ltx23_pinb_noise_trace`
+  - matrix result: `cases=4`, `pass=1`, `fail=3`
+  - branch outcomes stayed stabilized (`pin-b baseline/mod+auto/full-base => loader_crash`)
+  - no `DT_LTX23_TRACE` lines appeared in artifacts
+  - interpretation: stable wrapper runtime remains usable for branch mapping, but currently does not surface newly added source markers in this deployment path.
+
+- Run 063 (`run062_source_trace_smoke`):
+  - forced source-built runtime path with PATH override:
+    - `PATH=draw-things-community/.build/release:$PATH DT_LTX23_TRACE=1 tools/run_q6p_canary_once.sh ...`
+  - canary result: `canary_rc=1`, `post_echo_rc=1`, `UNAVAILABLE: Socket closed`
+  - server ended in abort/core dump (`libc` stack tail)
+  - interpretation: source-built Linux runtime remains backend-confounded/unstable for branch-equivalent tracing.
+
+- Added artifacts:
+  - `output/custom_alias_resolution_probe_run062_ltx23_pinb_noise_trace/summary.md`
+  - `output/custom_alias_resolution_probe_run062_ltx23_pinb_noise_trace/results.tsv`
+  - `output/custom_alias_resolution_probe_run062_ltx23_pinb_noise_trace/cases/*.log`
+  - `output/q6p_canary_run062_source_trace_smoke/client.log`
+  - `output/q6p_canary_run062_source_trace_smoke/server.log`
+
+- Updated near-term branch recommendation:
+  - Keep wrapper runtime as branch-comparison baseline for q6p gate mapping.
+  - For source-level divergence logs, prioritize runtime-path alignment first:
+    - either stabilize source-built Linux runtime to match deployed backend behavior,
+    - or deploy equivalent instrumentation into the stable wrapper-linked binary path.
+
+- Runtime-selector harness update (2026-06-11):
+  - `tools/run_q6p_canary_once.sh` gained `--grpc-bin <path|name>`.
+  - `tools/run_custom_alias_resolution_probe.sh` gained `--grpc-bin` passthrough to canary.
+  - Purpose: make wrapper vs source runtime selection explicit and reproducible without PATH hacks.
+
+- New smoke controls:
+  - run064 (`run064_wrapper_bin_selector_smoke`): explicit wrapper bin passed (`canary_rc=0`, `post_echo_rc=0`).
+  - run065 (`run065_source_bin_selector_smoke`): explicit source bin failed (`canary_rc=1`, `post_echo_rc=1`, socket closed, libc abort tail).
+  - Interpretation: selector plumbing is correct; source-built Linux runtime confound remains unchanged.

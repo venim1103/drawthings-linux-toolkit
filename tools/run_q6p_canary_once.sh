@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="$ROOT/.venv/bin/python"
+GRPC_BIN="${DRAWTHINGS_GRPC_BIN:-drawthings-grpc}"
 
 MODEL_KEY="10_e_v1_bf16_regen_0_q6p.ckpt"
 HOST="127.0.0.1:7861"
@@ -39,6 +40,8 @@ Usage:
 Options:
   --model <file>            Model key from dt-models directory.
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
+  --grpc-bin <path|name>    gRPC server launcher binary
+                            (default: DRAWTHINGS_GRPC_BIN or drawthings-grpc).
   --width <n>               Pixel width for request config (default: 256).
   --height <n>              Pixel height for request config (default: 256).
   --steps <n>               Sampling steps for request config (default: 4).
@@ -75,6 +78,10 @@ if [[ $# -gt 0 ]]; then
         ;;
       --host)
         HOST="${2:-}"
+        shift 2
+        ;;
+      --grpc-bin)
+        GRPC_BIN="${2:-}"
         shift 2
         ;;
       --width)
@@ -157,6 +164,23 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+if [[ -z "$GRPC_BIN" ]]; then
+  echo "error: --grpc-bin cannot be empty" >&2
+  exit 1
+fi
+
+if [[ "$GRPC_BIN" == */* ]]; then
+  if [[ ! -x "$GRPC_BIN" ]]; then
+    echo "error: gRPC binary is not executable: $GRPC_BIN" >&2
+    exit 1
+  fi
+else
+  if ! command -v "$GRPC_BIN" >/dev/null 2>&1; then
+    echo "error: gRPC binary not found on PATH: $GRPC_BIN" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$NO_TIMEOUT" != "1" && "$TIMEOUT_SEC" -lt 1 ]]; then
   echo "error: --timeout-sec must be >= 1 unless --no-timeout is used" >&2
   exit 1
@@ -216,6 +240,7 @@ mkdir -p "$WORK_DIR"
 echo "== q6p canary once =="
 echo "model=$MODEL_KEY"
 echo "host=$HOST"
+echo "grpc_bin=$GRPC_BIN"
 echo "final_mode=$FINAL_MODE"
 if [[ "$NO_TIMEOUT" == "1" ]]; then
   echo "timeout_sec=none"
@@ -230,7 +255,7 @@ echo "work_dir=$WORK_DIR"
 pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
 pkill -9 -f 'dt_api_client.py .*generate-raw' || true
 
-nohup drawthings-grpc --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression "$ROOT/dt-models" > "$SERVER_LOG" 2>&1 &
+nohup "$GRPC_BIN" --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression "$ROOT/dt-models" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "server_pid=$SERVER_PID"
 

@@ -12,6 +12,7 @@ TMPKEY_MODEL_KEY="10_e_v1_bf16_regen_0_q6p_trace021_run033_tmpkey.ckpt"
 TAG="$(date +%Y%m%d_%H%M%S)"
 TIMEOUT_SEC=75
 HOST="127.0.0.1:7861"
+GRPC_BIN="${DRAWTHINGS_GRPC_BIN:-drawthings-grpc}"
 MATRIX="core"
 
 PROBE_ALIAS_A="probe_trace_alias_a"
@@ -48,6 +49,8 @@ Options:
   --tag <value>             Output tag suffix (default: timestamp).
   --timeout-sec <n>         Per-case canary timeout (default: 75).
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
+  --grpc-bin <path|name>    gRPC server launcher binary forwarded to canary
+                            (default: DRAWTHINGS_GRPC_BIN or drawthings-grpc).
   --companion-clip-a <file> LTX2.3 companion clip candidate A
                              (default: ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt).
   --companion-clip-b <file> LTX2.3 companion clip candidate B
@@ -102,6 +105,10 @@ while [[ $# -gt 0 ]]; do
       HOST="${2:-}"
       shift 2
       ;;
+    --grpc-bin)
+      GRPC_BIN="${2:-}"
+      shift 2
+      ;;
     --companion-clip-a)
       COMPANION_CLIP_A="${2:-}"
       shift 2
@@ -136,6 +143,11 @@ done
 
 if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   echo "error: --timeout-sec must be an integer >= 1" >&2
+  exit 1
+fi
+
+if [[ -z "$GRPC_BIN" ]]; then
+  echo "error: --grpc-bin cannot be empty" >&2
   exit 1
 fi
 
@@ -604,6 +616,7 @@ run_case() {
   bash "$CANARY_SCRIPT" \
     --model "$model_arg" \
     --host "$HOST" \
+    --grpc-bin "$GRPC_BIN" \
     --timeout-sec "$TIMEOUT_SEC" \
     --max-responses 0 \
     --require-complete-stream \
@@ -652,6 +665,7 @@ echo "matrix=$MATRIX"
 echo "tag=$TAG"
 echo "timeout_sec=$TIMEOUT_SEC"
 echo "host=$HOST"
+echo "grpc_bin=$GRPC_BIN"
 echo "work_dir=$WORK_DIR"
 
 echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\targ_source\targ_resolved_file\targ_match_count\targ_winner_name\targ_winner_modifier\ttrace_match_count\ttrace_winner_name\ttmpkey_match_count\ttmpkey_winner_name\targ_winner_version\targ_winner_text_encoder\targ_winner_clip_encoder\targ_winner_autoencoder\targ_text_files_count\targ_text_file0\targ_text_file1\targ_ltx23_textfiles_ok\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"

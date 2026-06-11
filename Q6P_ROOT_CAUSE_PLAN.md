@@ -324,3 +324,23 @@ Success means full generation completes (not only first streamed response) and n
 		- pin-b + mod+auto => loader-crash
 		- full-base => loader-crash
 	- Updated causal branch: prior run058 timeout for pin-b+mod_auto is now best treated as outlier/noise; pin-b traced-clip path is effectively loader-crash stable under repeated controls.
+- 2026-06-11: Added source-level divergence trace markers in community source.
+	- `Libraries/ModelZoo/Sources/ModelZoo.swift`: traced `specificationForModel` winner source and key fields under `DT_LTX23_TRACE`.
+	- `Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift`: traced ltx2.3 model context and resolved text-encoder init file paths.
+	- `Libraries/SwiftDiffusion/Sources/TextEncoder.swift`: traced `encodeLTX2` begin context and LoRA/merge-state branch values.
+	- Source build validation succeeded for `gRPCServerCLI`.
+- 2026-06-11: Run 062 wrapper trace-env replay (`run062_ltx23_pinb_noise_trace`) completed.
+	- Matrix result matched stabilized branch map (`pass=1`, `fail=3`, all failing branches `loader_crash`).
+	- No `DT_LTX23_TRACE` lines appeared in artifacts while using deployed wrapper/runtime path (`/usr/local/bin/drawthings-grpc` -> `/usr/local/bin/gRPCServerCLI`).
+	- Updated causal branch: wrapper runtime remains the reliable branch-mapping baseline, but it is not exposing newly added source markers in current deployment path.
+- 2026-06-11: Run 063 source-built trace smoke (`run062_source_trace_smoke`) completed.
+	- Forced local source-built `gRPCServerCLI` via PATH override with `DT_LTX23_TRACE=1`.
+	- Canary failed with deterministic abort/core dump (`canary_rc=1`, `post_echo_rc=1`, socket closed), preventing useful divergence-log capture.
+	- Updated causal branch: recovering first source-level divergence markers now requires either (a) runtime parity/stabilization for source-built Linux path or (b) deploying instrumentation into the stable wrapper-linked runtime path.
+- 2026-06-11: Added explicit runtime-binary selector to canary/probe harnesses.
+	- `tools/run_q6p_canary_once.sh` now supports `--grpc-bin` (defaults to `DRAWTHINGS_GRPC_BIN` or `drawthings-grpc`).
+	- `tools/run_custom_alias_resolution_probe.sh` now supports/passes `--grpc-bin` to canary calls.
+- 2026-06-11: Run 064/065 selector smoke pair completed.
+	- Run064 (`--grpc-bin /usr/local/bin/drawthings-grpc`) passed and reached streamed `textEncoded`.
+	- Run065 (`--grpc-bin .../.build/release/gRPCServerCLI`) failed with same abort/core-dump class.
+	- Updated causal branch: runtime choice is now deterministic at script level; source-built instability remains a backend/runtime issue rather than a selection ambiguity.

@@ -2505,3 +2505,127 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run061_wrapper_ltx23_pinb_noise_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run061_wrapper_ltx23_pinb_noise_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run061_wrapper_ltx23_pinb_noise_20260611/cases/*.log`
+
+## Run 062 (2026-06-11): Pin-B Noise Matrix with Trace Env (Wrapper Runtime)
+
+- Goal:
+  - Re-run the compact stabilized pin-b matrix with `DT_LTX23_TRACE=1` after adding source-level trace instrumentation.
+
+- Command:
+
+```bash
+DT_LTX23_TRACE=1 tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-pinb-noise \
+  --tag run062_ltx23_pinb_noise_trace
+```
+
+- Probe summary (`run062_ltx23_pinb_noise_trace`):
+  - cases: 4
+  - pass: 1
+  - fail: 3
+
+- Outcome map:
+  - pin-b baseline => `loader_crash`
+  - pin-b + mod+auto => `loader_crash`
+  - full-base => `loader_crash`
+
+- Trace check:
+  - No `DT_LTX23_TRACE` lines were emitted in run artifacts.
+  - Runtime resolution check showed wrapper path still points to deployed binaries:
+    - `/usr/local/bin/drawthings-grpc`
+    - `/usr/local/bin/gRPCServerCLI`
+
+- Key finding:
+  - Wrapper branch behavior remains stable and reproducible, but newly added source markers are not visible on this runtime path.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run062_ltx23_pinb_noise_trace/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run062_ltx23_pinb_noise_trace/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run062_ltx23_pinb_noise_trace/cases/*.log`
+
+## Run 063 (2026-06-11): Source-Built Trace Smoke (PATH Override)
+
+- Goal:
+  - Force source-built `gRPCServerCLI` onto PATH to verify that newly added trace markers are active at runtime.
+
+- Command:
+
+```bash
+PATH=/workspaces/drawthings-linux-toolkit/draw-things-community/.build/release:$PATH \
+DT_LTX23_TRACE=1 tools/run_q6p_canary_once.sh \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --timeout-sec 75 \
+  --max-responses 0 \
+  --require-complete-stream \
+  --require-final-output \
+  --final-mode \
+  --tag run062_source_trace_smoke
+```
+
+- Canary result (`run062_source_trace_smoke`):
+  - `canary_rc=1`
+  - `post_echo_rc=1`
+  - client error: `UNAVAILABLE: Socket closed`
+  - server terminated with abort/core dump (`libc` stack tail)
+
+- Key finding:
+  - Source-built runtime remains backend-confounded/unstable and aborts before useful source-level divergence traces can be harvested in this path.
+
+- Artifacts:
+  - client log: `output/q6p_canary_run062_source_trace_smoke/client.log`
+  - server log: `output/q6p_canary_run062_source_trace_smoke/server.log`
+
+## Run 064 (2026-06-11): Wrapper Runtime Selector Smoke
+
+- Goal:
+  - Validate new explicit runtime selector (`--grpc-bin`) on known-stable wrapper path without PATH overrides.
+
+- Command:
+
+```bash
+DT_LTX23_TRACE=1 tools/run_q6p_canary_once.sh \
+  --grpc-bin /usr/local/bin/drawthings-grpc \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --timeout-sec 45 \
+  --max-responses 1 \
+  --tag run064_wrapper_bin_selector_smoke
+```
+
+- Result:
+  - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+  - streamed signpost reached (`response #1`, `textEncoded`) under explicit wrapper binary selection.
+
+- Key finding:
+  - Runtime-path control is now explicit and reproducible at script level (no PATH hack required).
+
+- Artifacts:
+  - client log: `output/q6p_canary_run064_wrapper_bin_selector_smoke/client.log`
+  - server log: `output/q6p_canary_run064_wrapper_bin_selector_smoke/server.log`
+
+## Run 065 (2026-06-11): Source Runtime Selector Smoke
+
+- Goal:
+  - Validate `--grpc-bin` against source-built `gRPCServerCLI` and re-check current failure signature using explicit selection.
+
+- Command:
+
+```bash
+DT_LTX23_TRACE=1 tools/run_q6p_canary_once.sh \
+  --grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI \
+  --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt \
+  --timeout-sec 45 \
+  --max-responses 1 \
+  --tag run065_source_bin_selector_smoke \
+  --soft-fail
+```
+
+- Result:
+  - `canary_rc=1`, `post_echo_rc=1`, client `UNAVAILABLE: Socket closed`
+  - server abort/core dump with `libc` crash tail (same source-build confound class).
+
+- Key finding:
+  - Explicit selector confirms source-built Linux runtime instability is unchanged; failures are not due to PATH/environment selection ambiguity.
+
+- Artifacts:
+  - client log: `output/q6p_canary_run065_source_bin_selector_smoke/client.log`
+  - server log: `output/q6p_canary_run065_source_bin_selector_smoke/server.log`

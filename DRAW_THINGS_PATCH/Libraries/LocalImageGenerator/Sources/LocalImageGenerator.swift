@@ -3648,6 +3648,12 @@ extension LocalImageGenerator {
       ModelZoo.autoencoderForModel(file).flatMap {
         ModelZoo.isModelDownloaded($0) ? $0 : nil
       } ?? ImageGeneratorUtils.defaultAutoencoder
+    if modelVersion == .ltx2_3 {
+      let specification = ModelZoo.specificationForModel(file)
+      Self.ltx23Trace(
+        "LocalImageGenerator.modelContext model=\(file) version=\(modelVersion) modifier=\(modifier) textEncoderVersion=\(String(describing: textEncoderVersion)) autoencoder=\(autoencoderFile) specName=\(specification?.name ?? "") specModifier=\(String(describing: specification?.modifier)) specDefaultScale=\(specification?.defaultScale ?? 0)"
+      )
+    }
     // Always enable for Hunyuan.
     let isGuidanceEmbedEnabled =
       ModelZoo.guidanceEmbedForModel(file) && configuration.speedUpWithGuidanceEmbed
@@ -4077,6 +4083,11 @@ extension LocalImageGenerator {
         externalOnDemand: textEncoderExternalOnDemand,
         deviceProperties: DeviceCapability.deviceProperties, weightsCache: weightsCache,
         maxLength: tokenLength, clipSkip: clipSkip, lora: lora)
+      if modelVersion == .ltx2_3 {
+        Self.ltx23Trace(
+          "LocalImageGenerator.textEncoderInit model=\(file) resolvedFilePaths=\(textEncoder.filePaths.map { URL(fileURLWithPath: $0).lastPathComponent }) tokenLength=\(tokenLength) textEncoderExternalOnDemand=\(textEncoderExternalOnDemand)"
+        )
+      }
       let image = image.map {
         downscaleImageAndToGPU(graph.variable($0), scaleFactor: imageScaleFactor)
       }

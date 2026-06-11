@@ -30,6 +30,8 @@ mkdir -p "$PATCH_ROOT/Apps/ModelConverter"
 cp "$REPO_ROOT/Apps/ModelConverter/Converter.swift" "$PATCH_ROOT/Apps/ModelConverter/Converter.swift"
 mkdir -p "$PATCH_ROOT/Libraries/ModelOp/Sources"
 cp "$REPO_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift" "$PATCH_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift"
+mkdir -p "$PATCH_ROOT/Libraries/ModelZoo/Sources"
+cp "$REPO_ROOT/Libraries/ModelZoo/Sources/ModelZoo.swift" "$PATCH_ROOT/Libraries/ModelZoo/Sources/ModelZoo.swift"
 mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" \
@@ -88,6 +90,7 @@ PATCH_TARGETS=(
   Package.resolved
   Apps/ModelConverter/Converter.swift
   Libraries/ModelOp/Sources/ModelImporter.swift
+  Libraries/ModelZoo/Sources/ModelZoo.swift
   Apps/ModelQuantizer/Quantizer.swift
   Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
   Libraries/SwiftDiffusion/Sources/TextEncoder.swift

@@ -792,7 +792,7 @@ index ceb75819..ddfa97d6 100644
 +
 +#endif
 diff --git a/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift b/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
-index 6f266704..68a79a72 100644
+index 6f266704..c0ec3826 100644
 --- a/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
 +++ b/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
 @@ -101,6 +101,16 @@ public struct LocalImageGenerator: ImageGenerator {
@@ -824,7 +824,32 @@ index 6f266704..68a79a72 100644
      let diffusionMappingFile = ModelZoo.diffusionMappingForModel(file).flatMap {
        ModelZoo.isModelDownloaded($0) ? $0 : nil
      }
-@@ -4074,13 +4089,26 @@ extension LocalImageGenerator {
+@@ -3633,6 +3648,12 @@ extension LocalImageGenerator {
+       ModelZoo.autoencoderForModel(file).flatMap {
+         ModelZoo.isModelDownloaded($0) ? $0 : nil
+       } ?? ImageGeneratorUtils.defaultAutoencoder
++    if modelVersion == .ltx2_3 {
++      let specification = ModelZoo.specificationForModel(file)
++      Self.ltx23Trace(
++        "LocalImageGenerator.modelContext model=\(file) version=\(modelVersion) modifier=\(modifier) textEncoderVersion=\(String(describing: textEncoderVersion)) autoencoder=\(autoencoderFile) specName=\(specification?.name ?? "") specModifier=\(String(describing: specification?.modifier)) specDefaultScale=\(specification?.defaultScale ?? 0)"
++      )
++    }
+     // Always enable for Hunyuan.
+     let isGuidanceEmbedEnabled =
+       ModelZoo.guidanceEmbedForModel(file) && configuration.speedUpWithGuidanceEmbed
+@@ -4062,6 +4083,11 @@ extension LocalImageGenerator {
+         externalOnDemand: textEncoderExternalOnDemand,
+         deviceProperties: DeviceCapability.deviceProperties, weightsCache: weightsCache,
+         maxLength: tokenLength, clipSkip: clipSkip, lora: lora)
++      if modelVersion == .ltx2_3 {
++        Self.ltx23Trace(
++          "LocalImageGenerator.textEncoderInit model=\(file) resolvedFilePaths=\(textEncoder.filePaths.map { URL(fileURLWithPath: $0).lastPathComponent }) tokenLength=\(tokenLength) textEncoderExternalOnDemand=\(textEncoderExternalOnDemand)"
++        )
++      }
+       let image = image.map {
+         downscaleImageAndToGPU(graph.variable($0), scaleFactor: imageScaleFactor)
+       }
+@@ -4074,13 +4100,26 @@ extension LocalImageGenerator {
          textImages = image.map { [$0] } ?? []
        }
        let textEncodings = modelPreloader.consumeTextModels(
@@ -858,7 +883,7 @@ index 6f266704..68a79a72 100644
          textEncoder: textEncoder)
        var c: [DynamicGraph.Tensor<FloatType>]
        var extraProjection: DynamicGraph.Tensor<FloatType>?
-@@ -4109,6 +4137,9 @@ extension LocalImageGenerator {
+@@ -4109,6 +4148,9 @@ extension LocalImageGenerator {
          unconditionalAttentionWeights: unconditionalAttentionWeights,
          attentionWeights: attentionWeights, version: modelVersion, tokenLength: tokenLength,
          batchSize: batchSize, hasNonOneWeights: hasNonOneWeights)
@@ -1807,6 +1832,64 @@ index 8435d2f1..5db6f222 100644
        fatalError()
      case .kandinsky21, .wurstchenStageB:
        fatalError()
+diff --git a/Libraries/ModelZoo/Sources/ModelZoo.swift b/Libraries/ModelZoo/Sources/ModelZoo.swift
+index e6c700c0..021f96b0 100644
+--- a/Libraries/ModelZoo/Sources/ModelZoo.swift
++++ b/Libraries/ModelZoo/Sources/ModelZoo.swift
+@@ -2515,11 +2515,51 @@ public struct ModelZoo: DownloadZoo {
+   // These are only the hit if everything else fails.
+   public static var fallbackMapping: [String: Specification] = [:]
+ 
++  private static func ltx23Trace(_ message: String) {
++    guard ProcessInfo.processInfo.environment["DT_LTX23_TRACE"] == "1" else {
++      return
++    }
++    guard let data = "[DT_LTX23_TRACE] \(message)\n".data(using: .utf8) else {
++      return
++    }
++    FileHandle.standardError.write(data)
++  }
++
++  private static func shouldTraceLTX23Lookup(_ name: String, specification: Specification?) -> Bool {
++    let lowered = name.lowercased()
++    if lowered.contains("ltx") || lowered.contains("10_e_v1") {
++      return true
++    }
++    guard let specification else { return false }
++    return specification.version == .ltx2 || specification.version == .ltx2_3
++  }
++
+   public static func specificationForModel(_ name: String) -> Specification? {
++    let source: String
++    let specification: Specification?
+     if let override = overrideMapping[name] {
+-      return override
++      source = "override"
++      specification = override
++    } else if let mapped = specificationMapping[name] {
++      source = "mapping"
++      specification = mapped
++    } else if let fallback = fallbackMapping[name] {
++      source = "fallback"
++      specification = fallback
++    } else {
++      source = "miss"
++      specification = nil
++    }
++    if shouldTraceLTX23Lookup(name, specification: specification) {
++      if let specification {
++        ltx23Trace(
++          "ModelZoo.specificationForModel request=\(name) source=\(source) winnerName=\(specification.name) winnerFile=\(specification.file) version=\(specification.version) modifier=\(String(describing: specification.modifier)) defaultScale=\(specification.defaultScale) textEncoder=\(specification.textEncoder ?? "") clipEncoder=\(specification.clipEncoder ?? "") autoencoder=\(specification.autoencoder ?? "")"
++        )
++      } else {
++        ltx23Trace("ModelZoo.specificationForModel request=\(name) source=\(source)")
++      }
+     }
+-    return specificationMapping[name] ?? fallbackMapping[name]
++    return specification
+   }
+ 
+   public static func filesToDownload(_ specification: Specification)
 diff --git a/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift b/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
 index b4193b91..e5aea5ef 100644
 --- a/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
@@ -1851,7 +1934,7 @@ index d2a5d9f6..bced744a 100644
    return (w1, w2, w3, Model([x], [out]))
  }
 diff --git a/Libraries/SwiftDiffusion/Sources/TextEncoder.swift b/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
-index 62b23002..2871001b 100644
+index 62b23002..73af4aa6 100644
 --- a/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
 +++ b/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
 @@ -45,6 +45,16 @@ public struct TextEncoder<FloatType: TensorNumeric & BinaryFloatingPoint> {
@@ -1871,17 +1954,22 @@ index 62b23002..2871001b 100644
    private func encodeKandinsky(
      tokens: [DynamicGraph.Tensor<Int32>], positions: [DynamicGraph.Tensor<Int32>]
    ) -> ([DynamicGraph.Tensor<FloatType>], [Model]) {
-@@ -3139,6 +3149,9 @@ extension TextEncoder {
+@@ -3135,10 +3145,14 @@ extension TextEncoder {
+     -> ([DynamicGraph.Tensor<FloatType>], [Model])
+   {
+     let graph = tokens[0].graph
++    let existingTextModelsCount = existingTextModels.compactMap { $0 }.count
+     let externalData: DynamicGraph.Store.Codec =
        externalOnDemand || deviceProperties.memoryCapacity != .high
        ? .externalOnDemand : .externalData(deviceProperties.isFreadPreferred ? .fread : .mmap)
      let tokenLength = tokens[0].shape[0] / 2
 +    ltx23Trace(
-+      "encodeLTX2.begin version=\(version) tokenLength=\(tokenLength) tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond) filePaths=\(filePaths.map { URL(fileURLWithPath: $0).lastPathComponent })"
++      "encodeLTX2.begin version=\(version) modifier=\(modifier) tokenLength=\(tokenLength) tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond) existingTextModelsCount=\(existingTextModelsCount) filePaths=\(filePaths.map { URL(fileURLWithPath: $0).lastPathComponent })"
 +    )
      let textModel = Gemma3(
        FloatType.self, vocabularySize: 262_208, maxLength: tokenLength, width: 3_840,
        tokenLength: tokenLength, layers: 48, MLP: 15_360, heads: 16, batchSize: 2,
-@@ -3172,6 +3185,9 @@ extension TextEncoder {
+@@ -3172,6 +3186,9 @@ extension TextEncoder {
      textModel.compile(
        inputs: [tokensTensorGPU, rotaryLocalTensorGPU, rotaryTensorGPU, causalAttentionMaskGPU])
      if !weightsCache.detach(filePaths[0], to: textModel.parameters) {
@@ -1891,7 +1979,7 @@ index 62b23002..2871001b 100644
        // If we have more than 24GiB RAM, and not forced to be on demand. We load the whole thing (better for weights cache).
        // Move Qwen 2.5 VL to on-demand.
        TensorData.makeExternalData(for: filePaths[0], graph: graph)
-@@ -3198,6 +3214,9 @@ extension TextEncoder {
+@@ -3198,6 +3215,9 @@ extension TextEncoder {
      }
      let normedHiddenStates: DynamicGraph.Tensor<BFloat16>
      let featureExtractorLinear: Model
@@ -1901,7 +1989,17 @@ index 62b23002..2871001b 100644
      let lora = Array(
        (OrderedDictionary<String, LoRAConfiguration>(
          lora.filter({ $0.version == version }).map {
-@@ -3281,6 +3300,9 @@ extension TextEncoder {
+@@ -3217,6 +3237,9 @@ extension TextEncoder {
+     let runLoRASeparatelyIsPreferred = true
+     let shouldRunLoRASeparately =
+       !lora.isEmpty && !isLoHa && runLoRASeparatelyIsPreferred && rankOfLoRA > 0
++    ltx23Trace(
++      "encodeLTX2.lora_state modifier=\(modifier) loraCount=\(lora.count) isLoHa=\(isLoHa) rank=\(rankOfLoRA) filesRequireMergeCount=\(filesRequireMerge.count) shouldRunLoRASeparately=\(shouldRunLoRASeparately)"
++    )
+     if version == .ltx2_3 {
+       let norm = RMSNorm(epsilon: 1e-6, axis: [2], elementwiseAffine: false)
+       normedHiddenStates = DynamicGraph.Tensor<BFloat16>(
+@@ -3281,6 +3304,9 @@ extension TextEncoder {
        }
      }
      featureExtractorLinear.compile(inputs: normedHiddenStates)
@@ -1911,7 +2009,7 @@ index 62b23002..2871001b 100644
      graph.openStore(
        filePaths[1], flags: .readOnly,
        externalStore: TensorData.externalStore(filePath: filePaths[1])
-@@ -3323,10 +3345,14 @@ extension TextEncoder {
+@@ -3323,10 +3349,14 @@ extension TextEncoder {
            codec: [.q8p, .q6p, .q4p, .ezm7, .jit, externalData])
        }
      }

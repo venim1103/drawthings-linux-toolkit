@@ -3145,12 +3145,13 @@ extension TextEncoder {
     -> ([DynamicGraph.Tensor<FloatType>], [Model])
   {
     let graph = tokens[0].graph
+    let existingTextModelsCount = existingTextModels.compactMap { $0 }.count
     let externalData: DynamicGraph.Store.Codec =
       externalOnDemand || deviceProperties.memoryCapacity != .high
       ? .externalOnDemand : .externalData(deviceProperties.isFreadPreferred ? .fread : .mmap)
     let tokenLength = tokens[0].shape[0] / 2
     ltx23Trace(
-      "encodeLTX2.begin version=\(version) tokenLength=\(tokenLength) tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond) filePaths=\(filePaths.map { URL(fileURLWithPath: $0).lastPathComponent })"
+      "encodeLTX2.begin version=\(version) modifier=\(modifier) tokenLength=\(tokenLength) tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond) existingTextModelsCount=\(existingTextModelsCount) filePaths=\(filePaths.map { URL(fileURLWithPath: $0).lastPathComponent })"
     )
     let textModel = Gemma3(
       FloatType.self, vocabularySize: 262_208, maxLength: tokenLength, width: 3_840,
@@ -3236,6 +3237,9 @@ extension TextEncoder {
     let runLoRASeparatelyIsPreferred = true
     let shouldRunLoRASeparately =
       !lora.isEmpty && !isLoHa && runLoRASeparatelyIsPreferred && rankOfLoRA > 0
+    ltx23Trace(
+      "encodeLTX2.lora_state modifier=\(modifier) loraCount=\(lora.count) isLoHa=\(isLoHa) rank=\(rankOfLoRA) filesRequireMergeCount=\(filesRequireMerge.count) shouldRunLoRASeparately=\(shouldRunLoRASeparately)"
+    )
     if version == .ltx2_3 {
       let norm = RMSNorm(epsilon: 1e-6, axis: [2], elementwiseAffine: false)
       normedHiddenStates = DynamicGraph.Tensor<BFloat16>(
