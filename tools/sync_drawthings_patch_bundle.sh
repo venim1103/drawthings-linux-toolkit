@@ -73,8 +73,10 @@ copy_required "$PATCH_ROOT/Apps/ModelConverter/Converter.swift" "$REPO_ROOT/Apps
 copy_required "$PATCH_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift" "$REPO_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift"
 copy_required "$PATCH_ROOT/Apps/ModelQuantizer/Quantizer.swift" "$REPO_ROOT/Apps/ModelQuantizer/Quantizer.swift"
 copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift"
+copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift"
 copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift"
 copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift"
+copy_required "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift"
 copy_required "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift"
 
 echo "==> Resolving Swift packages to ensure checkouts are present..."

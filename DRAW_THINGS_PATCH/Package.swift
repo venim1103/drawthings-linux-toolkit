@@ -346,7 +346,10 @@ let package = Package(
         "DiffusionPreprocessors",
         "DiffusionUNetWrapper",
         "Upscaler",
-        "FaceRestorer",
+        .target(
+          name: "FaceRestorer",
+          condition: .when(platforms: [.macOS, .iOS, .tvOS, .visionOS])
+        ),
         .product(name: "Logging", package: "swift-log"),
         .product(name: "ccv", package: "ccv"),
         .product(name: "NNC", package: "s4nnc"),

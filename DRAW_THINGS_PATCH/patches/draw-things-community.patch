@@ -499,6 +499,83 @@ index 7f3969b1..79799e8e 100644
            case .flux2, .flux2_9b, .flux2_4b:
              if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
                $0.write(key, tensor: fp16)
+diff --git a/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift b/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
+index 6f266704..68a79a72 100644
+--- a/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
++++ b/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
+@@ -101,6 +101,16 @@ public struct LocalImageGenerator: ImageGenerator {
+ }
+ 
+ extension LocalImageGenerator {
++  private static func ltx23Trace(_ message: String) {
++    guard ProcessInfo.processInfo.environment["DT_LTX23_TRACE"] == "1" else {
++      return
++    }
++    guard let data = "[DT_LTX23_TRACE] \(message)\n".data(using: .utf8) else {
++      return
++    }
++    FileHandle.standardError.write(data)
++  }
++
+   public static func sampler<FloatType: TensorNumeric & BinaryFloatingPoint>(
+     from type: SamplerType, isCfgEnabled: Bool, filePath: String, modifier: SamplerModifier,
+     version: ModelVersion, qkNorm: Bool, dualAttentionLayers: [Int],
+@@ -3621,6 +3631,11 @@ extension LocalImageGenerator {
+     textEncoderFiles +=
+       ((ModelZoo.T5EncoderForModel(file).flatMap { ModelZoo.isModelDownloaded($0) ? $0 : nil }).map
+       { [$0] } ?? [])
++    if modelVersion == .ltx2_3 {
++      Self.ltx23Trace(
++        "LocalImageGenerator.textEncoderFiles model=\(file) files=\(textEncoderFiles)"
++      )
++    }
+     let diffusionMappingFile = ModelZoo.diffusionMappingForModel(file).flatMap {
+       ModelZoo.isModelDownloaded($0) ? $0 : nil
+     }
+@@ -4074,13 +4089,26 @@ extension LocalImageGenerator {
+         textImages = image.map { [$0] } ?? []
+       }
+       let textEncodings = modelPreloader.consumeTextModels(
+-        textEncoder.encode(
+-          tokenLengthUncond: &tokenLengthUncond, tokenLengthCond: &tokenLengthCond,
+-          tokens: tokensTensors, positions: positionTensors, mask: embedMask,
+-          injectedEmbeddings: injectedEmbeddings, images: textImages,
+-          lengthsOfUncond: lengthsOfUncond, lengthsOfCond: lengthsOfCond,
+-          injectedTextEmbeddings: injectedTextEmbeddings, modifier: modifier,
+-          textModels: modelPreloader.retrieveTextModels(textEncoder: textEncoder)),
++        {
++          if modelVersion == .ltx2_3 {
++            Self.ltx23Trace(
++              "LocalImageGenerator.beforeTextEncode tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond)"
++            )
++          }
++          let encoded = textEncoder.encode(
++            tokenLengthUncond: &tokenLengthUncond, tokenLengthCond: &tokenLengthCond,
++            tokens: tokensTensors, positions: positionTensors, mask: embedMask,
++            injectedEmbeddings: injectedEmbeddings, images: textImages,
++            lengthsOfUncond: lengthsOfUncond, lengthsOfCond: lengthsOfCond,
++            injectedTextEmbeddings: injectedTextEmbeddings, modifier: modifier,
++            textModels: modelPreloader.retrieveTextModels(textEncoder: textEncoder))
++          if modelVersion == .ltx2_3 {
++            Self.ltx23Trace(
++              "LocalImageGenerator.afterTextEncode condCount=\(encoded.0.count) condShape0=\(encoded.0.first?.shape ?? []) textModelCount=\(encoded.1.count)"
++            )
++          }
++          return encoded
++        }(),
+         textEncoder: textEncoder)
+       var c: [DynamicGraph.Tensor<FloatType>]
+       var extraProjection: DynamicGraph.Tensor<FloatType>?
+@@ -4109,6 +4137,9 @@ extension LocalImageGenerator {
+         unconditionalAttentionWeights: unconditionalAttentionWeights,
+         attentionWeights: attentionWeights, version: modelVersion, tokenLength: tokenLength,
+         batchSize: batchSize, hasNonOneWeights: hasNonOneWeights)
++      if modelVersion == .ltx2_3 {
++        Self.ltx23Trace("LocalImageGenerator.beforeFeedback signpost=textEncoded")
++      }
+       guard feedback(.textEncoded, signposts, nil) else { return (nil, nil, 1) }
+       var maskedImage: DynamicGraph.Tensor<FloatType>? = nil
+       var mask: DynamicGraph.Tensor<FloatType>? = nil
 diff --git a/Libraries/ModelOp/Sources/ModelImporter.swift b/Libraries/ModelOp/Sources/ModelImporter.swift
 index 8435d2f1..5db6f222 100644
 --- a/Libraries/ModelOp/Sources/ModelImporter.swift
@@ -1481,6 +1558,82 @@ index d2a5d9f6..bced744a 100644
    }
    return (w1, w2, w3, Model([x], [out]))
  }
+diff --git a/Libraries/SwiftDiffusion/Sources/TextEncoder.swift b/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
+index 62b23002..2871001b 100644
+--- a/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
++++ b/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
+@@ -45,6 +45,16 @@ public struct TextEncoder<FloatType: TensorNumeric & BinaryFloatingPoint> {
+ }
+ 
+ extension TextEncoder {
++  private func ltx23Trace(_ message: String) {
++    guard ProcessInfo.processInfo.environment["DT_LTX23_TRACE"] == "1" else {
++      return
++    }
++    guard let data = "[DT_LTX23_TRACE] \(message)\n".data(using: .utf8) else {
++      return
++    }
++    FileHandle.standardError.write(data)
++  }
++
+   private func encodeKandinsky(
+     tokens: [DynamicGraph.Tensor<Int32>], positions: [DynamicGraph.Tensor<Int32>]
+   ) -> ([DynamicGraph.Tensor<FloatType>], [Model]) {
+@@ -3139,6 +3149,9 @@ extension TextEncoder {
+       externalOnDemand || deviceProperties.memoryCapacity != .high
+       ? .externalOnDemand : .externalData(deviceProperties.isFreadPreferred ? .fread : .mmap)
+     let tokenLength = tokens[0].shape[0] / 2
++    ltx23Trace(
++      "encodeLTX2.begin version=\(version) tokenLength=\(tokenLength) tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond) filePaths=\(filePaths.map { URL(fileURLWithPath: $0).lastPathComponent })"
++    )
+     let textModel = Gemma3(
+       FloatType.self, vocabularySize: 262_208, maxLength: tokenLength, width: 3_840,
+       tokenLength: tokenLength, layers: 48, MLP: 15_360, heads: 16, batchSize: 2,
+@@ -3172,6 +3185,9 @@ extension TextEncoder {
+     textModel.compile(
+       inputs: [tokensTensorGPU, rotaryLocalTensorGPU, rotaryTensorGPU, causalAttentionMaskGPU])
+     if !weightsCache.detach(filePaths[0], to: textModel.parameters) {
++      ltx23Trace(
++        "encodeLTX2.loading_text_model path=\(URL(fileURLWithPath: filePaths[0]).lastPathComponent) externalOnDemand=\(externalOnDemand)"
++      )
+       // If we have more than 24GiB RAM, and not forced to be on demand. We load the whole thing (better for weights cache).
+       // Move Qwen 2.5 VL to on-demand.
+       TensorData.makeExternalData(for: filePaths[0], graph: graph)
+@@ -3198,6 +3214,9 @@ extension TextEncoder {
+     }
+     let normedHiddenStates: DynamicGraph.Tensor<BFloat16>
+     let featureExtractorLinear: Model
++    ltx23Trace(
++      "encodeLTX2.text_model_ready outputLayers=\(outputHiddenStates.count) hiddenStatesShape=\(hiddenStates.shape)"
++    )
+     let lora = Array(
+       (OrderedDictionary<String, LoRAConfiguration>(
+         lora.filter({ $0.version == version }).map {
+@@ -3281,6 +3300,9 @@ extension TextEncoder {
+       }
+     }
+     featureExtractorLinear.compile(inputs: normedHiddenStates)
++    ltx23Trace(
++      "encodeLTX2.loading_text_feature_extractor path=\(URL(fileURLWithPath: filePaths[1]).lastPathComponent) shouldRunLoRASeparately=\(shouldRunLoRASeparately) loraCount=\(lora.count)"
++    )
+     graph.openStore(
+       filePaths[1], flags: .readOnly,
+       externalStore: TensorData.externalStore(filePath: filePaths[1])
+@@ -3323,10 +3345,14 @@ extension TextEncoder {
+           codec: [.q8p, .q6p, .q4p, .ezm7, .jit, externalData])
+       }
+     }
++    ltx23Trace("encodeLTX2.loaded_text_feature_extractor")
+     let c = featureExtractorLinear(inputs: normedHiddenStates).map {
+       DynamicGraph.Tensor<FloatType>(from: $0).reshaped(
+         .HWC(2, tokenLength, version == .ltx2_3 ? 6144 : 3840))
+     }
++    ltx23Trace(
++      "encodeLTX2.end conditioningCount=\(c.count) conditioningShape0=\(c.first?.shape ?? []) tokenLengthUncond=\(tokenLengthUncond) tokenLengthCond=\(tokenLengthCond)"
++    )
+     return (c, [textModel])
+   }
+ 
 diff --git a/Package.resolved b/Package.resolved
 index 34bef46a..686eeeba 100644
 --- a/Package.resolved
@@ -1531,7 +1684,7 @@ index 34bef46a..686eeeba 100644
        "identity" : "swift-system",
        "kind" : "remoteSourceControl",
 diff --git a/Package.swift b/Package.swift
-index 6ae4c90b..8d31497a 100644
+index 6ae4c90b..932b11a8 100644
 --- a/Package.swift
 +++ b/Package.swift
 @@ -8,15 +8,17 @@ let package = Package(
@@ -1592,7 +1745,19 @@ index 6ae4c90b..8d31497a 100644
      ),
      .target(
        name: "Diffusion",
-@@ -481,6 +492,28 @@ let package = Package(
+@@ -335,7 +346,10 @@ let package = Package(
+         "DiffusionPreprocessors",
+         "DiffusionUNetWrapper",
+         "Upscaler",
+-        "FaceRestorer",
++        .target(
++          name: "FaceRestorer",
++          condition: .when(platforms: [.macOS, .iOS, .tvOS, .visionOS])
++        ),
+         .product(name: "Logging", package: "swift-log"),
+         .product(name: "ccv", package: "ccv"),
+         .product(name: "NNC", package: "s4nnc"),
+@@ -481,6 +495,28 @@ let package = Package(
        path: "Apps/DrawThingsCLI",
        sources: ["DrawThingsCLI.swift"]
      ),

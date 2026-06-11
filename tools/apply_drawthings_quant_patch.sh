@@ -82,11 +82,17 @@ if ! apply_git_patch "$REPO_ROOT" "$PATCHES_DIR/draw-things-community.patch" "dr
     "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" \
     "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" 1
   copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift" \
+    "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift" 1
+  copy_snapshot_patch \
     "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift" \
     "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift" 1
   copy_snapshot_patch \
     "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" \
     "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" 1
+  copy_snapshot_patch \
+    "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" \
+    "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" 1
   copy_snapshot_patch \
     "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" \
     "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" 1

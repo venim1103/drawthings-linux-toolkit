@@ -34,6 +34,9 @@ mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" \
   "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift"
+cp \
+  "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift" \
+  "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift"
 mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Archive"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift" \
@@ -41,6 +44,10 @@ cp \
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" \
   "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift"
+mkdir -p "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources"
+cp \
+  "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" \
+  "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift"
 mkdir -p "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation"
 cp \
   "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" \
@@ -73,8 +80,10 @@ PATCH_TARGETS=(
   Libraries/ModelOp/Sources/ModelImporter.swift
   Apps/ModelQuantizer/Quantizer.swift
   Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift
+  Libraries/SwiftDiffusion/Sources/TextEncoder.swift
   Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
   Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
+  Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
   Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift
 )
 
