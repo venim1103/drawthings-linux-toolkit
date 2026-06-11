@@ -12,6 +12,7 @@ TMPKEY_MODEL_KEY="10_e_v1_bf16_regen_0_q6p_trace021_run033_tmpkey.ckpt"
 TAG="$(date +%Y%m%d_%H%M%S)"
 TIMEOUT_SEC=75
 HOST="127.0.0.1:7861"
+MATRIX="core"
 
 PROBE_ALIAS_A="probe_trace_alias_a"
 PROBE_ALIAS_B="probe_trace_alias_b"
@@ -30,6 +31,8 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
+  --matrix <name>          Case matrix: core | cross-file
+                           (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
   --trace-model-key <file>  Traced checkpoint key under dt-models
@@ -57,6 +60,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-entry-name)
       BASE_ENTRY_NAME="${2:-}"
+      shift 2
+      ;;
+    --matrix)
+      MATRIX="${2:-}"
       shift 2
       ;;
     --trace-model-key)
@@ -93,6 +100,11 @@ done
 
 if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   echo "error: --timeout-sec must be an integer >= 1" >&2
+  exit 1
+fi
+
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" ]]; then
+  echo "error: --matrix must be one of: core, cross-file" >&2
   exit 1
 fi
 
@@ -203,6 +215,9 @@ elif mode == "alias_trace_dupe_ba":
     filtered.append(alias_from_base(alias_a, trace_key, trace_key, "kontext"))
 elif mode == "alias_tmpkey":
     filtered.append(alias_from_base(tmp_alias, tmpkey_key, tmpkey_key, "kontext"))
+elif mode == "alias_both":
+  filtered.append(alias_from_base(alias_a, trace_key, trace_key, "kontext"))
+  filtered.append(alias_from_base(tmp_alias, tmpkey_key, tmpkey_key, "kontext"))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -310,6 +325,7 @@ echo "== custom alias resolution probe =="
 echo "base_entry_name=$BASE_ENTRY_NAME"
 echo "trace_model_key=$TRACE_MODEL_KEY"
 echo "tmpkey_model_key=$TMPKEY_MODEL_KEY"
+echo "matrix=$MATRIX"
 echo "tag=$TAG"
 echo "timeout_sec=$TIMEOUT_SEC"
 echo "host=$HOST"
@@ -317,15 +333,31 @@ echo "work_dir=$WORK_DIR"
 
 echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"
 
-run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
-run_case "probe_trace_alias_model_filearg" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
-run_case "probe_trace_alias_model_namearg" "alias_trace_a" "$PROBE_ALIAS_A" "0"
-run_case "probe_trace_alias_clipold_model_filearg" "alias_trace_a_clip_old" "$TRACE_MODEL_KEY" "0"
-run_case "probe_trace_dupe_order_ab" "alias_trace_dupe_ab" "$TRACE_MODEL_KEY" "0"
-run_case "probe_trace_dupe_order_ba" "alias_trace_dupe_ba" "$TRACE_MODEL_KEY" "0"
-run_case "control_tmpkey_noncustom" "baseline_only" "$TMPKEY_MODEL_KEY" "1"
-run_case "probe_tmpkey_alias_model_filearg" "alias_tmpkey" "$TMPKEY_MODEL_KEY" "1"
-run_case "probe_tmpkey_alias_model_namearg" "alias_tmpkey" "$PROBE_TMP_ALIAS" "1"
+if [[ "$MATRIX" == "core" ]]; then
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_alias_model_filearg" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_alias_model_namearg" "alias_trace_a" "$PROBE_ALIAS_A" "0"
+  run_case "probe_trace_alias_clipold_model_filearg" "alias_trace_a_clip_old" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_dupe_order_ab" "alias_trace_dupe_ab" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_dupe_order_ba" "alias_trace_dupe_ba" "$TRACE_MODEL_KEY" "0"
+  run_case "control_tmpkey_noncustom" "baseline_only" "$TMPKEY_MODEL_KEY" "1"
+  run_case "probe_tmpkey_alias_model_filearg" "alias_tmpkey" "$TMPKEY_MODEL_KEY" "1"
+  run_case "probe_tmpkey_alias_model_namearg" "alias_tmpkey" "$PROBE_TMP_ALIAS" "1"
+else
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "control_tmpkey_noncustom" "baseline_only" "$TMPKEY_MODEL_KEY" "1"
+
+  run_case "cross_trace_alias_active_request_tmpkey" "alias_trace_a" "$TMPKEY_MODEL_KEY" "1"
+  run_case "cross_tmpkey_alias_active_request_trace" "alias_tmpkey" "$TRACE_MODEL_KEY" "1"
+
+  run_case "cross_trace_dupe_active_request_tmpkey" "alias_trace_dupe_ab" "$TMPKEY_MODEL_KEY" "1"
+
+  run_case "cross_both_aliases_request_trace" "alias_both" "$TRACE_MODEL_KEY" "1"
+  run_case "cross_both_aliases_request_tmpkey" "alias_both" "$TMPKEY_MODEL_KEY" "1"
+
+  run_case "cross_both_aliases_request_trace_name" "alias_both" "$PROBE_ALIAS_A" "1"
+  run_case "cross_both_aliases_request_tmpkey_name" "alias_both" "$PROBE_TMP_ALIAS" "1"
+fi
 
 pass_count="$(awk -F'\t' 'NR>1 && $6=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
 fail_count="$(awk -F'\t' 'NR>1 && $6!="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
@@ -337,6 +369,7 @@ case_count="$(awk 'END{print NR-1}' "$RESULTS_TSV")"
   echo "- base_entry_name: $BASE_ENTRY_NAME"
   echo "- trace_model_key: $TRACE_MODEL_KEY"
   echo "- tmpkey_model_key: $TMPKEY_MODEL_KEY"
+  echo "- matrix: $MATRIX"
   echo "- tag: $TAG"
   echo "- timeout_sec: $TIMEOUT_SEC"
   echo "- host: $HOST"

@@ -152,3 +152,11 @@ Success means full generation completes (not only first streamed response) and n
 		- duplicate alias order (`ab` vs `ba`) did not change failure outcome.
 	- Refined causal branch: failure is strongly coupled to custom-entry resolution/shadowing semantics for model file lookup, not to traced tensor payload validity and not to key-string identity alone.
 	- Next isolation target: instrument and inspect `specificationForModel(file)`/resolution call path behavior under duplicate and probe alias entries in ModelZoo-facing code paths.
+- 2026-06-11: Run 034 cross-file alias-resolution matrix (`run034_alias_resolution_crossfile_20260611`) completed.
+	- Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix core|cross-file` and `alias_both` mode to test simultaneous probe aliases.
+	- Matrix result: 9 cases total, pass=5, fail=4.
+	- Both baseline controls passed (trace key and tmpkey).
+	- Cross-file single-alias probes passed (alias for one key active while requesting the other key).
+	- Failures occurred only when both probe aliases were active simultaneously (`alias_both`), with loader-crash signature and `canary_rc/post_echo_rc=124`.
+	- Refined causal branch: trigger is not global alias contamination from one key; failure emerges under multi-entry shadowing/collision conditions, pointing to lookup/selection behavior when overlapping custom entries are active together.
+	- Next isolation target: add source-level instrumentation around ModelZoo resolution map construction/lookup order (`availableSpecifications` -> `specificationMapping[file]`) and validate winner selection under overlapping alias sets.

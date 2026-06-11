@@ -1429,3 +1429,49 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - Any probe scenario that introduces a custom alias entry keyed to that same file content failed, regardless of whether the request used file key or alias name.
   - Duplicate alias ordering (`ab` vs `ba`) did not recover a pass.
   - This strengthens the branch conclusion that the dominant trigger is custom-entry resolution/shadowing semantics around file-key lookup, rather than tensor payload validity or simple key-string identity.
+
+## Run 034 - 2026-06-11 (UTC)
+
+- Goal: Test whether alias-triggered instability is file-key-local or global by enabling aliases for one key while requesting a different key.
+- Tooling update:
+  - `tools/run_custom_alias_resolution_probe.sh` now supports:
+    - `--matrix core|cross-file`
+    - `alias_both` mode (simultaneous probe aliases for traced key and tmpkey)
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix cross-file \
+  --tag run034_alias_resolution_crossfile_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run034_alias_resolution_crossfile_20260611`):
+  - cases: 9
+  - pass: 5
+  - fail: 4
+
+- Case highlights:
+  - PASS controls:
+    - `control_trace_noncustom` (trace key baseline)
+    - `control_tmpkey_noncustom` (tmpkey baseline)
+  - PASS cross-file probes (single alias active for a different key):
+    - `cross_trace_alias_active_request_tmpkey`
+    - `cross_tmpkey_alias_active_request_trace`
+    - `cross_trace_dupe_active_request_tmpkey`
+  - FAIL only when both probe aliases were simultaneously active:
+    - `cross_both_aliases_request_trace`
+    - `cross_both_aliases_request_tmpkey`
+    - `cross_both_aliases_request_trace_name`
+    - `cross_both_aliases_request_tmpkey_name`
+    - all four failed with `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/cases/*.log`
+
+- Outcome:
+  - Single-key alias activation does not globally poison other keys (cross-file single-alias cases passed).
+  - Failure reappears when both matching probe aliases are active together, indicating a stronger mapping-collision/selection interaction than simple one-alias presence.
+  - This narrows the next isolation target to resolution behavior under multi-entry shadowing rather than broad custom-entry presence.

@@ -184,6 +184,23 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - custom-entry resolution/shadowing is the dominant trigger in this branch
     - same tensor content remains stable when exercised without matching custom probe entries
 
+- Run 034 (`run034_alias_resolution_crossfile_20260611`):
+  - executed cross-file matrix to test whether one-key alias activation contaminates requests for a different key
+  - tool update: `tools/run_custom_alias_resolution_probe.sh` now supports `--matrix core|cross-file` and `alias_both`
+  - matrix result: `cases=9`, `pass=5`, `fail=4`
+  - pass cases:
+    - both baseline controls (`control_trace_noncustom`, `control_tmpkey_noncustom`)
+    - cross-file single-alias probes:
+      - `cross_trace_alias_active_request_tmpkey`
+      - `cross_tmpkey_alias_active_request_trace`
+      - `cross_trace_dupe_active_request_tmpkey`
+  - fail cases:
+    - only `alias_both` scenarios failed (`trace` key, `tmpkey` key, and name-arg variants)
+    - all four failed with `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+  - interpretation:
+    - one-key alias activation is not globally poisoning other keys
+    - failure emerges under simultaneous overlapping alias activity, indicating multi-entry shadowing/collision behavior
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -196,6 +213,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run031 probe narrows this further: in tested schema space, custom entry `file` matching traced key is the dominant trigger; changing `clip_encoder` and `default_scale` alone did not recover stability.
 - Run032b extends that result: broad secondary field changes (`version`, `modifier`, `objective`, `text_encoder`, `autoencoder`) still did not recover any matched-trace pass, reinforcing file-key resolution as the dominant trigger.
 - Run033b confirms this across argument forms and tmpkey hardlink controls: non-custom controls pass for identical content, while introducing matching custom probe entries consistently reintroduces failure.
+- Run034 narrows it further: cross-file single-alias activity stays stable; the crash trigger appears when overlapping aliases for both key paths are active together.
 
 ## 4) Key artifacts
 
@@ -285,6 +303,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run033b_alias_resolution_probe_20260611/cases/*.log`
+- Run 034 artifacts:
+  - `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run034_alias_resolution_crossfile_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -293,9 +315,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run033b completed the model-resolution semantics probe branch and confirmed shadowing-trigger behavior
-  - instrument/inspect `specificationForModel(file)` and surrounding ModelZoo resolution path under duplicate/matching custom entries
-  - design minimal source-level probes for first behavioral divergence in lookup/selection (entry-match order, duplicate file-key handling, alias-name vs file-key request path)
+  - run034 completed cross-file discrimination and points to multi-entry shadowing/collision as the highest-signal trigger
+  - instrument/inspect ModelZoo mapping construction and lookup winner selection under overlapping alias sets (`availableSpecifications` order and `specificationMapping[file]` replacement behavior)
+  - design minimal source-level probes for first behavioral divergence in selection path with simultaneous aliases active
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 
