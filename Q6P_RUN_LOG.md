@@ -1536,3 +1536,40 @@ bash tools/run_custom_alias_resolution_probe.sh \
 
 - Outcome:
   - The trigger remains tied to overlapping multi-entry winner selection state, not global contamination from any one alias and not tensor payload validity.
+
+## Run 037 (2026-06-11): Minimal-v1 Custom-Winner Isolation Matrix
+
+- Tool update:
+  - `tools/run_custom_alias_resolution_probe.sh` now supports `--matrix minimal-v1`.
+  - Added minimal custom-entry modes (`alias_trace_min_v1`, `alias_tmpkey_min_v1`, `alias_both_min_v1`) that create only:
+    - `name`, `file`, `prefix=""`, `version="v1"`, `upcast_attention=false`, `default_scale=8`
+  - Purpose: isolate winner-presence effects from LTX-specific custom fields.
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix minimal-v1 \
+  --tag run037_alias_resolution_minv1_ctx_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run037_alias_resolution_minv1_ctx_20260611`):
+  - cases: 8
+  - pass: 8
+  - fail: 0
+
+- Context highlights:
+  - All custom-winner cases passed, including:
+    - file-arg and alias-name requests with `arg_match_count=1`
+    - simultaneous overlap (`alias_both_min_v1`) where `trace_match_count=1` and `tmpkey_match_count=1`
+  - All cases returned `canary_rc=0`, `post_echo_rc=0`, `responses=10`, `images=1`.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run037_alias_resolution_minv1_ctx_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run037_alias_resolution_minv1_ctx_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run037_alias_resolution_minv1_ctx_20260611/cases/*.log`
+
+- Outcome:
+  - Winner presence (`arg_match_count>=1`) and overlap alone are not sufficient to trigger failure.
+  - Prior failures require one or more LTX-style custom-entry fields used in earlier modes (`version=ltx2.3`, `modifier=kontext/none`, `clip_encoder=file`, `default_scale=1`, and related fields).

@@ -31,7 +31,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -103,8 +103,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" ]]; then
-  echo "error: --matrix must be one of: core, cross-file" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1" >&2
   exit 1
 fi
 
@@ -191,6 +191,17 @@ def alias_from_base(name: str, file_key: str, clip_key: str | None = None, modif
     entry["modifier"] = modifier if modifier is not None else "kontext"
     return entry
 
+def alias_min_v1(name: str, file_key: str):
+    # Minimal schema to emulate specificationForModel miss defaults while still creating a custom winner.
+    return {
+        "name": name,
+        "file": file_key,
+        "prefix": "",
+        "version": "v1",
+        "upcast_attention": False,
+        "default_scale": 8,
+    }
+
 filtered = []
 probe_names = {alias_a, alias_b, tmp_alias}
 for entry in payload:
@@ -216,8 +227,15 @@ elif mode == "alias_trace_dupe_ba":
 elif mode == "alias_tmpkey":
     filtered.append(alias_from_base(tmp_alias, tmpkey_key, tmpkey_key, "kontext"))
 elif mode == "alias_both":
-  filtered.append(alias_from_base(alias_a, trace_key, trace_key, "kontext"))
-  filtered.append(alias_from_base(tmp_alias, tmpkey_key, tmpkey_key, "kontext"))
+    filtered.append(alias_from_base(alias_a, trace_key, trace_key, "kontext"))
+    filtered.append(alias_from_base(tmp_alias, tmpkey_key, tmpkey_key, "kontext"))
+elif mode == "alias_trace_min_v1":
+    filtered.append(alias_min_v1(alias_a, trace_key))
+elif mode == "alias_tmpkey_min_v1":
+    filtered.append(alias_min_v1(tmp_alias, tmpkey_key))
+elif mode == "alias_both_min_v1":
+    filtered.append(alias_min_v1(alias_a, trace_key))
+    filtered.append(alias_min_v1(tmp_alias, tmpkey_key))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -412,7 +430,7 @@ if [[ "$MATRIX" == "core" ]]; then
   run_case "control_tmpkey_noncustom" "baseline_only" "$TMPKEY_MODEL_KEY" "1"
   run_case "probe_tmpkey_alias_model_filearg" "alias_tmpkey" "$TMPKEY_MODEL_KEY" "1"
   run_case "probe_tmpkey_alias_model_namearg" "alias_tmpkey" "$PROBE_TMP_ALIAS" "1"
-else
+elif [[ "$MATRIX" == "cross-file" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
   run_case "control_tmpkey_noncustom" "baseline_only" "$TMPKEY_MODEL_KEY" "1"
 
@@ -426,6 +444,15 @@ else
 
   run_case "cross_both_aliases_request_trace_name" "alias_both" "$PROBE_ALIAS_A" "1"
   run_case "cross_both_aliases_request_tmpkey_name" "alias_both" "$PROBE_TMP_ALIAS" "1"
+else
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_minv1_model_filearg" "alias_trace_min_v1" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_minv1_model_namearg" "alias_trace_min_v1" "$PROBE_ALIAS_A" "0"
+  run_case "control_tmpkey_noncustom" "baseline_only" "$TMPKEY_MODEL_KEY" "1"
+  run_case "probe_tmpkey_minv1_model_filearg" "alias_tmpkey_min_v1" "$TMPKEY_MODEL_KEY" "1"
+  run_case "probe_tmpkey_minv1_model_namearg" "alias_tmpkey_min_v1" "$PROBE_TMP_ALIAS" "1"
+  run_case "probe_both_minv1_trace_filearg" "alias_both_min_v1" "$TRACE_MODEL_KEY" "1"
+  run_case "probe_both_minv1_tmpkey_filearg" "alias_both_min_v1" "$TMPKEY_MODEL_KEY" "1"
 fi
 
 pass_count="$(awk -F'\t' 'NR>1 && $15=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"

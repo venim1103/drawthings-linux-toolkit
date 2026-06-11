@@ -173,3 +173,10 @@ Success means full generation completes (not only first streamed response) and n
 	- All `alias_both` failures had simultaneous overlap (`trace_match_count=1` and `tmpkey_match_count=1`) plus active arg winner.
 	- In `alias_both`, file-key requests failed as timeouts while alias-name requests failed as loader-crash; both remain terminal FAIL signatures.
 	- Next isolation target (unchanged, now stronger): instrument `ModelZoo.specificationForModel(file)` / `specificationMapping[file]` map construction and winner replacement behavior under overlapping entries to identify first control-flow divergence.
+- 2026-06-11: Run 037 minimal-v1 custom-winner isolation matrix (`run037_alias_resolution_minv1_ctx_20260611`) completed.
+	- Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix minimal-v1` and minimal-entry modes (`alias_trace_min_v1`, `alias_tmpkey_min_v1`, `alias_both_min_v1`).
+	- Minimal entry schema intentionally removed LTX-specific fields and kept only required/default-like keys: `name`, `file`, `prefix=""`, `version="v1"`, `upcast_attention=false`, `default_scale=8`.
+	- Matrix result: 8 cases total, pass=8, fail=0.
+	- Crucial discriminator: even with active winners (`arg_match_count=1`) and simultaneous overlap (`trace_match_count=1`, `tmpkey_match_count=1`), all cases stayed PASS.
+	- Revised causal branch: custom winner/overlap state alone is insufficient; failure requires one or more LTX-style custom-entry fields from earlier failing modes (most likely among `version=ltx2.3`, `clip_encoder=file`, `modifier`, `default_scale`, and associated LTX config fields).
+	- Next isolation target: run additive field-ladder from minimal-v1 baseline to prior failing alias schema to identify first failing field transition.
