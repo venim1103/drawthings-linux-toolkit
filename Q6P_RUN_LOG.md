@@ -1983,3 +1983,40 @@ bash tools/run_q6p_canary_once.sh \
 - Artifacts:
   - wrapper control: `output/q6p_canary_run046_control_wrapper_20260611/{client.log,server.log}`
   - source-build control: `output/q6p_canary_run046_control_sourcebuild_trace_20260611/{client.log,server.log}`
+
+## Run 047 (2026-06-11): Wrapper-Binary Pinned-Companion Replay
+
+- Goal:
+  - Re-run the pinned-companion matrix on the stable wrapper binary path to verify whether run044 branch signatures still hold after run045/run046 confound isolation.
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-pinned-companion \
+  --timeout-sec 75 \
+  --tag run047_wrapper_ltx23_pinned_companion_20260611
+```
+
+- Probe summary (`run047_wrapper_ltx23_pinned_companion_20260611`):
+  - cases: 7
+  - pass: 1
+  - fail: 6
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS (`canary_rc=0`, `post_echo_rc=0`, `responses=10`, `images=1`)
+  - `probe_trace_ltx23_text_only_pin_a`: FAIL (`textencoder_illegal`, `canary_rc=124`, `post_echo_rc=1`)
+  - `probe_trace_ltx23_text_clip_trace_pin_a`: FAIL (`loader_crash`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_a_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_b_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_c_pin_a`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_full_base`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - Wrapper-binary replay reproduces the run044 three-way split and confirms branch logic signal is stable under the non-source-built runtime path.
+  - run045 all-fail behavior is therefore attributable to source-built runtime instability rather than a persistent alias-resolution behavior change.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run047_wrapper_ltx23_pinned_companion_20260611/cases/*.log`

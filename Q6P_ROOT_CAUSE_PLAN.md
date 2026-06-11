@@ -249,3 +249,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Strict control canary on default wrapper binary path passed (`canary_rc=0`, full stream, final image output).
 	- Strict control canary on local source-built binary path failed deterministically (`canary_rc=1`, libc abort/core dump, socket closed).
 	- Updated causal branch: treat source-built Linux runtime stabilization as a prerequisite for source-instrumented matrix interpretation; keep branch-behavior comparisons on stable binary path until then.
+- 2026-06-11: Run 047 wrapper-binary pinned-companion replay (`run047_wrapper_ltx23_pinned_companion_20260611`) completed.
+	- Matrix result returned to expected shape (`pass=1`, `fail=6`) with stable control pass.
+	- Reproduced deterministic branch mapping under stable binary path:
+		- one-file clip_vit pin => `textencoder_illegal`
+		- two-file traced clip => `loader_crash`
+		- two-file companions => `timeout`
+	- Updated causal branch: run044 branch separation remains valid; run045 regressions are runtime-path confound, not branch-model drift.
