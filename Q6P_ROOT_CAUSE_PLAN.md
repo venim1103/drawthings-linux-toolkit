@@ -235,5 +235,6 @@ Success means full generation completes (not only first streamed response) and n
 		- one-file + clip_vit text pin => `textencoder_illegal`
 		- two-file + traced clip => `loader_crash` (`ccv_nnc_tensor_read`, `post_echo_rc=124`)
 		- two-file + companion A/B/C => `timeout` (`post_echo_rc=0`)
+	- Stage note: all failing run044 variants ended before streamed signposts; branch separation is currently visible via crash signature and post-echo rc rather than stream progress milestones.
 	- Updated causal branch: with text identity pinned, secondary clip choice is sufficient to split loader-crash vs timeout branches in two-file ltx2.3 path.
 	- Next isolation target: instrument loader path for traced-clip two-file case versus companion two-file cases (same pinned text) to capture first branch point after `encodeLTX2` returns.

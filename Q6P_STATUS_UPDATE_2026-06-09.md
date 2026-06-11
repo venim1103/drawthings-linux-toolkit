@@ -332,6 +332,8 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - one-file => `textencoder_illegal` (`post_echo_rc=1`)
     - two-file + traced clip => `loader_crash` (`ccv_nnc_tensor_read`, `post_echo_rc=124`)
     - two-file + companion A/B/C => `timeout` (`post_echo_rc=0`)
+  - stage signal:
+    - failing cases terminated before streamed signposts; practical split is currently crash signature + post-echo health state
   - interpretation:
     - with text identity pinned, secondary clip choice deterministically splits loader-crash vs timeout in two-file path
     - this is the clearest current boundary for targeted source instrumentation
@@ -501,7 +503,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
   - run044 confirms controlled three-way boundary under pinned text identity
-  - instrument post-encode path for two-file traced-clip vs two-file companion cases to capture first branch divergence leading to loader-crash vs timeout
+  - instrument post-encode path for two-file traced-clip vs two-file companion cases to capture first branch divergence leading to loader-crash vs timeout (pre-stream)
   - keep pinned-matrix harness as regression control while adding source-level traces
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits

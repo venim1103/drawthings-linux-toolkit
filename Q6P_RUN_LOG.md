@@ -1874,6 +1874,9 @@ bash tools/run_custom_alias_resolution_probe.sh \
     - two-file with traced clip => `loader_crash`
     - two-file with non-trace companions => `timeout`
   - This is the clearest controlled separation so far between immediate encode crash, loader crash, and stall branches.
+  - Stage evidence from case logs:
+    - all failing variants terminated before streamed signposts (`textEncoded`/`imageEncoded`) were emitted in canary output.
+    - crash branches are distinguished by post-echo state: `post_echo_rc=1` (illegal-instruction) vs `post_echo_rc=124` (loader crash), while timeout branch preserves healthy post-echo (`post_echo_rc=0`).
 
 - Artifacts:
   - summary: `output/custom_alias_resolution_probe_run044_ltx23_pinned_companion/summary.md`
