@@ -317,3 +317,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Non-deterministic case so far:
 		- pin-b + mod+auto toggled timeout (run058) vs loader-crash (run059).
 	- Updated causal branch: text identity plus additive field bundle controls most branch outcomes, but at least one pin-b additive branch remains state/noise sensitive and requires additional repeated controls before policy hard-coding.
+- 2026-06-11: Added compact pin-b noise matrix and executed run060/run061.
+	- New matrix: `--matrix ltx23-pinb-noise` (control, pin-b baseline, pin-b+mod_auto, full-base).
+	- Run060/061 both converged to same signatures:
+		- pin-b baseline => loader-crash
+		- pin-b + mod+auto => loader-crash
+		- full-base => loader-crash
+	- Updated causal branch: prior run058 timeout for pin-b+mod_auto is now best treated as outlier/noise; pin-b traced-clip path is effectively loader-crash stable under repeated controls.

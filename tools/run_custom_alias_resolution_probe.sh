@@ -37,7 +37,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin | ltx23-pinned-companion | ltx23-focused | ltx23-loaderbranch | ltx23-loaderbranch-pinb | ltx23-textgate
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin | ltx23-pinned-companion | ltx23-focused | ltx23-loaderbranch | ltx23-loaderbranch-pinb | ltx23-textgate | ltx23-pinb-noise
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -139,8 +139,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" && "$MATRIX" != "ltx23-pinned-companion" && "$MATRIX" != "ltx23-focused" && "$MATRIX" != "ltx23-loaderbranch" && "$MATRIX" != "ltx23-loaderbranch-pinb" && "$MATRIX" != "ltx23-textgate" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin, ltx23-pinned-companion, ltx23-focused, ltx23-loaderbranch, ltx23-loaderbranch-pinb, ltx23-textgate" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" && "$MATRIX" != "ltx23-pinned-companion" && "$MATRIX" != "ltx23-focused" && "$MATRIX" != "ltx23-loaderbranch" && "$MATRIX" != "ltx23-loaderbranch-pinb" && "$MATRIX" != "ltx23-textgate" && "$MATRIX" != "ltx23-pinb-noise" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin, ltx23-pinned-companion, ltx23-focused, ltx23-loaderbranch, ltx23-loaderbranch-pinb, ltx23-textgate, ltx23-pinb-noise" >&2
   exit 1
 fi
 
@@ -760,6 +760,11 @@ elif [[ "$MATRIX" == "ltx23-textgate" ]]; then
   run_case "probe_trace_ltx23_text_clip_trace_pin_a" "alias_trace_ltx23_text_clip_trace_pin_a" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_trace_pin_b" "alias_trace_ltx23_text_clip_trace_pin_b" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_trace_pin_a_mod_auto" "alias_trace_ltx23_text_clip_trace_pin_a_mod_auto" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_b_mod_auto" "alias_trace_ltx23_text_clip_trace_pin_b_mod_auto" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
+elif [[ "$MATRIX" == "ltx23-pinb-noise" ]]; then
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_b" "alias_trace_ltx23_text_clip_trace_pin_b" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_clip_trace_pin_b_mod_auto" "alias_trace_ltx23_text_clip_trace_pin_b_mod_auto" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi

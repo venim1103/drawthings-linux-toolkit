@@ -2432,3 +2432,76 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run059_wrapper_ltx23_textgate_recheck_20260611/cases/*.log`
+
+## Run 060 (2026-06-11): Pin-B Noise Check (Compact Matrix)
+
+- Goal:
+  - Re-test the previously drifting `pin-b + mod+auto` branch using a compact repeat matrix.
+
+- Harness update:
+  - `tools/run_custom_alias_resolution_probe.sh` gained matrix:
+    - `--matrix ltx23-pinb-noise`
+  - Cases:
+    - control
+    - traced-clip pin-b baseline
+    - traced-clip pin-b + mod+auto
+    - full-base
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-pinb-noise \
+  --timeout-sec 75 \
+  --tag run060_wrapper_ltx23_pinb_noise_20260611
+```
+
+- Probe summary (`run060_wrapper_ltx23_pinb_noise_20260611`):
+  - cases: 4
+  - pass: 1
+  - fail: 3
+
+- Outcome map:
+  - pin-b baseline => `loader_crash`
+  - pin-b + mod+auto => `loader_crash`
+  - full-base => `loader_crash`
+
+- Key finding:
+  - No timeout drift in this run; all pin-b traced-clip variants converged to loader-crash.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run060_wrapper_ltx23_pinb_noise_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run060_wrapper_ltx23_pinb_noise_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run060_wrapper_ltx23_pinb_noise_20260611/cases/*.log`
+
+## Run 061 (2026-06-11): Pin-B Noise Check Recheck
+
+- Goal:
+  - Repeat run060 unchanged to confirm stabilization.
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-pinb-noise \
+  --timeout-sec 75 \
+  --tag run061_wrapper_ltx23_pinb_noise_20260611
+```
+
+- Probe summary (`run061_wrapper_ltx23_pinb_noise_20260611`):
+  - cases: 4
+  - pass: 1
+  - fail: 3
+
+- Outcome map:
+  - pin-b baseline => `loader_crash`
+  - pin-b + mod+auto => `loader_crash`
+  - full-base => `loader_crash`
+
+- Key finding:
+  - Reproduces run060 exactly; pin-b + mod+auto now appears stabilized in loader-crash branch (run058 timeout treated as outlier/noise).
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run061_wrapper_ltx23_pinb_noise_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run061_wrapper_ltx23_pinb_noise_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run061_wrapper_ltx23_pinb_noise_20260611/cases/*.log`
