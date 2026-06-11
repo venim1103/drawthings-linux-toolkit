@@ -299,3 +299,11 @@ Success means full generation completes (not only first streamed response) and n
 		- add both => loader-crash
 		- full-base (text-pin-b composition) => timeout
 	- Updated causal branch: in traced-clip two-file pin-a path, either `modifier` or `autoencoder` is sufficient to activate loader-crash branch; timeout vs loader-crash now appears field-composition dependent beyond clip target alone.
+- 2026-06-11: Added pin-b loader-branch mirror matrix and executed run057 (`run057_wrapper_ltx23_loaderbranch_pinb_20260611`).
+	- New matrix: `--matrix ltx23-loaderbranch-pinb` with pin-b-specific modifier/autoencoder variants.
+	- Run057 finding:
+		- traced-clip two-file pin-b baseline already loader-crash.
+		- adding `modifier` and/or `autoencoder` does not change signature (remains loader-crash).
+	- Updated causal branch: text-encoder identity is now a primary branch gate for traced-clip two-file path.
+		- `text_pin_a`: baseline timeout, loader-crash activated by modifier/autoencoder.
+		- `text_pin_b`: baseline loader-crash regardless of modifier/autoencoder toggles.

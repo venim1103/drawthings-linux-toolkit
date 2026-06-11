@@ -2308,3 +2308,46 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run056_wrapper_ltx23_loaderbranch_20260611/cases/*.log`
+
+## Run 057 (2026-06-11): Loader-Branch Isolation for Text Pin B
+
+- Goal:
+  - Mirror run056 field-isolation on traced-clip two-file path with `text_pin_b` to determine whether the modifier/autoencoder flip is text-identity specific.
+
+- Harness update:
+  - `tools/run_custom_alias_resolution_probe.sh` gained:
+    - new matrix: `--matrix ltx23-loaderbranch-pinb`
+    - new modes:
+      - `alias_trace_ltx23_text_clip_trace_pin_b_mod`
+      - `alias_trace_ltx23_text_clip_trace_pin_b_auto`
+      - `alias_trace_ltx23_text_clip_trace_pin_b_mod_auto`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-loaderbranch-pinb \
+  --timeout-sec 75 \
+  --tag run057_wrapper_ltx23_loaderbranch_pinb_20260611
+```
+
+- Probe summary (`run057_wrapper_ltx23_loaderbranch_pinb_20260611`):
+  - cases: 6
+  - pass: 1
+  - fail: 5
+
+- Outcome map:
+  - baseline traced-clip pin-b (no modifier, no autoencoder): `loader_crash`
+  - add `modifier=kontext` only: `loader_crash`
+  - add `autoencoder` only: `loader_crash`
+  - add both: `loader_crash`
+  - full-base (`text_pin_b` composition): `loader_crash`
+
+- Key finding:
+  - For traced-clip two-file path with `text_pin_b`, loader-crash is already active at baseline and remains unchanged by modifier/autoencoder toggles.
+  - This contrasts with run056 `text_pin_a`, where baseline was timeout and modifier/autoencoder activated loader-crash.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run057_wrapper_ltx23_loaderbranch_pinb_20260611/cases/*.log`
