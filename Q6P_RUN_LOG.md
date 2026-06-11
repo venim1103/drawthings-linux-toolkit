@@ -1657,3 +1657,49 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/cases/*.log`
+
+## Run 040 (2026-06-11): LTX2.3 Encoder Matrix with Resolved File-List Context
+
+- Tool update:
+  - Extended `tools/run_custom_alias_resolution_probe.sh` context export with resolved encoder columns:
+    - `arg_winner_version`
+    - `arg_winner_text_encoder`
+    - `arg_winner_clip_encoder`
+    - `arg_winner_autoencoder`
+    - `arg_text_files_count`
+    - `arg_text_file0`
+    - `arg_text_file1`
+    - `arg_ltx23_textfiles_ok` (1 when non-ltx2.3 or at least two text files)
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-encoders \
+  --tag run040_alias_resolution_ltx23_encoders_ctx2_20260611 \
+  --timeout-sec 75
+```
+
+- Probe summary (`run040_alias_resolution_ltx23_encoders_ctx2_20260611`):
+  - cases: 7
+  - pass: 1
+  - fail: 6
+
+- Context-correlated findings:
+  - All `textencoder_illegal` failures had:
+    - `arg_winner_version=ltx2.3`
+    - `arg_text_files_count=1`
+    - `arg_ltx23_textfiles_ok=0`
+  - These crashes reported:
+    - `Program crashed: Illegal instruction`
+    - frame at `TextEncoder.encodeLTX2(...)+12255`
+  - Variants with two resolved text files (`arg_text_files_count=2`, `arg_ltx23_textfiles_ok=1`) shifted to timeout/loader-crash signatures rather than immediate illegal-instruction.
+
+- Interpretation:
+  - Source-level hypothesis is now strongly supported: in ltx2.3 custom path, single-entry text file lists are unsafe for `encodeLTX2` and correlate with deterministic illegal-instruction crashes.
+  - Remaining timeout/loader-crash cases are likely downstream effects after satisfying the second-file precondition.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/cases/*.log`

@@ -262,6 +262,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - ltx2.3 custom-version activation remains sufficient for failure onset
     - encoder fields modulate failure manifestation (illegal-instruction vs timeout) but do not recover pass
 
+- Run 040 (`run040_alias_resolution_ltx23_encoders_ctx2_20260611`):
+  - reran `ltx23-encoders` with new resolved-file context columns in probe output
+  - added columns: `arg_winner_version`, `arg_text_files_count`, `arg_text_file0`, `arg_text_file1`, `arg_ltx23_textfiles_ok`
+  - matrix result: `cases=7`, `pass=1`, `fail=6`
+  - high-confidence correlation:
+    - all immediate `textencoder_illegal` cases had:
+      - `arg_winner_version=ltx2.3`
+      - `arg_text_files_count=1`
+      - `arg_ltx23_textfiles_ok=0`
+    - server backtraces for these cases point to `TextEncoder.encodeLTX2(...)+12255`
+    - cases with `arg_text_files_count=2` moved to timeout/loader-crash signatures (no immediate illegal-instruction)
+  - interpretation:
+    - missing second text-encoder file in ltx2.3 custom entries is a primary immediate-crash trigger
+    - remaining failures are downstream branch issues after that precondition is satisfied
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -280,6 +295,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run037 refines and overrides that partial hypothesis: when custom winners use minimal v1-like entries, all cases pass (including overlap), so the true trigger is field-content dependent rather than winner-state alone.
 - Run038 identifies the earliest causal field transition: `version=v1 -> ltx2.3` alone flips PASS to FAIL.
 - Run039 confirms the transition is robust across encoder variants and narrows next work to source-level LTX2.3 encoder-path control flow.
+- Run040 adds direct resolved-file evidence tying illegal-instruction to one-file ltx2.3 text-encoder lists.
 
 ## 4) Key artifacts
 
@@ -393,6 +409,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run039_alias_resolution_ltx23_encoders_20260611/cases/*.log`
+- Run 040 artifacts:
+  - `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/summary.md`
+  - `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/results.tsv`
+  - `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -401,9 +421,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run039 completed encoder-variant discrimination under fixed ltx2.3 failure state
-  - pivot to source-level instrumentation in LocalImageGenerator/TextEncoder LTX2.3 path (exact file list and load order per variant)
-  - log/compare first divergence between `textencoder_illegal` and timeout variants to identify where control flow departs
+  - run040 established immediate-crash precondition: ltx2.3 + one-file text-encoder list
+  - enforce/test two-file ltx2.3 custom entries in a controlled matrix to isolate post-precondition failures
+  - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
 

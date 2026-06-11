@@ -348,6 +348,9 @@ custom_json = pathlib.Path(sys.argv[1])
 model_arg = sys.argv[2].strip()
 trace_key = sys.argv[3].strip()
 tmpkey_key = sys.argv[4].strip()
+models_dir = custom_json.parent
+
+DEFAULT_TEXT_ENCODER = "clip_vit_l14_f16.ckpt"
 
 try:
     payload = json.loads(custom_json.read_text(encoding="utf-8"))
@@ -363,6 +366,18 @@ def clean(value):
     if value is None:
         return ""
     return str(value).replace("\t", " ").replace("\n", " ").strip()
+
+def is_downloaded(file_key: str) -> bool:
+  key = clean(file_key)
+  if not key:
+    return False
+  return (models_dir / key).is_file()
+
+def list_from_entry(entry: dict, snake: str, camel: str):
+  value = entry.get(snake, entry.get(camel))
+  if isinstance(value, list):
+    return [clean(v) for v in value if clean(v)]
+  return []
 
 arg_source = "file"
 arg_resolved_file = model_arg
@@ -387,6 +402,39 @@ arg_winner = arg_matches[-1] if arg_matches else None
 trace_winner = trace_matches[-1] if trace_matches else None
 tmp_winner = tmp_matches[-1] if tmp_matches else None
 
+winner_version = clean(arg_winner.get("version", "") if arg_winner else "")
+winner_text = clean(arg_winner.get("text_encoder", "") if arg_winner else "")
+winner_clip = clean(arg_winner.get("clip_encoder", "") if arg_winner else "")
+winner_auto = clean(arg_winner.get("autoencoder", "") if arg_winner else "")
+
+text_file0 = ""
+text_file1 = ""
+text_files = []
+if arg_winner:
+  primary = winner_text if is_downloaded(winner_text) else DEFAULT_TEXT_ENCODER
+  text_files.append(primary)
+
+  clips = []
+  if winner_clip and is_downloaded(winner_clip):
+    clips.append(winner_clip)
+  for extra in list_from_entry(arg_winner, "additional_clip_encoders", "additionalClipEncoders"):
+    if is_downloaded(extra):
+      clips.append(extra)
+  text_files.extend(clips)
+
+  t5 = clean(arg_winner.get("t5_encoder", ""))
+  if t5 and is_downloaded(t5):
+    text_files.append(t5)
+
+  if text_files:
+    text_file0 = text_files[0]
+  if len(text_files) >= 2:
+    text_file1 = text_files[1]
+
+version_norm = winner_version.lower().replace("_", "").replace("-", "")
+is_ltx23 = "1" if version_norm in {"ltx2.3", "ltx23"} else "0"
+ltx23_textfiles_ok = "1" if is_ltx23 == "0" or len(text_files) >= 2 else "0"
+
 fields = [
     arg_source,
     arg_resolved_file,
@@ -397,6 +445,14 @@ fields = [
     clean(trace_winner.get("name", "") if trace_winner else ""),
     str(len(tmp_matches)),
     clean(tmp_winner.get("name", "") if tmp_winner else ""),
+  winner_version,
+  winner_text,
+  winner_clip,
+  winner_auto,
+  str(len(text_files)),
+  text_file0,
+  text_file1,
+  ltx23_textfiles_ok,
 ]
 print("\t".join(fields))
 PY
@@ -480,7 +536,7 @@ echo "timeout_sec=$TIMEOUT_SEC"
 echo "host=$HOST"
 echo "work_dir=$WORK_DIR"
 
-echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\targ_source\targ_resolved_file\targ_match_count\targ_winner_name\targ_winner_modifier\ttrace_match_count\ttrace_winner_name\ttmpkey_match_count\ttmpkey_winner_name\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"
+echo -e "case\tcustom_mode\tmodel_arg\tensure_tmpkey\targ_source\targ_resolved_file\targ_match_count\targ_winner_name\targ_winner_modifier\ttrace_match_count\ttrace_winner_name\ttmpkey_match_count\ttmpkey_winner_name\targ_winner_version\targ_winner_text_encoder\targ_winner_clip_encoder\targ_winner_autoencoder\targ_text_files_count\targ_text_file0\targ_text_file1\targ_ltx23_textfiles_ok\trc\tresult\tsignature\tcanary_rc\tpost_echo_rc\tresponses\timages\taudio\tcanary_tag" > "$RESULTS_TSV"
 
 if [[ "$MATRIX" == "core" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
@@ -533,8 +589,8 @@ else
   run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 
-pass_count="$(awk -F'\t' 'NR>1 && $15=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
-fail_count="$(awk -F'\t' 'NR>1 && $15!="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
+pass_count="$(awk -F'\t' 'NR>1 && $23=="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
+fail_count="$(awk -F'\t' 'NR>1 && $23!="PASS"{c++} END{print c+0}' "$RESULTS_TSV")"
 case_count="$(awk 'END{print NR-1}' "$RESULTS_TSV")"
 
 {
@@ -554,9 +610,9 @@ case_count="$(awk 'END{print NR-1}' "$RESULTS_TSV")"
   echo
   echo "## Results"
   echo
-  echo "| case | custom_mode | model_arg | tmpkey | arg_source | arg_resolved_file | arg_match_count | arg_winner_name | arg_winner_modifier | trace_match_count | trace_winner_name | tmpkey_match_count | tmpkey_winner_name | rc | result | signature | canary_rc | post_echo_rc | responses | images | audio |"
-  echo "|---|---|---|---:|---|---|---:|---|---|---:|---|---:|---|---:|---|---|---:|---:|---:|---:|---:|"
-  awk -F'\t' 'NR>1 {printf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)}' "$RESULTS_TSV"
+  echo "| case | custom_mode | model_arg | tmpkey | arg_source | arg_resolved_file | arg_match_count | arg_winner_name | arg_winner_modifier | arg_winner_version | arg_text_files_count | arg_text_file0 | arg_text_file1 | arg_ltx23_textfiles_ok | trace_match_count | trace_winner_name | tmpkey_match_count | tmpkey_winner_name | rc | result | signature | canary_rc | post_echo_rc | responses | images | audio |"
+  echo "|---|---|---|---:|---|---|---:|---|---|---|---:|---|---|---:|---:|---|---:|---|---:|---|---|---:|---:|---:|---:|---:|"
+  awk -F'\t' 'NR>1 {printf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$14,$18,$19,$20,$21,$10,$11,$12,$13,$22,$23,$24,$25,$26,$27,$28,$29)}' "$RESULTS_TSV"
   echo
   echo "- results_tsv: $RESULTS_TSV"
   echo "- cases_dir: $CASES_DIR"

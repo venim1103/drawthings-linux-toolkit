@@ -196,3 +196,12 @@ Success means full generation completes (not only first streamed response) and n
 		- `timeout`: ltx2.3+text_encoder, ltx2.3+text_encoder+autoencoder, ltx2.3+clip_encoder, full-base
 	- Refined branch: ltx2.3 custom-version path is necessary and sufficient for failure onset in this harness; encoder-related fields change failure manifestation but not pass/fail outcome.
 	- Next isolation target: source-level instrumentation around LTX2.3 text-encoder file-path assembly and encoder loading in LocalImageGenerator/TextEncoder to explain illegal-instruction vs timeout bifurcation.
+- 2026-06-11: Run 040 LTX2.3 encoder matrix with resolved file-list context (`run040_alias_resolution_ltx23_encoders_ctx2_20260611`) completed.
+	- Extended probe context columns to emit resolved encoder file list and ltx2.3 safety flag (`arg_text_files_count`, `arg_text_file0`, `arg_text_file1`, `arg_ltx23_textfiles_ok`).
+	- Matrix result: 7 cases total, pass=1, fail=6 (same outcome shape as run039).
+	- Strong source-level correlation established:
+		- all immediate `textencoder_illegal` cases had `arg_winner_version=ltx2.3`, `arg_text_files_count=1`, `arg_ltx23_textfiles_ok=0`
+		- server backtraces point to `TextEncoder.encodeLTX2(...)+12255`
+	- Cases with `arg_text_files_count=2` (`arg_ltx23_textfiles_ok=1`) no longer showed immediate illegal-instruction, instead failing later via timeout/loader-crash.
+	- Updated causal branch: missing second text-encoder file in ltx2.3 custom specs is a high-confidence immediate-crash trigger; downstream timeout/loader-crash branch remains after satisfying this precondition.
+	- Next isolation target: construct a controlled two-file ltx2.3 custom entry that avoids clip-in-model coupling path (or uses known-good companion file) to separate post-precondition loader failures from core path validity.
