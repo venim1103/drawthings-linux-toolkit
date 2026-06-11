@@ -307,6 +307,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - tested text/clip ordering did not separate timeout vs loader-crash in current state
     - base-entry text-encoder value is likely a state-sensitive confound that must be pinned for deterministic branch isolation
 
+- Run 043 (`run043_ltx23_textpin`):
+  - added and executed explicit text-pin matrix (`ltx23-textpin`)
+  - tool update: `tools/run_custom_alias_resolution_probe.sh`
+    - new matrix: `--matrix ltx23-textpin`
+    - new pin switches: `--text-pin-a|b`
+    - new modes: `alias_trace_ltx23_text_only_pin_a|b`, `alias_trace_ltx23_text_clip_trace_pin_a|b`
+  - matrix result: `cases=6`, `pass=1`, `fail=5`
+  - branch discriminator confirmed:
+    - one-file + `text_encoder=clip_vit_l14_f16.ckpt` => `textencoder_illegal` (`TextEncoder.encodeLTX2`, `post_echo_rc=124`)
+    - one-file + `text_encoder=gemma_3_12b_it_qat_q8p.ckpt` => `timeout` (`post_echo_rc=0`)
+    - two-file pinned variants stayed `timeout` in this run
+  - interpretation:
+    - text-encoder identity is a first-order branch selector in ltx2.3 custom failures
+    - run041/run042 signature drift is explained by base-entry text_encoder state
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -328,6 +343,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run040 adds direct resolved-file evidence tying illegal-instruction to one-file ltx2.3 text-encoder lists.
 - Run041 confirms two-file ltx2.3 custom entries avoid immediate `encodeLTX2` illegal-instruction, but still fail later with companion-dependent timeout vs loader-crash signatures.
 - Run042 shows current local state has drifted: one-file and two-file ltx2.3 variants now uniformly timeout, and ordering swaps alone do not explain failure split.
+- Run043 restores deterministic split under pinned text encoders: one-file clip_vit reproduces immediate illegal-instruction, one-file gemma yields timeout.
 
 ## 4) Key artifacts
 
@@ -453,6 +469,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run042_ltx23_order/summary.md`
   - `output/custom_alias_resolution_probe_run042_ltx23_order/results.tsv`
   - `output/custom_alias_resolution_probe_run042_ltx23_order/cases/*.log`
+- Run 043 artifacts:
+  - `output/custom_alias_resolution_probe_run043_ltx23_textpin/summary.md`
+  - `output/custom_alias_resolution_probe_run043_ltx23_textpin/results.tsv`
+  - `output/custom_alias_resolution_probe_run043_ltx23_textpin/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -461,9 +481,9 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run040/run041/run042 indicate branch behavior is highly state-sensitive to resolved `text_encoder`
-  - pin text-encoder values explicitly in probe modes (legacy clip-vs-gemma) and rerun one-file/two-file controls to recover deterministic split mapping
-  - once pinned, instrument post-precondition path to capture first downstream divergence for two-file ltx2.3 cases
+  - run043 confirms `text_encoder` identity is a deterministic one-file branch selector (clip_vit=>illegal vs gemma=>timeout)
+  - add focused two-file matrix with fixed text pin + varied secondary clip choices to map timeout vs loader-crash boundary under pinned conditions
+  - instrument post-precondition path to capture first downstream divergence for pinned two-file ltx2.3 cases
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized

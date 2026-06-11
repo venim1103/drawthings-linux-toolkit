@@ -1791,3 +1791,47 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run042_ltx23_order/summary.md`
   - results table: `output/custom_alias_resolution_probe_run042_ltx23_order/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run042_ltx23_order/cases/*.log`
+
+## Run 043 (2026-06-11): LTX2.3 Text-Encoder Pin Matrix
+
+- Tool update:
+  - Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix ltx23-textpin`.
+  - Added explicit text pins and text+clip pinned modes:
+    - `--text-pin-a` (default `clip_vit_l14_f16.ckpt`)
+    - `--text-pin-b` (default `gemma_3_12b_it_qat_q8p.ckpt`)
+    - `alias_trace_ltx23_text_only_pin_a|b`
+    - `alias_trace_ltx23_text_clip_trace_pin_a|b`
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-textpin \
+  --timeout-sec 75 \
+  --tag run043_ltx23_textpin
+```
+
+- Probe summary (`run043_ltx23_textpin`):
+  - cases: 6
+  - pass: 1
+  - fail: 5
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_ltx23_text_only_pin_a` (one-file, `text_encoder=clip_vit_l14_f16.ckpt`): FAIL (`textencoder_illegal`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_only_pin_b` (one-file, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_trace_pin_a` (two-file, clip-vs-trace): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_trace_pin_b` (two-file, gemma-vs-trace): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_full_base`: FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+
+- Key finding:
+  - Explicit pinning confirms text-encoder identity is a first-order discriminator in one-file ltx2.3 path:
+    - one-file + `clip_vit_l14_f16.ckpt` reproduces immediate `TextEncoder.encodeLTX2` illegal-instruction crash.
+    - one-file + `gemma_3_12b_it_qat_q8p.ckpt` shifts to timeout branch.
+  - Two-file variants remained timeout-only in this run, regardless of text pin A/B.
+  - This reconciles run041 vs run042: earlier split behavior is reproducible when text-encoder source is pinned, and local base-entry drift can mask it.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run043_ltx23_textpin/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run043_ltx23_textpin/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run043_ltx23_textpin/cases/*.log`

@@ -21,6 +21,8 @@ PROBE_TMP_ALIAS="probe_tmpkey_alias"
 COMPANION_CLIP_A="ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt"
 COMPANION_CLIP_B="10_e_v1_bf16_regen_0_q6p.ckpt"
 COMPANION_CLIP_C="ltx_2.3_22b_distilled_f16.ckpt"
+TEXT_PIN_A="clip_vit_l14_f16.ckpt"
+TEXT_PIN_B="gemma_3_12b_it_qat_q8p.ckpt"
 
 usage() {
   cat <<'EOF'
@@ -35,7 +37,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion | ltx23-order | ltx23-textpin
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -52,6 +54,10 @@ Options:
                              (default: 10_e_v1_bf16_regen_0_q6p.ckpt).
   --companion-clip-c <file> LTX2.3 companion clip candidate C
                              (default: ltx_2.3_22b_distilled_f16.ckpt).
+  --text-pin-a <file>       Explicit text_encoder pin A for ltx23-textpin matrix
+                             (default: clip_vit_l14_f16.ckpt).
+  --text-pin-b <file>       Explicit text_encoder pin B for ltx23-textpin matrix
+                             (default: gemma_3_12b_it_qat_q8p.ckpt).
   -h, --help                Show this help.
 
 Outputs:
@@ -108,6 +114,14 @@ while [[ $# -gt 0 ]]; do
       COMPANION_CLIP_C="${2:-}"
       shift 2
       ;;
+    --text-pin-a)
+      TEXT_PIN_A="${2:-}"
+      shift 2
+      ;;
+    --text-pin-b)
+      TEXT_PIN_B="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -125,8 +139,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" && "$MATRIX" != "ltx23-order" && "$MATRIX" != "ltx23-textpin" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion, ltx23-order, ltx23-textpin" >&2
   exit 1
 fi
 
@@ -174,7 +188,7 @@ make_tmpkey_hardlink() {
 set_custom_mode() {
   local mode="$1"
 
-  python3 - "$CUSTOM_JSON" "$BACKUP_JSON" "$BASE_ENTRY_NAME" "$TRACE_MODEL_KEY" "$TMPKEY_MODEL_KEY" "$PROBE_ALIAS_A" "$PROBE_ALIAS_B" "$PROBE_TMP_ALIAS" "$COMPANION_CLIP_A" "$COMPANION_CLIP_B" "$COMPANION_CLIP_C" "$mode" <<'PY'
+  python3 - "$CUSTOM_JSON" "$BACKUP_JSON" "$BASE_ENTRY_NAME" "$TRACE_MODEL_KEY" "$TMPKEY_MODEL_KEY" "$PROBE_ALIAS_A" "$PROBE_ALIAS_B" "$PROBE_TMP_ALIAS" "$COMPANION_CLIP_A" "$COMPANION_CLIP_B" "$COMPANION_CLIP_C" "$TEXT_PIN_A" "$TEXT_PIN_B" "$mode" <<'PY'
 import copy
 import json
 import pathlib
@@ -191,7 +205,9 @@ tmp_alias = sys.argv[8]
 companion_clip_a = sys.argv[9]
 companion_clip_b = sys.argv[10]
 companion_clip_c = sys.argv[11]
-mode = sys.argv[12]
+text_pin_a = sys.argv[12]
+text_pin_b = sys.argv[13]
+mode = sys.argv[14]
 
 def clean(value):
   if value is None:
@@ -357,6 +373,14 @@ elif mode == "alias_trace_ltx23_text_swap_companion_b":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, companion_clip_b, trace_key))
 elif mode == "alias_trace_ltx23_text_swap_companion_c":
   filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, companion_clip_c, trace_key))
+elif mode == "alias_trace_ltx23_text_only_pin_a":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, ""))
+elif mode == "alias_trace_ltx23_text_only_pin_b":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_b, ""))
+elif mode == "alias_trace_ltx23_text_clip_trace_pin_a":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_a, trace_key))
+elif mode == "alias_trace_ltx23_text_clip_trace_pin_b":
+  filtered.append(alias_ltx23_text_clip_explicit(alias_a, trace_key, text_pin_b, trace_key))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -662,6 +686,13 @@ elif [[ "$MATRIX" == "ltx23-order" ]]; then
   run_case "probe_trace_ltx23_text_swap_companion_a" "alias_trace_ltx23_text_swap_companion_a" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_swap_companion_b" "alias_trace_ltx23_text_swap_companion_b" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_text_swap_companion_c" "alias_trace_ltx23_text_swap_companion_c" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
+elif [[ "$MATRIX" == "ltx23-textpin" ]]; then
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_only_pin_a" "alias_trace_ltx23_text_only_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_only_pin_b" "alias_trace_ltx23_text_only_pin_b" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_a" "alias_trace_ltx23_text_clip_trace_pin_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace_pin_b" "alias_trace_ltx23_text_clip_trace_pin_b" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 

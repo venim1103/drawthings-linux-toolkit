@@ -219,3 +219,12 @@ Success means full generation completes (not only first streamed response) and n
 	- Drift note: local `10_e_v1` now resolves `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`; one-file case did not reproduce prior immediate `TextEncoder.encodeLTX2` illegal-instruction.
 	- Updated causal branch: companion ordering alone did not explain downstream split in this state; active text-encoder source/value is a strong state-sensitive confound.
 	- Next isolation target: pin text-encoder field explicitly in probe modes (legacy clip-vs-gemma controls) and rerun one-file/two-file matrix to separate true ordering effects from base-entry drift.
+- 2026-06-11: Run 043 ltx2.3 text-pin matrix (`run043_ltx23_textpin`) completed.
+	- Extended probe harness with `--matrix ltx23-textpin`, explicit text pin options, and pinned one-file/two-file modes.
+	- Matrix result: 6 cases total, pass=1, fail=5.
+	- One-file discriminator established:
+		- `text_encoder=clip_vit_l14_f16.ckpt` => immediate `TextEncoder.encodeLTX2` illegal-instruction branch (`textencoder_illegal`, `post_echo_rc=124`)
+		- `text_encoder=gemma_3_12b_it_qat_q8p.ckpt` => timeout branch (`post_echo_rc=0`)
+	- Two-file pinned variants stayed timeout-only in this run.
+	- Updated causal branch: text-encoder identity (not just one-file count) is a primary branch selector for ltx2.3 custom failures.
+	- Next isolation target: source instrumentation and targeted matrix around one-file text identity + two-file secondary clip choices to localize where clip_vit path diverges to illegal-instruction.
