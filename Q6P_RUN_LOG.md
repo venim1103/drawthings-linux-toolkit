@@ -1703,3 +1703,45 @@ bash tools/run_custom_alias_resolution_probe.sh \
   - summary: `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/summary.md`
   - results table: `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/results.tsv`
   - per-case logs: `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/cases/*.log`
+
+## Run 041 (2026-06-11): Controlled LTX2.3 Two-File Companion Matrix
+
+- Tool update:
+  - Extended `tools/run_custom_alias_resolution_probe.sh` with `--matrix ltx23-companion`.
+  - Added configurable companion clip candidates:
+    - `--companion-clip-a` (default `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`)
+    - `--companion-clip-b` (default `10_e_v1_bf16_regen_0_q6p.ckpt`)
+    - `--companion-clip-c` (default `ltx_2.3_22b_distilled_f16.ckpt`)
+  - Added ltx2.3 custom modes that force two-file text list construction (`text_encoder` from base + selected `clip_encoder`).
+
+- Command:
+
+```bash
+bash tools/run_custom_alias_resolution_probe.sh \
+  --matrix ltx23-companion \
+  --timeout-sec 75 \
+  --tag run041_ltx23_companion
+```
+
+- Probe summary (`run041_ltx23_companion`):
+  - cases: 7
+  - pass: 1
+  - fail: 6
+
+- Outcome map:
+  - `control_trace_noncustom`: PASS
+  - `probe_trace_ltx23_min_text` (ltx2.3 + one text file): FAIL (`textencoder_illegal`, `canary_rc=1`)
+  - `probe_trace_ltx23_text_clip_trace` (two-file with traced clip): FAIL (`loader_crash`, `canary_rc=124`, `post_echo_rc=124`)
+  - `probe_trace_ltx23_text_clip_companion_a` (clipfix2 companion): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_b` (regen0_q6p companion): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_text_clip_companion_c` (distilled_f16 companion): FAIL (`timeout`, `canary_rc=124`, `post_echo_rc=0`)
+  - `probe_trace_ltx23_full_base`: FAIL (`loader_crash`, `canary_rc=124`, `post_echo_rc=124`)
+
+- Key finding:
+  - Run040 precondition is reinforced: one-file ltx2.3 custom text path remains the immediate illegal-instruction branch.
+  - Forcing two-file lists avoids immediate `TextEncoder.encodeLTX2` illegal-instruction, but outcomes split by companion choice into timeout vs loader-crash, indicating a downstream failure branch after encoder-list precondition is satisfied.
+
+- Artifacts:
+  - summary: `output/custom_alias_resolution_probe_run041_ltx23_companion/summary.md`
+  - results table: `output/custom_alias_resolution_probe_run041_ltx23_companion/results.tsv`
+  - per-case logs: `output/custom_alias_resolution_probe_run041_ltx23_companion/cases/*.log`

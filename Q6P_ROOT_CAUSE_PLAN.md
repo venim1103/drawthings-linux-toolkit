@@ -205,3 +205,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Cases with `arg_text_files_count=2` (`arg_ltx23_textfiles_ok=1`) no longer showed immediate illegal-instruction, instead failing later via timeout/loader-crash.
 	- Updated causal branch: missing second text-encoder file in ltx2.3 custom specs is a high-confidence immediate-crash trigger; downstream timeout/loader-crash branch remains after satisfying this precondition.
 	- Next isolation target: construct a controlled two-file ltx2.3 custom entry that avoids clip-in-model coupling path (or uses known-good companion file) to separate post-precondition loader failures from core path validity.
+- 2026-06-11: Run 041 controlled two-file companion matrix (`run041_ltx23_companion`) completed.
+	- Extended probe harness with `--matrix ltx23-companion` and configurable companion clip candidates.
+	- Matrix result: 7 cases total, pass=1, fail=6.
+	- One-file ltx2.3 custom case remained immediate `textencoder_illegal` (`canary_rc=1`, `TextEncoder.encodeLTX2`).
+	- Two-file ltx2.3 cases avoided immediate illegal-instruction but bifurcated into timeout (`canary_rc=124`, `post_echo_rc=0`) and loader-crash (`canary_rc=124`, `post_echo_rc=124`, `ccv_nnc_tensor_read`) depending on companion clip choice.
+	- Updated causal branch: second-file precondition is necessary to avoid immediate encode crash but not sufficient for end-to-end pass; a downstream load/inference branch remains unresolved.
+	- Next isolation target: add source-level instrumentation in ltx2.3 load path to capture first divergence after two-file list construction (file ordering, model-read path, and connector loading interactions).

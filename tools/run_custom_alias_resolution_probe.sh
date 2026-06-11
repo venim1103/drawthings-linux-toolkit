@@ -18,6 +18,10 @@ PROBE_ALIAS_A="probe_trace_alias_a"
 PROBE_ALIAS_B="probe_trace_alias_b"
 PROBE_TMP_ALIAS="probe_tmpkey_alias"
 
+COMPANION_CLIP_A="ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt"
+COMPANION_CLIP_B="10_e_v1_bf16_regen_0_q6p.ckpt"
+COMPANION_CLIP_C="ltx_2.3_22b_distilled_f16.ckpt"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -31,7 +35,7 @@ Purpose:
   - tmp hardlink key with and without custom entry
 
 Options:
-  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders
+  --matrix <name>          Case matrix: core | cross-file | minimal-v1 | field-ladder | ltx23-encoders | ltx23-companion
                            (default: core).
   --base-entry-name <name>  Baseline custom entry to clone for probe aliases
                             (default: 10_e_v1).
@@ -42,6 +46,12 @@ Options:
   --tag <value>             Output tag suffix (default: timestamp).
   --timeout-sec <n>         Per-case canary timeout (default: 75).
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
+  --companion-clip-a <file> LTX2.3 companion clip candidate A
+                             (default: ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt).
+  --companion-clip-b <file> LTX2.3 companion clip candidate B
+                             (default: 10_e_v1_bf16_regen_0_q6p.ckpt).
+  --companion-clip-c <file> LTX2.3 companion clip candidate C
+                             (default: ltx_2.3_22b_distilled_f16.ckpt).
   -h, --help                Show this help.
 
 Outputs:
@@ -86,6 +96,18 @@ while [[ $# -gt 0 ]]; do
       HOST="${2:-}"
       shift 2
       ;;
+    --companion-clip-a)
+      COMPANION_CLIP_A="${2:-}"
+      shift 2
+      ;;
+    --companion-clip-b)
+      COMPANION_CLIP_B="${2:-}"
+      shift 2
+      ;;
+    --companion-clip-c)
+      COMPANION_CLIP_C="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -103,8 +125,8 @@ if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT_SEC" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" ]]; then
-  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders" >&2
+if [[ "$MATRIX" != "core" && "$MATRIX" != "cross-file" && "$MATRIX" != "minimal-v1" && "$MATRIX" != "field-ladder" && "$MATRIX" != "ltx23-encoders" && "$MATRIX" != "ltx23-companion" ]]; then
+  echo "error: --matrix must be one of: core, cross-file, minimal-v1, field-ladder, ltx23-encoders, ltx23-companion" >&2
   exit 1
 fi
 
@@ -152,7 +174,7 @@ make_tmpkey_hardlink() {
 set_custom_mode() {
   local mode="$1"
 
-  python3 - "$CUSTOM_JSON" "$BACKUP_JSON" "$BASE_ENTRY_NAME" "$TRACE_MODEL_KEY" "$TMPKEY_MODEL_KEY" "$PROBE_ALIAS_A" "$PROBE_ALIAS_B" "$PROBE_TMP_ALIAS" "$mode" <<'PY'
+  python3 - "$CUSTOM_JSON" "$BACKUP_JSON" "$BASE_ENTRY_NAME" "$TRACE_MODEL_KEY" "$TMPKEY_MODEL_KEY" "$PROBE_ALIAS_A" "$PROBE_ALIAS_B" "$PROBE_TMP_ALIAS" "$COMPANION_CLIP_A" "$COMPANION_CLIP_B" "$COMPANION_CLIP_C" "$mode" <<'PY'
 import copy
 import json
 import pathlib
@@ -166,7 +188,15 @@ tmpkey_key = sys.argv[5]
 alias_a = sys.argv[6]
 alias_b = sys.argv[7]
 tmp_alias = sys.argv[8]
-mode = sys.argv[9]
+companion_clip_a = sys.argv[9]
+companion_clip_b = sys.argv[10]
+companion_clip_c = sys.argv[11]
+mode = sys.argv[12]
+
+def clean(value):
+  if value is None:
+    return ""
+  return str(value).strip()
 
 payload = json.loads(backup_path.read_text(encoding="utf-8"))
 if not isinstance(payload, list):
@@ -248,6 +278,11 @@ def alias_ltx23_min_clip(name: str, file_key: str):
   entry["clip_encoder"] = file_key
   return entry
 
+def alias_ltx23_text_clip(name: str, file_key: str, clip_key: str):
+  entry = alias_ltx23_min_text(name, file_key)
+  entry["clip_encoder"] = clean(clip_key)
+  return entry
+
 filtered = []
 probe_names = {alias_a, alias_b, tmp_alias}
 for entry in payload:
@@ -298,6 +333,14 @@ elif mode == "alias_trace_ltx23_min_text_auto":
   filtered.append(alias_ltx23_min_text_auto(alias_a, trace_key))
 elif mode == "alias_trace_ltx23_min_clip":
   filtered.append(alias_ltx23_min_clip(alias_a, trace_key))
+elif mode == "alias_trace_ltx23_text_clip_trace":
+  filtered.append(alias_ltx23_text_clip(alias_a, trace_key, trace_key))
+elif mode == "alias_trace_ltx23_text_clip_companion_a":
+  filtered.append(alias_ltx23_text_clip(alias_a, trace_key, companion_clip_a))
+elif mode == "alias_trace_ltx23_text_clip_companion_b":
+  filtered.append(alias_ltx23_text_clip(alias_a, trace_key, companion_clip_b))
+elif mode == "alias_trace_ltx23_text_clip_companion_c":
+  filtered.append(alias_ltx23_text_clip(alias_a, trace_key, companion_clip_c))
 else:
     raise SystemExit(f"unknown mode: {mode}")
 
@@ -579,13 +622,21 @@ elif [[ "$MATRIX" == "field-ladder" ]]; then
   run_case "probe_trace_ladder_v_ltx23_modifier_scale1" "alias_trace_ladder_ltx23_modifier_scale1" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ladder_v_ltx23_modifier_scale1_clip" "alias_trace_ladder_ltx23_modifier_scale1_clip" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ladder_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
-else
+elif [[ "$MATRIX" == "ltx23-encoders" ]]; then
   run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_min" "alias_trace_ladder_ltx23_min" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_min_text" "alias_trace_ltx23_min_text" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_min_auto" "alias_trace_ltx23_min_auto" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_min_text_auto" "alias_trace_ltx23_min_text_auto" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_min_clip" "alias_trace_ltx23_min_clip" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
+elif [[ "$MATRIX" == "ltx23-companion" ]]; then
+  run_case "control_trace_noncustom" "baseline_only" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_min_text" "alias_trace_ltx23_min_text" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_trace" "alias_trace_ltx23_text_clip_trace" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_companion_a" "alias_trace_ltx23_text_clip_companion_a" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_companion_b" "alias_trace_ltx23_text_clip_companion_b" "$TRACE_MODEL_KEY" "0"
+  run_case "probe_trace_ltx23_text_clip_companion_c" "alias_trace_ltx23_text_clip_companion_c" "$TRACE_MODEL_KEY" "0"
   run_case "probe_trace_ltx23_full_base" "alias_trace_a" "$TRACE_MODEL_KEY" "0"
 fi
 

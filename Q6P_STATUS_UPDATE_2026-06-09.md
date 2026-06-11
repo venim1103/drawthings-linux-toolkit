@@ -277,6 +277,20 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - missing second text-encoder file in ltx2.3 custom entries is a primary immediate-crash trigger
     - remaining failures are downstream branch issues after that precondition is satisfied
 
+- Run 041 (`run041_ltx23_companion`):
+  - added and executed controlled two-file companion matrix (`ltx23-companion`)
+  - tool update: `tools/run_custom_alias_resolution_probe.sh`
+    - new matrix: `--matrix ltx23-companion`
+    - new companion switches: `--companion-clip-a|b|c`
+  - matrix result: `cases=7`, `pass=1`, `fail=6`
+  - signatures by branch:
+    - one-file ltx2.3 (`probe_trace_ltx23_min_text`) => `textencoder_illegal`, `canary_rc=1`
+    - two-file with traced clip and full-base => `loader_crash`, `canary_rc=124`, `post_echo_rc=124`
+    - two-file with companion clip A/B/C => `timeout`, `canary_rc=124`, `post_echo_rc=0`
+  - interpretation:
+    - confirms one-file list as immediate illegal-instruction trigger
+    - two-file precondition is necessary but not sufficient; downstream failure branch persists and is companion-dependent
+
 ## 3) Current conclusion
 
 - Timeout policy issue is solved for final validation (900s available and wired through wrappers).
@@ -296,6 +310,7 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
 - Run038 identifies the earliest causal field transition: `version=v1 -> ltx2.3` alone flips PASS to FAIL.
 - Run039 confirms the transition is robust across encoder variants and narrows next work to source-level LTX2.3 encoder-path control flow.
 - Run040 adds direct resolved-file evidence tying illegal-instruction to one-file ltx2.3 text-encoder lists.
+- Run041 confirms two-file ltx2.3 custom entries avoid immediate `encodeLTX2` illegal-instruction, but still fail later with companion-dependent timeout vs loader-crash signatures.
 
 ## 4) Key artifacts
 
@@ -413,6 +428,10 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/summary.md`
   - `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/results.tsv`
   - `output/custom_alias_resolution_probe_run040_alias_resolution_ltx23_encoders_ctx2_20260611/cases/*.log`
+- Run 041 artifacts:
+  - `output/custom_alias_resolution_probe_run041_ltx23_companion/summary.md`
+  - `output/custom_alias_resolution_probe_run041_ltx23_companion/results.tsv`
+  - `output/custom_alias_resolution_probe_run041_ltx23_companion/cases/*.log`
 
 ## 5) Suggested next branch (when resumed)
 
@@ -421,8 +440,8 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - isolate whether crash is tied to a specific serialization pattern beyond current row-level content substitutions
   - focus on reproducible, script-first probes near model-load read path assumptions
 - Immediate next branch:
-  - run040 established immediate-crash precondition: ltx2.3 + one-file text-encoder list
-  - enforce/test two-file ltx2.3 custom entries in a controlled matrix to isolate post-precondition failures
+  - run040/run041 establish split branch: one-file ltx2.3 => immediate illegal; two-file ltx2.3 => timeout/loader-crash
+  - instrument post-precondition path to capture first downstream divergence for two-file ltx2.3 cases
   - continue source-level path checks around `encodeLTX2` filePaths indexing and companion-file assumptions
   - keep `tools/run_q6p_strict_stability_matrix.sh` as regression gate for future policy edits
   - continue q6p policy-slice derivation from old-vs-new mismatch clusters and run021 trace records once alias schema is stabilized
