@@ -374,3 +374,8 @@ Success means full generation completes (not only first streamed response) and n
 	- Case B (temporary mapped minimal entry `version=v1`, no LTX fields): still abort class (`canary_rc=1`, `post_echo_rc=1`) despite repeated `source=mapping`.
 	- In run070 mapped-minv1 case, traces did not progress to `LocalImageGenerator.textEncoderInit` / `encodeLTX2.*` before abort.
 	- Updated causal branch: mapping flag alone is insufficient; mapped-entry schema (LTX-shape vs minimal-v1) is now a high-signal gate for whether source path reaches deeper encode branch (timeout) or aborts early.
+- 2026-06-12: Run 071 targeted same-arg source probe with ltx2.3-min mapping entry completed.
+	- Temporary mapped entry used `version=ltx2.3` with minimal field set (no explicit `text_encoder`, `clip_encoder`, `autoencoder`).
+	- Outcome shifted to timeout class (`canary_rc=124`, `post_echo_rc=124`) rather than early abort.
+	- Traces progressed through `LocalImageGenerator.textEncoderInit` and `encodeLTX2.begin/loading_text_model` with one resolved text file (`clip_vit_l14_f16.ckpt`).
+	- Updated causal branch: `version=ltx2.3` activation appears to be a primary schema gate that re-enters deep encode path; explicit encoder/auto fields modulate downstream behavior but are not required for this branch transition.

@@ -916,3 +916,13 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - repeated `source=mapping` winner `probe_trace021_map_minv1_run070`
     - no progression into `LocalImageGenerator.textEncoderInit` / `encodeLTX2.*` before abort.
   - interpretation: mapping presence alone is not sufficient; entry schema is a branch gate. LTX-shaped mapped entries (run069) can reach deeper encode/timeout branch, while minimal-v1 mapped entries remain early abort class.
+
+- run071 targeted same-arg source probe with ltx2.3-min mapping (`run071_source_trace_mapped_ltx23min`):
+  - objective: isolate the effect of `version=ltx2.3` with minimal schema (no explicit text/clip/auto fields).
+  - mapped entry used:
+    - `file=trace021 key`, `version=ltx2.3`, `default_scale=1`, `upcast_attention=false`, `prefix=""`.
+  - result:
+    - timeout class (`canary_rc=124`, `post_echo_rc=124`), not early abort.
+    - repeated `source=mapping` winner `probe_trace021_map_ltx23min_run071`.
+    - progressed into `LocalImageGenerator.textEncoderInit` and `encodeLTX2.begin/loading_text_model` with single resolved file (`clip_vit_l14_f16.ckpt`).
+  - interpretation: `version=ltx2.3` is a primary schema gate for deep encode-path entry; minimal-v1 mapping does not cross this boundary.

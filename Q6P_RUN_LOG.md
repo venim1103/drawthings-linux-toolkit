@@ -2827,3 +2827,35 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - case A dir: `output/q6p_canary_run070a_source_trace_unresolved`
   - case B dir: `output/q6p_canary_run070b_source_trace_mapped_minv1`
   - captured console summaries: `output/run070a_console.log`, `output/run070b_console.log`
+
+## Run 071 (2026-06-12): Same-Arg Source Probe with LTX2.3-Minimal Mapping Entry
+
+- Goal:
+  - Bridge run069 vs run070 by testing a mapped entry with `version=ltx2.3` but without explicit text/clip/auto fields.
+
+- Method:
+  - Same request and source binary as run069/run070:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+  - Temporary mapped entry:
+    - `name=probe_trace021_map_ltx23min_run071`
+    - `file=trace021 key`, `prefix=""`, `version="ltx2.3"`, `upcast_attention=false`, `default_scale=1`
+
+- Result:
+  - `run071_source_trace_mapped_ltx23min`: timeout class (`canary_rc=124`, `post_echo_rc=124`).
+
+- Trace discriminator:
+  - repeated `source=mapping` winner `probe_trace021_map_ltx23min_run071`.
+  - progressed into:
+    - `LocalImageGenerator.textEncoderInit` with `resolvedFilePaths=["clip_vit_l14_f16.ckpt"]`
+    - `LocalImageGenerator.beforeTextEncode`
+    - `encodeLTX2.begin` (`version=ltx2_3`, `modifier=none`)
+    - `encodeLTX2.loading_text_model path=clip_vit_l14_f16.ckpt`
+
+- Key finding:
+  - `version=ltx2.3` is sufficient to leave the early-abort behavior seen in mapped minimal-v1 (run070) and re-enter deeper encode path/timeout class.
+  - This supports schema-dependent branching where LTX-version activation is a primary gate.
+
+- Artifacts:
+  - case dir: `output/q6p_canary_run071_source_trace_mapped_ltx23min`
+  - captured console summary: `output/run071_console.log`
