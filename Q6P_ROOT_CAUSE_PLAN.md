@@ -368,3 +368,9 @@ Success means full generation completes (not only first streamed response) and n
 	- Case A (baseline custom, no trace-key mapping entry): abort class (`canary_rc=1`, `post_echo_rc=1`) with repeated `source=miss`.
 	- Case B (temporary explicit trace-key mapping entry present): timeout class (`canary_rc=124`, `post_echo_rc=124`) with `source=mapping` and progression through `LocalImageGenerator.*` and `encodeLTX2.begin/loading_text_model`.
 	- Updated causal branch: mapping presence alone (with fixed model argument) is sufficient to switch source runtime from miss/abort branch to mapping/timeout branch.
+- 2026-06-12: Run 070 targeted same-arg source A/B with minimal-v1 mapping entry completed.
+	- Kept same request key and source binary as run069; only changed mapped entry schema.
+	- Case A (baseline unresolved): abort class (`canary_rc=1`, `post_echo_rc=1`) with repeated `source=miss`.
+	- Case B (temporary mapped minimal entry `version=v1`, no LTX fields): still abort class (`canary_rc=1`, `post_echo_rc=1`) despite repeated `source=mapping`.
+	- In run070 mapped-minv1 case, traces did not progress to `LocalImageGenerator.textEncoderInit` / `encodeLTX2.*` before abort.
+	- Updated causal branch: mapping flag alone is insufficient; mapped-entry schema (LTX-shape vs minimal-v1) is now a high-signal gate for whether source path reaches deeper encode branch (timeout) or aborts early.

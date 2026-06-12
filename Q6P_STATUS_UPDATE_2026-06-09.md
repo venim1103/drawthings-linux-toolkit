@@ -904,3 +904,15 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - `source=mapping` winner `probe_trace021_map_only_run069`
     - progressed into `LocalImageGenerator.textEncoderInit`, `beforeTextEncode`, `encodeLTX2.begin`, `encodeLTX2.loading_text_model`, then timeout.
   - interpretation: with request key fixed, mapping-entry presence alone is sufficient to switch source branch from miss/abort to mapping/timeout.
+
+- run070 targeted same-arg source A/B with minimal-v1 mapping (`run070a_source_trace_unresolved`, `run070b_source_trace_mapped_minv1`):
+  - objective: test whether run069 switch depends only on mapping flag or also on mapped-entry schema.
+  - both cases used same request key and source binary as run069.
+  - case A (baseline unresolved):
+    - `canary_rc=1`, `post_echo_rc=1`
+    - repeated `source=miss`.
+  - case B (temporary mapped minimal-v1 entry):
+    - `canary_rc=1`, `post_echo_rc=1`
+    - repeated `source=mapping` winner `probe_trace021_map_minv1_run070`
+    - no progression into `LocalImageGenerator.textEncoderInit` / `encodeLTX2.*` before abort.
+  - interpretation: mapping presence alone is not sufficient; entry schema is a branch gate. LTX-shaped mapped entries (run069) can reach deeper encode/timeout branch, while minimal-v1 mapped entries remain early abort class.

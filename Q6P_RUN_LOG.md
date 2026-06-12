@@ -2795,3 +2795,35 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - case A dir: `output/q6p_canary_run069c_source_trace_unresolved`
   - case B dir: `output/q6p_canary_run069d_source_trace_mapped_filearg`
   - captured console summaries: `output/run069c_console.log`, `output/run069d_console.log`
+
+## Run 070 (2026-06-12): Same-Arg Source A/B with Minimal-v1 Mapping Entry
+
+- Goal:
+  - Test whether mapping presence alone is sufficient when the mapping entry is minimal (`version=v1`) rather than LTX-shaped.
+
+- Method:
+  - Keep request constant in both cases:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+  - Case A (`run070a`): baseline `custom.json` (no trace-key mapping entry).
+  - Case B (`run070b`): inject temporary minimal mapping entry:
+    - `name=probe_trace021_map_minv1_run070`
+    - `file=trace021 key`, `prefix=""`, `version="v1"`, `upcast_attention=false`, `default_scale=8`
+
+- Results:
+  - `run070a_source_trace_unresolved`: `canary_rc=1`, `post_echo_rc=1` (abort class).
+  - `run070b_source_trace_mapped_minv1`: `canary_rc=1`, `post_echo_rc=1` (abort class).
+
+- Trace discriminator:
+  - unresolved case: repeated `source=miss`.
+  - minimal-v1 mapped case: repeated `source=mapping` with winner `probe_trace021_map_minv1_run070`.
+  - Unlike run069 mapped-LTX case, run070 mapped-minv1 case did **not** progress into `LocalImageGenerator.textEncoderInit` / `encodeLTX2.*` before abort.
+
+- Key finding:
+  - Mapping presence alone is not sufficient to induce the mapping-timeout branch.
+  - Entry shape matters: LTX-style mapped entries can shift to deeper path/timeout (run069), while minimal-v1 mapped entry still aborts.
+
+- Artifacts:
+  - case A dir: `output/q6p_canary_run070a_source_trace_unresolved`
+  - case B dir: `output/q6p_canary_run070b_source_trace_mapped_minv1`
+  - captured console summaries: `output/run070a_console.log`, `output/run070b_console.log`
