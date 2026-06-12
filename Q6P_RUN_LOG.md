@@ -2859,3 +2859,50 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
 - Artifacts:
   - case dir: `output/q6p_canary_run071_source_trace_mapped_ltx23min`
   - captured console summary: `output/run071_console.log`
+
+## Run 072 (2026-06-12): Source Field Ladder (`ltx23_min -> +text -> +clip -> +auto`)
+
+- Goal:
+  - Identify the minimum ltx2.3 custom-entry field set that changes source-runtime branch behavior for the same request key.
+
+- Method:
+  - Fixed request and runtime across all cases:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75 --soft-fail`)
+  - Ladder cases:
+    - `run0720_source_trace_control_unresolved`: no temporary mapping entry
+    - `run0721_source_trace_mapped_ltx23_min`: `version=ltx2.3`, minimal mapped entry
+    - `run0722_source_trace_mapped_ltx23_text`: +`text_encoder=gemma_3_12b_it_qat_q8p.ckpt`
+    - `run0723_source_trace_mapped_ltx23_text_clip`: +`clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+    - `run0724_source_trace_mapped_ltx23_text_clip_auto`: +`autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`
+
+- Ladder summary (canonical artifact):
+  - `output/run072_ladder_summary.tsv`
+  - `run0720`: `canary_rc=1`, `post_echo_rc=1`, `source=miss`, `text_init=0`, `encode=0/0`
+  - `run0721`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0722`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0723`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0724`: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - provenance note: `run0722` result codes are retained from the completed strict run before later trace-only rerun interruption; trace markers were refreshed, but interrupted reruns should not replace canonical rc/post-echo fields.
+
+- Key findings:
+  - `run0720 -> run0721` is the principal branch transition:
+    - unresolved control stays miss/abort class.
+    - mapped ltx2.3-min immediately enters mapping + deep encode timeout class.
+  - Additional fields (`+text`, `+clip`, `+auto`) did not revert the deep-encode branch once `version=ltx2.3` mapping was active.
+  - `+auto` changed post-echo behavior (`124 -> 0`) while preserving timeout outcome, indicating downstream-stage modulation rather than branch reversion.
+
+- Artifacts:
+  - case dirs:
+    - `output/q6p_canary_run0720_source_trace_control_unresolved`
+    - `output/q6p_canary_run0721_source_trace_mapped_ltx23_min`
+    - `output/q6p_canary_run0722_source_trace_mapped_ltx23_text`
+    - `output/q6p_canary_run0723_source_trace_mapped_ltx23_text_clip`
+    - `output/q6p_canary_run0724_source_trace_mapped_ltx23_text_clip_auto`
+  - console logs:
+    - `output/run0720_source_trace_control_unresolved_console.log`
+    - `output/run0721_source_trace_mapped_ltx23_min_console.log`
+    - `output/run0722_source_trace_mapped_ltx23_text_console.log`
+    - `output/run0723_source_trace_mapped_ltx23_text_clip_console.log`
+    - `output/run0724_source_trace_mapped_ltx23_text_clip_auto_console.log`

@@ -926,3 +926,22 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - repeated `source=mapping` winner `probe_trace021_map_ltx23min_run071`.
     - progressed into `LocalImageGenerator.textEncoderInit` and `encodeLTX2.begin/loading_text_model` with single resolved file (`clip_vit_l14_f16.ckpt`).
   - interpretation: `version=ltx2.3` is a primary schema gate for deep encode-path entry; minimal-v1 mapping does not cross this boundary.
+
+- run072 source field ladder (`run0720..run0724`) completed with strict same-arg controls:
+  - objective: measure the minimum mapped ltx2.3 field set needed to keep source runtime in deep encode branch.
+  - fixed across all cases:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75`).
+  - ladder outcomes (`output/run072_ladder_summary.tsv`):
+    - `run0720` control unresolved: `canary_rc=1`, `post_echo_rc=1`, `source=miss`, `text_init=0`, `encode=0/0`
+    - `run0721` ltx23_min: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0722` +text: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0723` +text+clip: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0724` +text+clip+auto: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - provenance note:
+    - `run0722` rc/post-echo values are carried from the completed strict run; later trace-only rerun attempts were used to refresh marker context and were interrupted before replacing canonical result-code lines.
+  - interpretation:
+    - key transition remains `control -> ltx23_min` (miss/abort to mapping/deep-timeout).
+    - once mapped `version=ltx2.3` branch is active, adding text/clip/auto does not revert to early-abort path.
+    - autoencoder addition changes post-echo behavior but not final timeout class.

@@ -379,3 +379,9 @@ Success means full generation completes (not only first streamed response) and n
 	- Outcome shifted to timeout class (`canary_rc=124`, `post_echo_rc=124`) rather than early abort.
 	- Traces progressed through `LocalImageGenerator.textEncoderInit` and `encodeLTX2.begin/loading_text_model` with one resolved text file (`clip_vit_l14_f16.ckpt`).
 	- Updated causal branch: `version=ltx2.3` activation appears to be a primary schema gate that re-enters deep encode path; explicit encoder/auto fields modulate downstream behavior but are not required for this branch transition.
+- 2026-06-12: Run 072 source field-ladder (`control -> ltx23_min -> +text -> +clip -> +auto`) completed.
+	- Same request key and source runtime held constant across all five cases.
+	- Principal transition remained `control (miss/abort)` to `ltx23_min (mapping/deep-timeout)`.
+	- All additive mapped variants (`+text`, `+clip`, `+auto`) stayed in mapping + deep encode timeout class.
+	- `+auto` changed `post_echo_rc` (`124 -> 0`) while preserving timeout outcome, indicating downstream-stage modulation without branch reversion.
+	- Updated causal branch: once `version=ltx2.3` mapping activates deep encode branch, additional encoder/auto fields tune downstream behavior but do not revert to miss/abort path.
