@@ -2906,3 +2906,46 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
     - `output/run0722_source_trace_mapped_ltx23_text_console.log`
     - `output/run0723_source_trace_mapped_ltx23_text_clip_console.log`
     - `output/run0724_source_trace_mapped_ltx23_text_clip_auto_console.log`
+
+## Run 073 (2026-06-12): Modulation Check (`+auto` vs `+modifier` vs combined)
+
+- Goal:
+  - Resolve whether the `run072` `post_echo_rc` flip (`124 -> 0`) is specific to `autoencoder` or reflects broader downstream-field modulation.
+
+- Method:
+  - Fixed request, runtime, and strict canary gates across all cases:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75 --soft-fail`)
+  - Temporary mapped probe entry base held:
+    - `version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - Matrix cases:
+    - `run0731_source_trace_mapped_ltx23_text_clip_base`: base (`text+clip`)
+    - `run0732_source_trace_mapped_ltx23_text_clip_auto`: base + `autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`
+    - `run0733_source_trace_mapped_ltx23_text_clip_mod`: base + `modifier=kontext`
+    - `run0734_source_trace_mapped_ltx23_text_clip_mod_auto`: base + `modifier=kontext` + `autoencoder`
+
+- Matrix summary (canonical artifact):
+  - `output/run073_modulation_summary.tsv`
+  - `run0731` base: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0732` +auto: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0733` +modifier: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0734` +modifier+auto: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+
+- Key findings:
+  - All four cases stayed in the same mapping + deep-encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
+  - `auto` and `modifier` each independently shifted `post_echo_rc` to `0` on this base.
+  - Combining `auto+modifier` returned `post_echo_rc` to `124`, indicating non-additive downstream interaction rather than a monotonic single-field effect.
+  - Branch-gate conclusion from run071/072 remains unchanged: `version=ltx2.3` is the primary gate into deep encode path; these fields tune downstream behavior only.
+
+- Artifacts:
+  - case dirs:
+    - `output/q6p_canary_run0731_source_trace_mapped_ltx23_text_clip_base`
+    - `output/q6p_canary_run0732_source_trace_mapped_ltx23_text_clip_auto`
+    - `output/q6p_canary_run0733_source_trace_mapped_ltx23_text_clip_mod`
+    - `output/q6p_canary_run0734_source_trace_mapped_ltx23_text_clip_mod_auto`
+  - console logs:
+    - `output/run0731_source_trace_mapped_ltx23_text_clip_base_console.log`
+    - `output/run0732_source_trace_mapped_ltx23_text_clip_auto_console.log`
+    - `output/run0733_source_trace_mapped_ltx23_text_clip_mod_console.log`
+    - `output/run0734_source_trace_mapped_ltx23_text_clip_mod_auto_console.log`

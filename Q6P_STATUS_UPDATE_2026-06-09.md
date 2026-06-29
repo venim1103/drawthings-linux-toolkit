@@ -945,3 +945,19 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - key transition remains `control -> ltx23_min` (miss/abort to mapping/deep-timeout).
     - once mapped `version=ltx2.3` branch is active, adding text/clip/auto does not revert to early-abort path.
     - autoencoder addition changes post-echo behavior but not final timeout class.
+
+- run073 low-footprint modulation matrix (`run0731..run0734`) completed:
+  - objective: isolate whether the prior `post_echo_rc` modulation is autoencoder-specific or a broader downstream-field interaction.
+  - fixed across all cases:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same source runtime (`draw-things-community/.build/release/gRPCServerCLI`)
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75`).
+  - matrix outcomes (`output/run073_modulation_summary.tsv`):
+    - `run0731` base (`text+clip`): `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0732` `+auto`: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0733` `+modifier`: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0734` `+modifier+auto`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - interpretation:
+    - branch class is unchanged across all four variants (mapping/deep-timeout retained).
+    - `auto` and `modifier` independently flip `post_echo_rc` to `0`, but their combination restores `124`, indicating non-additive downstream interaction.
+    - reinforces prior branch gate: `version=ltx2.3` controls deep-path entry; these fields modulate downstream/post-echo behavior only.

@@ -385,3 +385,8 @@ Success means full generation completes (not only first streamed response) and n
 	- All additive mapped variants (`+text`, `+clip`, `+auto`) stayed in mapping + deep encode timeout class.
 	- `+auto` changed `post_echo_rc` (`124 -> 0`) while preserving timeout outcome, indicating downstream-stage modulation without branch reversion.
 	- Updated causal branch: once `version=ltx2.3` mapping activates deep encode branch, additional encoder/auto fields tune downstream behavior but do not revert to miss/abort path.
+- 2026-06-12: Run 073 modulation matrix (`text+clip` base vs `+auto`, `+modifier`, `+auto+modifier`) completed.
+	- Same request key, source runtime, and strict canary gates held constant across all four cases.
+	- All cases remained mapping + deep encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
+	- `+auto` and `+modifier` each shifted `post_echo_rc` to `0` on the same base; combined `+auto+modifier` returned `post_echo_rc` to `124`.
+	- Updated causal branch: post-echo behavior depends on non-additive downstream field interaction; no evidence of branch reversion once `version=ltx2.3` mapping gate is active.
