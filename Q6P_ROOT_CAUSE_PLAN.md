@@ -415,3 +415,8 @@ Success means full generation completes (not only first streamed response) and n
 	- `r2..r4` failed immediately as connection errors (`canary_rc=1`, `source=unknown`) after source-runtime abort.
 	- Same assertion crash signature reproduced (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`).
 	- Updated causal branch: crash confound persists with minimal ltx2.3 mapping, further excluding optional mapped companion fields as necessary triggers and pointing to warm lifecycle instability on the mapped ltx2.3 path itself.
+- 2026-06-29: Run 079 cold-per-repeat control (`version=ltx2.3` only, 4x with server restart before each repeat) completed.
+	- All repeats stayed in mapping + deep timeout class (`canary_rc=124`, `post_echo_rc=124`, `source=mapping`, encode markers present).
+	- Assertion crash signature still occurred per repeat (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`) in each server instance.
+	- No cross-repeat `UNAVAILABLE` connect-collapse occurred because each repeat restarted server.
+	- Updated causal branch: two layered failure surfaces are now separated: (1) per-request assertion abort on mapped ltx2.3 path, and (2) additional warm-reuse collapse that turns subsequent repeats into `canary_rc=1` + `UNAVAILABLE` when server is kept alive.

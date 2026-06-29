@@ -3180,3 +3180,45 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run078_warm_server_ltx23_min/server.log`
   - `output/run078_warm_server_ltx23_min_repeats_summary.tsv`
   - `output/run078_warm_server_ltx23_min_repeats_aggregate.txt`
+
+## Run 079 (2026-06-29): Cold-Per-Repeat Control (`version=ltx2.3` only)
+
+- Goal:
+  - Isolate whether the run076-078 warm-process collapse (`canary_rc=1` + `UNAVAILABLE`) depends on reusing one long-lived server, by restarting server before each repeat under the same minimal mapped entry.
+
+- Method:
+  - Reused same minimal-entry control as run078, but enabled per-repeat restart mode:
+    - `tools/run_q6p_warm_server_mod_auto_repeats.sh --tag run079_cold_per_repeat_ltx23_min --repeats 4 --timeout-sec 75 --restart-per-repeat --entry-version ltx2.3 --text-encoder none --clip-encoder none --modifier none --autoencoder none`
+  - Same request key and prompt/config held constant.
+
+- Repeat summary (canonical artifacts):
+  - `output/run079_cold_per_repeat_ltx23_min_repeats_summary.tsv`
+  - `output/run079_cold_per_repeat_ltx23_min_repeats_aggregate.txt`
+  - `r1`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - `r2`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - `r3`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - `r4`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - aggregate:
+    - `canary_rc=124`: `4/4`
+    - `post_echo_rc=124`: `4/4`
+    - `post_echo_rc=0`: `0/4`
+    - `source=mapping`: `4/4`
+
+- Failure evidence captured during run:
+  - Each per-repeat server instance still hits the same assertion path during generation:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` -> `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - crash marker: `*** Program crashed: Aborted ...`
+    - see repeated occurrences in `output/run079_cold_per_repeat_ltx23_min/server.log`
+  - Unlike warm-reuse runs, there were no `UNAVAILABLE` connect failures in per-repeat client logs; each repeat reached mapping/deep-timeout class before its server instance aborted.
+
+- Key findings:
+  - Per-repeat restart removes the cross-repeat collapse signature (`canary_rc=1` + `UNAVAILABLE`) seen in warm-reuse runs.
+  - Core assertion failure remains reproducible per request, indicating two layered failure surfaces:
+    - per-request crash/abort on mapped ltx2.3 path,
+    - plus an additional warm-reuse collapse mode that manifests as subsequent connection failures when server is not restarted.
+
+- Artifacts:
+  - `output/run079_cold_per_repeat_ltx23_min_console.log`
+  - `output/run079_cold_per_repeat_ltx23_min/server.log`
+  - `output/run079_cold_per_repeat_ltx23_min_repeats_summary.tsv`
+  - `output/run079_cold_per_repeat_ltx23_min_repeats_aggregate.txt`

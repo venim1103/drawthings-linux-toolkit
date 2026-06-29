@@ -1054,3 +1054,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - warm-process crash confound still reproduces on minimal ltx2.3 mapping.
     - this further weakens companion-field-specific hypotheses and supports a broader warm lifecycle instability on mapped ltx2.3 runtime path.
+
+- run079 cold-per-repeat control (`run079_cold_per_repeat_ltx23_min_r1..r4`) completed:
+  - objective: separate warm-reuse collapse effects from per-request crash behavior by restarting source server before each repeat.
+  - setup:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same minimal mapped entry (`version=ltx2.3` only)
+    - per-repeat restart enabled in scripted runner via `--restart-per-repeat`
+  - outcomes (`output/run079_cold_per_repeat_ltx23_min_repeats_summary.tsv`, aggregate in `output/run079_cold_per_repeat_ltx23_min_repeats_aggregate.txt`):
+    - `r1..r4`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, encode markers present
+    - aggregate: `canary_rc=124` in `4/4`; `post_echo_rc=0` in `0/4`; `post_echo_rc=124` in `4/4`; `source=mapping` in `4/4`
+  - failure evidence:
+    - source-runtime assertion + abort still reproduced in each repeat instance (`output/run079_cold_per_repeat_ltx23_min/server.log`):
+      - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+      - `*** Program crashed: Aborted ...`
+    - unlike run076-078 warm reuse, no post-crash `UNAVAILABLE ... SETTINGS frame` cascade appeared in per-repeat client logs.
+  - interpretation:
+    - per-repeat restart suppresses cross-repeat collapse mode (`canary_rc=1` + `UNAVAILABLE`) by resetting process state each repeat.
+    - core per-request assertion abort remains, indicating crash root cause is still active independent of warm reuse.

@@ -11,6 +11,7 @@ TIMEOUT_SEC=75
 HOST="127.0.0.1:7861"
 GRPC_BIN="$ROOT/draw-things-community/.build/release/gRPCServerCLI"
 CUSTOM_JSON="$ROOT/dt-models/custom.json"
+RESTART_PER_REPEAT=0
 ENTRY_VERSION="ltx2.3"
 ENTRY_TEXT_ENCODER="gemma_3_12b_it_qat_q8p.ckpt"
 ENTRY_CLIP_ENCODER="10_e_v1_bf16_regen_0_q6p.ckpt"
@@ -36,6 +37,7 @@ Options:
   --timeout-sec <n>      Per-repeat timeout in seconds (default: 75).
   --host <host:port>     gRPC host:port (default: 127.0.0.1:7861).
   --grpc-bin <path>      Source runtime binary path.
+  --restart-per-repeat   Restart server before each repeat (cold-per-repeat mode).
   --entry-version <v>    Mapped entry version (default: ltx2.3).
   --text-encoder <file|none>
                          Mapped text encoder (default: gemma_3_12b_it_qat_q8p.ckpt).
@@ -63,7 +65,8 @@ Outputs:
   output/<tag>_repeats_aggregate.txt
 
 Notes:
-  - Starts one long-lived gRPCServerCLI process and reuses it across repeats.
+  - Default mode starts one long-lived gRPCServerCLI process and reuses it across repeats.
+  - --restart-per-repeat switches to per-repeat server restart mode.
   - Injects a temporary mapped custom.json entry matching the model key.
   - Entry fields can be toggled with --modifier/--autoencoder/--text-encoder/--clip-encoder for control runs.
   - Always restores custom.json on exit.
@@ -96,6 +99,10 @@ if [[ $# -gt 0 ]]; then
       --grpc-bin)
         GRPC_BIN="${2:-}"
         shift 2
+        ;;
+      --restart-per-repeat)
+        RESTART_PER_REPEAT=1
+        shift
         ;;
       --entry-version)
         ENTRY_VERSION="${2:-}"
@@ -276,15 +283,56 @@ pkill -9 -f "gRPCServerCLI --address $host_addr --port $host_port" >/dev/null 2>
 pkill -9 -f "dt_api_client.py .*generate-raw" >/dev/null 2>&1 || true
 
 rm -f "$SERVER_LOG"
-nohup env DT_LTX23_TRACE=1 "$GRPC_BIN" \
-  --address "$host_addr" \
-  --port "$host_port" \
-  --gpu 0 \
-  --no-tls \
-  --model-browser \
-  --no-response-compression \
-  "$ROOT/dt-models" > "$SERVER_LOG" 2>&1 &
-SERVER_PID=$!
+
+start_server() {
+  local label="$1"
+  local append_mode="$2"
+
+  pkill -9 -f "gRPCServerCLI --address $host_addr --port $host_port" >/dev/null 2>&1 || true
+  pkill -9 -f "dt_api_client.py .*generate-raw" >/dev/null 2>&1 || true
+
+  if [[ "$append_mode" == "1" ]]; then
+    nohup env DT_LTX23_TRACE=1 "$GRPC_BIN" \
+      --address "$host_addr" \
+      --port "$host_port" \
+      --gpu 0 \
+      --no-tls \
+      --model-browser \
+      --no-response-compression \
+      "$ROOT/dt-models" >> "$SERVER_LOG" 2>&1 &
+  else
+    nohup env DT_LTX23_TRACE=1 "$GRPC_BIN" \
+      --address "$host_addr" \
+      --port "$host_port" \
+      --gpu 0 \
+      --no-tls \
+      --model-browser \
+      --no-response-compression \
+      "$ROOT/dt-models" > "$SERVER_LOG" 2>&1 &
+  fi
+
+  SERVER_PID=$!
+  # Detach background job bookkeeping to avoid noisy "Killed" job notices
+  # when we intentionally terminate previous server instances between repeats.
+  disown %% >/dev/null 2>&1 || true
+  echo "server_pid=${SERVER_PID} (${label})" | tee -a "$CONSOLE_LOG"
+
+  READY=0
+  for _ in $(seq 1 240); do
+    if "$PY" "$ROOT/tools/dt_api_client.py" --host "$HOST" echo --name "${TAG}-${label}-ready" >/dev/null 2>&1; then
+      READY=1
+      break
+    fi
+  done
+
+  if [[ "$READY" != "1" ]]; then
+    echo "ERROR: server did not become ready (${label})" | tee -a "$CONSOLE_LOG"
+    return 1
+  fi
+
+  echo "server_ready=1 (${label})" | tee -a "$CONSOLE_LOG"
+  return 0
+}
 
 {
   echo "== q6p warm-server repeats =="
@@ -293,28 +341,17 @@ SERVER_PID=$!
   echo "host=$HOST"
   echo "repeats=$REPEATS"
   echo "timeout_sec=$TIMEOUT_SEC"
+  echo "restart_per_repeat=$RESTART_PER_REPEAT"
   echo "entry_version=$ENTRY_VERSION"
   echo "entry_text_encoder=$ENTRY_TEXT_ENCODER"
   echo "entry_clip_encoder=$ENTRY_CLIP_ENCODER"
   echo "entry_modifier=$ENTRY_MODIFIER"
   echo "entry_autoencoder=$ENTRY_AUTOENCODER"
-  echo "server_pid=$SERVER_PID"
 } | tee "$CONSOLE_LOG"
 
-READY=0
-for _ in $(seq 1 240); do
-  if "$PY" "$ROOT/tools/dt_api_client.py" --host "$HOST" echo --name "${TAG}-ready" >/dev/null 2>&1; then
-    READY=1
-    break
-  fi
-done
-
-if [[ "$READY" != "1" ]]; then
-  echo "ERROR: server did not become ready" | tee -a "$CONSOLE_LOG"
-  exit 1
+if [[ "$RESTART_PER_REPEAT" == "0" ]]; then
+  start_server "initial" 0
 fi
-
-echo "server_ready=1" | tee -a "$CONSOLE_LOG"
 
 "$PY" "$ROOT/tools/dt_make_config.py" \
   --out "$CONFIG_BIN" \
@@ -341,6 +378,10 @@ for i in $(seq 1 "$REPEATS"); do
   mkdir -p "$case_dir"
   touch "$SERVER_LOG"
   start_line=$(( $(wc -l < "$SERVER_LOG") + 1 ))
+
+  if [[ "$RESTART_PER_REPEAT" == "1" ]]; then
+    start_server "r${i}" 1
+  fi
 
   echo "starting repeat=r${i}" | tee -a "$CONSOLE_LOG"
 
