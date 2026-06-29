@@ -3052,3 +3052,46 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
     - `output/run0756_source_trace_mapped_ltx23_text_clip_mod_auto_r6_console.log`
     - `output/run0757_source_trace_mapped_ltx23_text_clip_mod_auto_r7_console.log`
     - `output/run0758_source_trace_mapped_ltx23_text_clip_mod_auto_r8_console.log`
+
+## Run 076 (2026-06-29): Warm-Server Repeat Probe (`+modifier+auto`, 8x)
+
+- Goal:
+  - Test whether `post_echo_rc` variability for `+modifier+auto` persists when requests are repeated against one long-lived source-runtime server process (no per-repeat restart).
+
+- Method:
+  - One `gRPCServerCLI` process was launched once and reused for all repeats.
+  - Fixed request/config across repeats (`256x256`, seed `4242`, steps `4`, same model key).
+  - Reusable runner now committed for future replay: `tools/run_q6p_warm_server_mod_auto_repeats.sh`.
+  - Temporary mapped entry was injected for request key `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt` with:
+    - `version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`, `modifier=kontext`, `autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`
+  - Alias was restored out of `dt-models/custom.json` on cleanup.
+
+- Repeat summary (canonical artifacts):
+  - `output/run076_warm_server_mod_auto_repeats_summary.tsv`
+  - `output/run076_warm_server_mod_auto_repeats_aggregate.txt`
+  - `r1`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - `r2..r8`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, `text_init=0`, `encode_begin=0`, `encode_loading=0`
+  - aggregate:
+    - `canary_rc=124`: `1/8`
+    - `post_echo_rc=124`: `1/8`
+    - `post_echo_rc=0`: `0/8`
+
+- Failure evidence captured during run:
+  - Source runtime crashed after first repeat with assertion:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` -> `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - crash marker: `*** Program crashed: Aborted ...`
+    - see `output/run076_warm_server_mod_auto/server.log`
+  - Subsequent client requests (`r2..r8`) failed with connection errors:
+    - `gRPC error: UNAVAILABLE ... connection attempt timed out before receiving SETTINGS frame`
+    - see `output/run0762_warm_server_mod_auto_r2_client.log` through `output/run0768_warm_server_mod_auto_r8_client.log`
+
+- Key findings:
+  - This run did not produce a clean warm-state `post_echo_rc` flip-rate estimate because server stability failed after `r1`.
+  - New high-signal observation: repeated warm-process operation on this mapped `ltx2.3 + modifier + autoencoder` setup can trigger a source-runtime crash path distinct from the earlier per-run timeout/variability behavior.
+  - Existing run075 interpretation remains valid for cold-start repeats; run076 adds a separate warm-runtime crash confound to investigate.
+
+- Artifacts:
+  - `output/run076_warm_server_mod_auto_console.log`
+  - `output/run076_warm_server_mod_auto/server.log`
+  - `output/run076_warm_server_mod_auto_repeats_summary.tsv`
+  - `output/run076_warm_server_mod_auto_repeats_aggregate.txt`

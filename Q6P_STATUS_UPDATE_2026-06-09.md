@@ -995,3 +995,22 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - deep-path branch remains stable while post-echo remains state-sensitive.
     - combined `+modifier+auto` behavior is now better constrained: mostly `post_echo_rc=0` with occasional `124` outlier.
+
+- run076 warm-server repeat probe (`run0761..run0768`, `+modifier+auto`, one long-lived server process) completed:
+  - objective: determine whether `+modifier+auto` post-echo variability persists when process state is held constant (no per-repeat restart).
+  - fixed setup:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same mapped entry fields (`version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`, `modifier=kontext`, `autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`)
+    - one persistent source runtime (`draw-things-community/.build/release/gRPCServerCLI`) reused across repeats.
+    - reproducible runner committed at `tools/run_q6p_warm_server_mod_auto_repeats.sh`.
+  - outcomes (`output/run076_warm_server_mod_auto_repeats_summary.tsv`, aggregate in `output/run076_warm_server_mod_auto_repeats_aggregate.txt`):
+    - `r1`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, encode markers present
+    - `r2..r8`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, no encode markers
+    - aggregate: `canary_rc=124` in `1/8`, `post_echo_rc=124` in `1/8`, `post_echo_rc=0` in `0/8`
+  - failure evidence:
+    - server assertion and abort captured in `output/run076_warm_server_mod_auto/server.log`:
+      - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - subsequent client requests report `UNAVAILABLE ... connection attempt timed out before receiving SETTINGS frame`.
+  - interpretation:
+    - run076 does not provide a clean warm-state flip-rate estimate due to server crash after first repeat.
+    - new hypothesis branch: warm-process runtime stability is an independent failure surface that can dominate post-echo analysis for this mapped configuration.

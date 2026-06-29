@@ -72,6 +72,22 @@ Telemetry note for probe runs:
 
     nvidia-smi dmon -s u -d 1
 
+## 2.1) Script-first Experiment Rule
+
+To keep experiment history auditable and reproducible, avoid long ad-hoc terminal pipelines for probe execution.
+
+Operational rule:
+
+- Put experiment logic in a committed script under `tools/` before running it.
+- Keep one script per experiment family and expose key parameters as flags.
+- Ensure scripts write canonical artifacts into `output/` (summary TSV, aggregate TXT, console/server logs).
+- For temporary `dt-models/custom.json` edits, scripts must back up and restore automatically on exit.
+
+Current example:
+
+- `tools/run_q6p_warm_server_mod_auto_repeats.sh`
+  - Replays warm-server `+modifier+auto` repeats with automatic custom.json restore and standard output artifacts.
+
 ## 3) Patch system
 
 The patch system is designed to survive file drift better than direct file-copy backups.

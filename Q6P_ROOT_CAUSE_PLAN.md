@@ -400,3 +400,8 @@ Success means full generation completes (not only first streamed response) and n
 	- All repeats remained mapping + deep encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
 	- `post_echo_rc` distribution was `0` in 7/8 repeats and `124` in 1/8 (no other values).
 	- Updated causal branch: combined-field behavior is probabilistically skewed toward `post_echo_rc=0` but remains state-sensitive downstream variability; branch-gate remains stable under mapped `version=ltx2.3`.
+- 2026-06-29: Run 076 warm-server repeat probe (`+modifier+auto`, 8x, single long-lived server) completed.
+	- First repeat matched deep timeout class (`canary_rc=124`, `post_echo_rc=124`, `source=mapping`, encode markers present).
+	- Source runtime then hit assertion crash (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`) and aborted.
+	- Repeats `r2..r8` failed as connection errors (`canary_rc=1`, `source=unknown`) with client-side `UNAVAILABLE ... SETTINGS frame` timeouts.
+	- Updated causal branch: warm-process stability introduces an independent crash confound for this mapped branch; run075 cold-start variability inference remains valid but warm-state behavior now requires crash-focused isolation.
