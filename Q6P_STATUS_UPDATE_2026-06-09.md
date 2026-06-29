@@ -1111,3 +1111,17 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - boundary is not governed by text-encoder identity alone.
     - gemma-only sits on a mixed edge, while gemma+clip companion pairings moved into stable non-assert branch in this run.
     - clip-vit/no-text regimes remained stable assertion-positive, strengthening text/companion pairing as the active gate inside the cold-per-repeat per-request surface.
+
+- run081b restart-per-repeat text-gate companion repro pass (`6 cases x 4 repeats`) completed:
+  - objective: increase repeat depth to test run081 branch assignments for stability vs sampling noise.
+  - outcomes (`output/run081b_restart_per_repeat_textgate_clip_matrix/results.tsv`, summary in `output/run081b_restart_per_repeat_textgate_clip_matrix/summary.md`):
+    - all cases remained source-mapped (`source_mapping=4/4` per case).
+    - `text_gemma_only`: stable non-assert (`post_echo_rc_0=4`, `assert_count=0`, `abort_count=0`).
+    - `text_gemma_clip_traced`: mixed (`post_echo_rc_124=2`, `post_echo_rc_0=2`, `assert_count=2`, `abort_count=2`).
+    - `text_gemma_clipvit`: mostly non-assert but mixed (`post_echo_rc_124=1`, `post_echo_rc_0=3`, `assert_count=1`, `abort_count=1`).
+    - `text_clipvit_only`: fully assertion-positive (`post_echo_rc_124=4`, `assert_count=4`, `abort_count=4`).
+    - `text_clipvit_clip_traced`: assertion-positive with one `canary_rc_1` and `unavailable_count=1`.
+    - `text_none_clip_traced`: assertion-positive with two `canary_rc_1` and `unavailable_count=2`.
+  - interpretation update:
+    - run081 "gemma+clip stable non-assert" does not hold under higher repeat depth.
+    - stronger current model: text/companion configuration shifts probability of entering assertion-positive sub-branch, but boundary behavior remains state-sensitive and non-deterministic in cold-per-repeat sampling.

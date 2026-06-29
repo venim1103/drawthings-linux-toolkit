@@ -3332,3 +3332,65 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_clipvit_only.log`
   - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_clipvit_clip_traced.log`
   - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_none_clip_traced.log`
+
+## Run 081b (2026-06-29): Restart-Per-Repeat Text-Gate Companion Repro Pass (6 cases x 4 repeats)
+
+- Goal:
+  - Re-test run081 with higher repeats to measure boundary stability and determine whether the observed non-assert branch assignments are reproducible.
+
+- Method:
+  - Reused focused matrix runner:
+    - `tools/run_q6p_restart_per_repeat_textgate_clip_matrix.sh`
+  - Executed:
+    - `bash tools/run_q6p_restart_per_repeat_textgate_clip_matrix.sh --tag run081b_restart_per_repeat_textgate_clip_matrix --repeats 4 --timeout-sec 75`
+  - Fixed controls:
+    - `model=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `entry_version=ltx2.3`
+    - `modifier=none`, `autoencoder=none`
+    - `--restart-per-repeat` active for every repeat.
+
+- Case matrix:
+  - `text_gemma_only`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=none`
+  - `text_gemma_clip_traced`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - `text_gemma_clipvit`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=clip_vit_l14_f16.ckpt`
+  - `text_clipvit_only`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=none`
+  - `text_clipvit_clip_traced`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - `text_none_clip_traced`: `text_encoder=none`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+
+- Matrix outcomes (canonical artifact):
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/results.tsv`
+  - global:
+    - all cases: `source_mapping=4/4`
+    - `cases_with_any_canary_rc_1=2/6`
+    - `cases_with_any_assertion=5/6`
+  - per-case split:
+    - `text_gemma_only`: `canary_rc_124=4`, `canary_rc_1=0`, `post_echo_rc_124=0`, `post_echo_rc_0=4`, `assert_count=0`, `abort_count=0`, `unavailable_count=0`
+    - `text_gemma_clip_traced`: `canary_rc_124=4`, `canary_rc_1=0`, `post_echo_rc_124=2`, `post_echo_rc_0=2`, `assert_count=2`, `abort_count=2`, `unavailable_count=0`
+    - `text_gemma_clipvit`: `canary_rc_124=4`, `canary_rc_1=0`, `post_echo_rc_124=1`, `post_echo_rc_0=3`, `assert_count=1`, `abort_count=1`, `unavailable_count=0`
+    - `text_clipvit_only`: `canary_rc_124=4`, `canary_rc_1=0`, `post_echo_rc_124=4`, `post_echo_rc_0=0`, `assert_count=4`, `abort_count=4`, `unavailable_count=0`
+    - `text_clipvit_clip_traced`: `canary_rc_124=3`, `canary_rc_1=1`, `post_echo_rc_124=3`, `post_echo_rc_0=0`, `assert_count=4`, `abort_count=4`, `unavailable_count=1`
+    - `text_none_clip_traced`: `canary_rc_124=2`, `canary_rc_1=2`, `post_echo_rc_124=1`, `post_echo_rc_0=0`, `assert_count=4`, `abort_count=4`, `unavailable_count=2`
+
+- Failure evidence and controls:
+  - Assertion/abort signature when active:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - `*** Program crashed: Aborted ...`
+  - Unlike warm-reuse collapse runs, there was no cross-case process cascade; restart-per-repeat kept cases bounded even when individual repeats recorded `canary_rc=1` and `UNAVAILABLE` lines.
+
+- Key findings:
+  - `text_gemma_only` moved to a stable non-assert branch in this repro pass (`post_echo_rc_0=4/4`, `assert_count=0`).
+  - Gemma + clip companion pairings were not stably non-assert at higher repeats:
+    - `text_gemma_clip_traced`: mixed (`post_echo_rc_124=2`, `assert_count=2`)
+    - `text_gemma_clipvit`: mostly non-assert but not clean (`post_echo_rc_124=1`, `assert_count=1`)
+  - Clip-vit/no-text regimes remained strongly assertion-positive, including `canary_rc=1` and `UNAVAILABLE` events in the two clip-traced control variants.
+  - Updated interpretation: the cold-per-repeat mapped ltx2.3 assertion surface is state-sensitive and probabilistic near the gemma boundary; companion choice shifts probabilities but is not a deterministic selector.
+
+- Artifacts:
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/results.tsv`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/summary.md`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/cases/text_gemma_only.log`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/cases/text_gemma_clip_traced.log`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/cases/text_gemma_clipvit.log`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/cases/text_clipvit_only.log`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/cases/text_clipvit_clip_traced.log`
+  - `output/run081b_restart_per_repeat_textgate_clip_matrix/cases/text_none_clip_traced.log`

@@ -431,3 +431,10 @@ Success means full generation completes (not only first streamed response) and n
 	- Gemma + clip companions (`clip_traced` and `clip_vit`) both stabilized to non-assert branch (`post_echo_rc=0`, `assert_count=0`, `abort_count=0`).
 	- Clip-vit-only and no-text+clip-traced controls remained assertion-positive (`assert_count=2`, `abort_count=2`).
 	- Updated causal branch: per-request failure surface is governed by text/companion pairing (not text encoder alone), with a mixed boundary around gemma-only and a stable non-assert regime when gemma is paired with a clip companion.
+
+- 2026-06-29: Run 081b restart-per-repeat text-gate companion repro pass (6 cases x 4 repeats) completed.
+	- All cases remained source-mapped in every repeat (`source_mapping=4/4` per case), but `canary_rc=1` reappeared in two clip-traced control variants (`text_clipvit_clip_traced`, `text_none_clip_traced`) with bounded `UNAVAILABLE` counts.
+	- `text_gemma_only` stabilized non-assert (`post_echo_rc_0=4/4`, `assert_count=0`, `abort_count=0`).
+	- Gemma + clip companion pairings were no longer cleanly non-assert: `text_gemma_clip_traced` was 2/4 assertion-positive and `text_gemma_clipvit` 1/4 assertion-positive.
+	- Clip-vit/no-text controls stayed strongly assertion-positive (`text_clipvit_only` 4/4 asserts; traced-clip controls 4/4 asserts each).
+	- Updated causal branch: text/companion pairing influences branch probability, but the boundary is state-sensitive and non-deterministic under higher-repeat cold-per-repeat sampling; deterministic “gemma+clip stable non-assert” interpretation is not supported by run081b.
