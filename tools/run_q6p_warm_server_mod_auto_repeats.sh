@@ -11,6 +11,11 @@ TIMEOUT_SEC=75
 HOST="127.0.0.1:7861"
 GRPC_BIN="$ROOT/draw-things-community/.build/release/gRPCServerCLI"
 CUSTOM_JSON="$ROOT/dt-models/custom.json"
+ENTRY_VERSION="ltx2.3"
+ENTRY_TEXT_ENCODER="gemma_3_12b_it_qat_q8p.ckpt"
+ENTRY_CLIP_ENCODER="10_e_v1_bf16_regen_0_q6p.ckpt"
+ENTRY_MODIFIER="kontext"
+ENTRY_AUTOENCODER="ltx_2.3_audio_video_vae_f16.ckpt"
 
 WIDTH=256
 HEIGHT=256
@@ -31,6 +36,18 @@ Options:
   --timeout-sec <n>      Per-repeat timeout in seconds (default: 75).
   --host <host:port>     gRPC host:port (default: 127.0.0.1:7861).
   --grpc-bin <path>      Source runtime binary path.
+  --entry-version <v>    Mapped entry version (default: ltx2.3).
+  --text-encoder <file|none>
+                         Mapped text encoder (default: gemma_3_12b_it_qat_q8p.ckpt).
+                         Use none to omit the field.
+  --clip-encoder <file|none>
+                         Mapped clip encoder (default: 10_e_v1_bf16_regen_0_q6p.ckpt).
+                         Use none to omit the field.
+  --modifier <value|none>
+                         Mapped modifier (default: kontext). Use none to omit.
+  --autoencoder <file|none>
+                         Mapped autoencoder (default: ltx_2.3_audio_video_vae_f16.ckpt).
+                         Use none to omit the field.
   --width <n>            Request width (default: 256).
   --height <n>           Request height (default: 256).
   --steps <n>            Request steps (default: 4).
@@ -48,6 +65,7 @@ Outputs:
 Notes:
   - Starts one long-lived gRPCServerCLI process and reuses it across repeats.
   - Injects a temporary mapped custom.json entry matching the model key.
+  - Entry fields can be toggled with --modifier/--autoencoder/--text-encoder/--clip-encoder for control runs.
   - Always restores custom.json on exit.
 EOF
 }
@@ -77,6 +95,26 @@ if [[ $# -gt 0 ]]; then
         ;;
       --grpc-bin)
         GRPC_BIN="${2:-}"
+        shift 2
+        ;;
+      --entry-version)
+        ENTRY_VERSION="${2:-}"
+        shift 2
+        ;;
+      --text-encoder)
+        ENTRY_TEXT_ENCODER="${2:-}"
+        shift 2
+        ;;
+      --clip-encoder)
+        ENTRY_CLIP_ENCODER="${2:-}"
+        shift 2
+        ;;
+      --modifier)
+        ENTRY_MODIFIER="${2:-}"
+        shift 2
+        ;;
+      --autoencoder)
+        ENTRY_AUTOENCODER="${2:-}"
         shift 2
         ;;
       --width)
@@ -120,6 +158,11 @@ fi
 
 if [[ ! -f "$CUSTOM_JSON" ]]; then
   echo "error: custom.json not found: $CUSTOM_JSON" >&2
+  exit 1
+fi
+
+if [[ -z "$ENTRY_VERSION" ]]; then
+  echo "error: --entry-version cannot be empty" >&2
   exit 1
 fi
 
@@ -179,12 +222,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$CUSTOM_JSON" "$MODEL_KEY" <<'PY'
+python3 - "$CUSTOM_JSON" "$MODEL_KEY" "$ENTRY_VERSION" "$ENTRY_TEXT_ENCODER" "$ENTRY_CLIP_ENCODER" "$ENTRY_MODIFIER" "$ENTRY_AUTOENCODER" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
 model_key = sys.argv[2]
+entry_version = sys.argv[3]
+entry_text_encoder = sys.argv[4]
+entry_clip_encoder = sys.argv[5]
+entry_modifier = sys.argv[6]
+entry_autoencoder = sys.argv[7]
 
 with open(path, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -194,20 +242,25 @@ if not isinstance(data, list):
 
 entry = {
     "name": model_key,
-    "version": "ltx2.3",
-    "autoencoder": "ltx_2.3_audio_video_vae_f16.ckpt",
-    "clip_encoder": "10_e_v1_bf16_regen_0_q6p.ckpt",
+  "version": entry_version,
     "prefix": "",
-    "modifier": "kontext",
     "default_scale": 1,
     "hires_fix_scale": 24,
     "latents_upscalers": [],
     "file": model_key,
     "upcast_attention": False,
-    "text_encoder": "gemma_3_12b_it_qat_q8p.ckpt",
     "high_precision_autoencoder": False,
     "objective": {"u": {"condition_scale": 1000}},
 }
+
+if entry_text_encoder.lower() != "none":
+  entry["text_encoder"] = entry_text_encoder
+if entry_clip_encoder.lower() != "none":
+  entry["clip_encoder"] = entry_clip_encoder
+if entry_modifier.lower() != "none":
+  entry["modifier"] = entry_modifier
+if entry_autoencoder.lower() != "none":
+  entry["autoencoder"] = entry_autoencoder
 
 out = [x for x in data if not (isinstance(x, dict) and x.get("name") == model_key)]
 out.append(entry)
@@ -234,12 +287,17 @@ nohup env DT_LTX23_TRACE=1 "$GRPC_BIN" \
 SERVER_PID=$!
 
 {
-  echo "== q6p warm-server mod+auto repeats =="
+  echo "== q6p warm-server repeats =="
   echo "tag=$TAG"
   echo "model=$MODEL_KEY"
   echo "host=$HOST"
   echo "repeats=$REPEATS"
   echo "timeout_sec=$TIMEOUT_SEC"
+  echo "entry_version=$ENTRY_VERSION"
+  echo "entry_text_encoder=$ENTRY_TEXT_ENCODER"
+  echo "entry_clip_encoder=$ENTRY_CLIP_ENCODER"
+  echo "entry_modifier=$ENTRY_MODIFIER"
+  echo "entry_autoencoder=$ENTRY_AUTOENCODER"
   echo "server_pid=$SERVER_PID"
 } | tee "$CONSOLE_LOG"
 

@@ -3095,3 +3095,46 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run076_warm_server_mod_auto/server.log`
   - `output/run076_warm_server_mod_auto_repeats_summary.tsv`
   - `output/run076_warm_server_mod_auto_repeats_aggregate.txt`
+
+## Run 077 (2026-06-29): Warm-Server Control (`text+clip`, no modifier/autoencoder)
+
+- Goal:
+  - Test whether the run076 warm-process crash confound is specific to `+modifier+auto` fields or persists under a control mapped entry without those fields.
+
+- Method:
+  - Reused committed runner with control flags:
+    - `tools/run_q6p_warm_server_mod_auto_repeats.sh --tag run077_warm_server_text_clip_only --repeats 4 --timeout-sec 75 --modifier none --autoencoder none`
+  - Same request key and persistent source runtime pattern as run076.
+  - Mapped entry kept `version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`, while omitting `modifier` and `autoencoder`.
+
+- Repeat summary (canonical artifacts):
+  - `output/run077_warm_server_text_clip_only_repeats_summary.tsv`
+  - `output/run077_warm_server_text_clip_only_repeats_aggregate.txt`
+  - `r1`: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - `r2`: `canary_rc=124`, `post_echo_rc=124`, `source=unknown`, no encode markers
+  - `r3`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, no encode markers
+  - `r4`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, no encode markers
+  - aggregate:
+    - `canary_rc=124`: `2/4`
+    - `post_echo_rc=0`: `1/4`
+    - `post_echo_rc=124`: `3/4`
+
+- Failure evidence captured during run:
+  - Source runtime assertion and abort again observed in control run:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` -> `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - crash marker: `*** Program crashed: Aborted ...`
+    - see `output/run077_warm_server_text_clip_only/server.log`
+  - Post-crash client failures (`r3`, `r4`) show:
+    - `gRPC error: UNAVAILABLE ... connection attempt timed out before receiving SETTINGS frame`
+    - see `output/run077_warm_server_text_clip_only_r3_client.log` and `output/run077_warm_server_text_clip_only_r4_client.log`
+
+- Key findings:
+  - Warm-process crash confound persists even when `modifier` and `autoencoder` are removed from the mapped entry.
+  - This weakens the hypothesis that run076 crash behavior is caused specifically by combined `+modifier+auto` fields.
+  - Updated working interpretation: warm-process instability is likely tied to repeated-request lifecycle under this mapped ltx2.3 path more broadly, while cold-start repeat behavior (run075) remains a separate signal.
+
+- Artifacts:
+  - `output/run077_warm_server_text_clip_only_console.log`
+  - `output/run077_warm_server_text_clip_only/server.log`
+  - `output/run077_warm_server_text_clip_only_repeats_summary.tsv`
+  - `output/run077_warm_server_text_clip_only_repeats_aggregate.txt`

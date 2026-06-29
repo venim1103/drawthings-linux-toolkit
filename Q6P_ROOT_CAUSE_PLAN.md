@@ -405,3 +405,8 @@ Success means full generation completes (not only first streamed response) and n
 	- Source runtime then hit assertion crash (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`) and aborted.
 	- Repeats `r2..r8` failed as connection errors (`canary_rc=1`, `source=unknown`) with client-side `UNAVAILABLE ... SETTINGS frame` timeouts.
 	- Updated causal branch: warm-process stability introduces an independent crash confound for this mapped branch; run075 cold-start variability inference remains valid but warm-state behavior now requires crash-focused isolation.
+- 2026-06-29: Run 077 warm-server control (`text+clip` mapped entry, no modifier/autoencoder, 4x) completed.
+	- `r1` stayed in mapping + deep timeout class (`canary_rc=124`, `post_echo_rc=0`, encode markers present).
+	- `r2` timed out with `source=unknown`/no encode markers; source runtime then showed the same assertion crash signature (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`).
+	- `r3..r4` failed as connection errors (`canary_rc=1`) with client-side `UNAVAILABLE ... SETTINGS frame` timeouts.
+	- Updated causal branch: warm-process crash confound is not specific to `+modifier+auto`; instability persists under `text+clip` control and appears tied to repeated warm lifecycle on this mapped ltx2.3 path.

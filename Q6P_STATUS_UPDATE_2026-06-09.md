@@ -1014,3 +1014,23 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - run076 does not provide a clean warm-state flip-rate estimate due to server crash after first repeat.
     - new hypothesis branch: warm-process runtime stability is an independent failure surface that can dominate post-echo analysis for this mapped configuration.
+
+- run077 warm-server control (`run077_warm_server_text_clip_only_r1..r4`, no modifier/autoencoder) completed:
+  - objective: test whether run076 crash confound depends on combined `+modifier+auto` fields.
+  - setup:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same warm-process methodology (single long-lived source runtime)
+    - mapped control entry kept `version=ltx2.3`, `text_encoder`, `clip_encoder`; omitted `modifier` and `autoencoder`
+    - executed via scripted control flags on `tools/run_q6p_warm_server_mod_auto_repeats.sh`.
+  - outcomes (`output/run077_warm_server_text_clip_only_repeats_summary.tsv`, aggregate in `output/run077_warm_server_text_clip_only_repeats_aggregate.txt`):
+    - `r1`: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, encode markers present
+    - `r2`: `canary_rc=124`, `post_echo_rc=124`, `source=unknown`, no encode markers
+    - `r3..r4`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`
+    - aggregate: `canary_rc=124` in `2/4`; `post_echo_rc=0` in `1/4`; `post_echo_rc=124` in `3/4`
+  - failure evidence:
+    - same source-runtime assertion + abort observed in `output/run077_warm_server_text_clip_only/server.log`:
+      - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - post-crash client logs show `UNAVAILABLE ... SETTINGS frame` timeouts.
+  - interpretation:
+    - warm-process crash confound reproduces in control setup without `modifier`/`autoencoder`.
+    - this weakens field-specific crash hypotheses and points to broader warm lifecycle instability on this mapped ltx2.3 path.

@@ -86,7 +86,8 @@ Operational rule:
 Current example:
 
 - `tools/run_q6p_warm_server_mod_auto_repeats.sh`
-  - Replays warm-server `+modifier+auto` repeats with automatic custom.json restore and standard output artifacts.
+  - Replays warm-server repeat probes with automatic custom.json restore and standard output artifacts.
+  - Supports control variants by toggling mapped fields via flags (for example `--modifier none --autoencoder none`).
 
 ## 3) Patch system
 
