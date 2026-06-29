@@ -420,3 +420,8 @@ Success means full generation completes (not only first streamed response) and n
 	- Assertion crash signature still occurred per repeat (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`) in each server instance.
 	- No cross-repeat `UNAVAILABLE` connect-collapse occurred because each repeat restarted server.
 	- Updated causal branch: two layered failure surfaces are now separated: (1) per-request assertion abort on mapped ltx2.3 path, and (2) additional warm-reuse collapse that turns subsequent repeats into `canary_rc=1` + `UNAVAILABLE` when server is kept alive.
+- 2026-06-29: Run 080 restart-per-repeat text/clip matrix (4 cases x 2 repeats) completed.
+	- All cases remained in mapping timeout class (`canary_rc=124`, `source=mapping`, no `canary_rc=1`, no `UNAVAILABLE` cascade).
+	- Assertion/abort branch persisted for `min_none`, `text_clipvit_only`, and `text_clipvit_clip_traced` (`assert_count=2`, `abort_count=2` each).
+	- `text_gemma_only` diverged: `post_echo_rc=0` with `assert_count=0`, `abort_count=0`.
+	- Updated causal branch: within cold-per-repeat per-request behavior, text/encoder path identity is a strong gate for assertion-abort activation; warm-reuse collapse remains a separate process-lifecycle layer.

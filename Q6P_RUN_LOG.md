@@ -3222,3 +3222,54 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run079_cold_per_repeat_ltx23_min/server.log`
   - `output/run079_cold_per_repeat_ltx23_min_repeats_summary.tsv`
   - `output/run079_cold_per_repeat_ltx23_min_repeats_aggregate.txt`
+
+## Run 080 (2026-06-29): Restart-Per-Repeat Text/Clip Matrix (4 cases x 2 repeats)
+
+- Goal:
+  - Isolate which text/clip pin combinations preserve versus suppress the per-request assertion/abort path under cold-per-repeat conditions.
+
+- Method:
+  - Added script-first matrix runner:
+    - `tools/run_q6p_restart_per_repeat_textclip_matrix.sh`
+  - Executed matrix:
+    - `bash tools/run_q6p_restart_per_repeat_textclip_matrix.sh --tag run080_restart_per_repeat_textclip_matrix --repeats 2 --timeout-sec 75`
+  - Fixed controls across all cases:
+    - `model=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `entry_version=ltx2.3`
+    - `modifier=none`, `autoencoder=none`
+    - `--restart-per-repeat` active for every repeat.
+
+- Case matrix:
+  - `min_none`: `text_encoder=none`, `clip_encoder=none`
+  - `text_clipvit_only`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=none`
+  - `text_gemma_only`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=none`
+  - `text_clipvit_clip_traced`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+
+- Matrix outcomes (canonical artifact):
+  - `output/run080_restart_per_repeat_textclip_matrix/results.tsv`
+  - shared outcomes:
+    - all cases: `canary_rc_124=2/2`, `canary_rc_1=0/2`, `source_mapping=2/2`, `unavailable_count=0`
+  - per-case split:
+    - `min_none`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+    - `text_clipvit_only`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+    - `text_gemma_only`: `post_echo_rc_124=0`, `post_echo_rc_0=2`, `assert_count=0`, `abort_count=0`
+    - `text_clipvit_clip_traced`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+
+- Failure evidence and controls:
+  - Assertion/abort signature (when present):
+    - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - `*** Program crashed: Aborted ...`
+  - No `UNAVAILABLE ... SETTINGS frame` client cascade in this run (restart-per-repeat kept runs in mapping timeout classes).
+
+- Key findings:
+  - Under cold-per-repeat conditions, per-request assertion/abort is text-path dependent, not universal across all mapped ltx2.3 entries.
+  - `text_gemma_only` is a discriminating non-assertion branch (`post_echo_rc=0`, no abort), while `none` and `clip_vit`-pinned text cases remain on assertion/abort branch (`post_echo_rc=124`).
+  - This sharpens the layered model from run079: warm-reuse collapse is separate, and within per-request failures the text/encoder path acts as a strong gate.
+
+- Artifacts:
+  - `output/run080_restart_per_repeat_textclip_matrix/results.tsv`
+  - `output/run080_restart_per_repeat_textclip_matrix/summary.md`
+  - `output/run080_restart_per_repeat_textclip_matrix/cases/min_none.log`
+  - `output/run080_restart_per_repeat_textclip_matrix/cases/text_clipvit_only.log`
+  - `output/run080_restart_per_repeat_textclip_matrix/cases/text_gemma_only.log`
+  - `output/run080_restart_per_repeat_textclip_matrix/cases/text_clipvit_clip_traced.log`

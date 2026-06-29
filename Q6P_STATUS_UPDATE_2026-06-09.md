@@ -1072,3 +1072,24 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - per-repeat restart suppresses cross-repeat collapse mode (`canary_rc=1` + `UNAVAILABLE`) by resetting process state each repeat.
     - core per-request assertion abort remains, indicating crash root cause is still active independent of warm reuse.
+
+- run080 restart-per-repeat text/clip matrix (`4 cases x 2 repeats`) completed:
+  - objective: identify whether per-request assertion/abort behavior under cold-per-repeat mode is sensitive to text/clip pin choices.
+  - setup:
+    - new scripted matrix runner: `tools/run_q6p_restart_per_repeat_textclip_matrix.sh`
+    - fixed controls: same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`), `version=ltx2.3`, `modifier=none`, `autoencoder=none`, restart-per-repeat enabled.
+    - matrix cases:
+      - `min_none`: `text_encoder=none`, `clip_encoder=none`
+      - `text_clipvit_only`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=none`
+      - `text_gemma_only`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=none`
+      - `text_clipvit_clip_traced`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - outcomes (`output/run080_restart_per_repeat_textclip_matrix/results.tsv`, summary in `output/run080_restart_per_repeat_textclip_matrix/summary.md`):
+    - all cases: `canary_rc_124=2/2`, `canary_rc_1=0/2`, `source_mapping=2/2`, `unavailable_count=0`
+    - `min_none`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+    - `text_clipvit_only`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+    - `text_gemma_only`: `post_echo_rc_124=0`, `post_echo_rc_0=2`, `assert_count=0`, `abort_count=0`
+    - `text_clipvit_clip_traced`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+  - interpretation:
+    - cold-per-repeat per-request assertion/abort is not universal across mapped ltx2.3 entries.
+    - text path identity is a strong discriminator: gemma-only text pin avoids assertion/abort, while none/clip-vit text paths remain assertion-positive.
+    - this refines the run079 layered model by adding an intra-layer gate (text/encoder path) within the per-request failure surface.
