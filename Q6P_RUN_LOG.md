@@ -2997,3 +2997,58 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
     - `output/run0744_source_trace_mapped_ltx23_text_clip_mod_r2_console.log`
     - `output/run0745_source_trace_mapped_ltx23_text_clip_mod_auto_r1_console.log`
     - `output/run0746_source_trace_mapped_ltx23_text_clip_mod_auto_r2_console.log`
+
+## Run 075 (2026-06-29): Focused Repeat Sweep (`+modifier+auto`, 8x)
+
+- Goal:
+  - Quantify flip-rate of `post_echo_rc` for the highest-variance branch (`+modifier+auto`) under fixed ltx2.3 mapped conditions.
+
+- Method:
+  - Fixed request, runtime, and strict canary gates for all 8 repeats:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75 --soft-fail`)
+  - Temporary mapped probe entry was fixed to:
+    - `version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`, `modifier=kontext`, `autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`
+
+- Repeat summary (canonical artifacts):
+  - `output/run075_mod_auto_repeats_summary.tsv`
+  - `output/run075_mod_auto_repeats_aggregate.txt`
+  - Per-repeat outcomes:
+    - `r1`: `canary_rc=124`, `post_echo_rc=0`
+    - `r2`: `canary_rc=124`, `post_echo_rc=0`
+    - `r3`: `canary_rc=124`, `post_echo_rc=0`
+    - `r4`: `canary_rc=124`, `post_echo_rc=124`
+    - `r5`: `canary_rc=124`, `post_echo_rc=0`
+    - `r6`: `canary_rc=124`, `post_echo_rc=0`
+    - `r7`: `canary_rc=124`, `post_echo_rc=0`
+    - `r8`: `canary_rc=124`, `post_echo_rc=0`
+  - Aggregate counts:
+    - `post_echo_rc=0`: `7/8`
+    - `post_echo_rc=124`: `1/8`
+    - `post_echo_rc=other`: `0/8`
+
+- Key findings:
+  - Deep-encode timeout branch was stable for all repeats (`canary_rc=124`, `source=mapping`, `encode=1/1`).
+  - `+modifier+auto` post-echo behavior is skewed toward `0` but not deterministic.
+  - This confirms a state-sensitive downstream variability surface layered on top of a stable ltx2.3 branch gate.
+
+- Artifacts:
+  - case dirs:
+    - `output/q6p_canary_run0751_source_trace_mapped_ltx23_text_clip_mod_auto_r1`
+    - `output/q6p_canary_run0752_source_trace_mapped_ltx23_text_clip_mod_auto_r2`
+    - `output/q6p_canary_run0753_source_trace_mapped_ltx23_text_clip_mod_auto_r3`
+    - `output/q6p_canary_run0754_source_trace_mapped_ltx23_text_clip_mod_auto_r4`
+    - `output/q6p_canary_run0755_source_trace_mapped_ltx23_text_clip_mod_auto_r5`
+    - `output/q6p_canary_run0756_source_trace_mapped_ltx23_text_clip_mod_auto_r6`
+    - `output/q6p_canary_run0757_source_trace_mapped_ltx23_text_clip_mod_auto_r7`
+    - `output/q6p_canary_run0758_source_trace_mapped_ltx23_text_clip_mod_auto_r8`
+  - console logs:
+    - `output/run0751_source_trace_mapped_ltx23_text_clip_mod_auto_r1_console.log`
+    - `output/run0752_source_trace_mapped_ltx23_text_clip_mod_auto_r2_console.log`
+    - `output/run0753_source_trace_mapped_ltx23_text_clip_mod_auto_r3_console.log`
+    - `output/run0754_source_trace_mapped_ltx23_text_clip_mod_auto_r4_console.log`
+    - `output/run0755_source_trace_mapped_ltx23_text_clip_mod_auto_r5_console.log`
+    - `output/run0756_source_trace_mapped_ltx23_text_clip_mod_auto_r6_console.log`
+    - `output/run0757_source_trace_mapped_ltx23_text_clip_mod_auto_r7_console.log`
+    - `output/run0758_source_trace_mapped_ltx23_text_clip_mod_auto_r8_console.log`

@@ -395,3 +395,8 @@ Success means full generation completes (not only first streamed response) and n
 	- All repeats remained mapping + deep encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
 	- `+auto` and `+modifier` were stable at `post_echo_rc=0` (2/2 each); `+modifier+auto` was mixed (0 then 124).
 	- Updated causal branch: combined-field post-echo behavior is state-sensitive/non-deterministic, while deep-path branch gate remains controlled by mapped `version=ltx2.3`.
+- 2026-06-29: Run 075 focused repeat sweep (`+modifier+auto`, 8x) completed.
+	- Same request key, source runtime, and strict canary gates held constant for all repeats.
+	- All repeats remained mapping + deep encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
+	- `post_echo_rc` distribution was `0` in 7/8 repeats and `124` in 1/8 (no other values).
+	- Updated causal branch: combined-field behavior is probabilistically skewed toward `post_echo_rc=0` but remains state-sensitive downstream variability; branch-gate remains stable under mapped `version=ltx2.3`.

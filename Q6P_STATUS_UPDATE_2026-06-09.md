@@ -979,3 +979,19 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - deep-encode branch class remains unchanged across all repeats.
     - `+auto` and `+modifier` are repeat-stable at `post_echo_rc=0` in this run.
     - `+modifier+auto` remains mixed across repeats (0/124), indicating state-sensitive downstream interaction rather than fixed deterministic combined behavior.
+
+- run075 focused repeat sweep (`run0751..run0758`, `+modifier+auto` only) completed:
+  - objective: estimate flip-rate for the highest-variance combined-field case without expanding artifact scope.
+  - fixed across all repeats:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same source runtime (`draw-things-community/.build/release/gRPCServerCLI`)
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75`)
+    - fixed mapped entry (`version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`, `modifier=kontext`, `autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`).
+  - outcomes (`output/run075_mod_auto_repeats_summary.tsv`, aggregate in `output/run075_mod_auto_repeats_aggregate.txt`):
+    - `canary_rc`: `124` in `8/8`
+    - `post_echo_rc=0`: `7/8`
+    - `post_echo_rc=124`: `1/8`
+    - `post_echo_rc=other`: `0/8`
+  - interpretation:
+    - deep-path branch remains stable while post-echo remains state-sensitive.
+    - combined `+modifier+auto` behavior is now better constrained: mostly `post_echo_rc=0` with occasional `124` outlier.
