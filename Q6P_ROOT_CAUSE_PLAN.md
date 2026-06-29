@@ -410,3 +410,8 @@ Success means full generation completes (not only first streamed response) and n
 	- `r2` timed out with `source=unknown`/no encode markers; source runtime then showed the same assertion crash signature (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`).
 	- `r3..r4` failed as connection errors (`canary_rc=1`) with client-side `UNAVAILABLE ... SETTINGS frame` timeouts.
 	- Updated causal branch: warm-process crash confound is not specific to `+modifier+auto`; instability persists under `text+clip` control and appears tied to repeated warm lifecycle on this mapped ltx2.3 path.
+- 2026-06-29: Run 078 warm-server minimal mapping control (`version=ltx2.3` only, no text/clip/modifier/autoencoder, 4x) completed.
+	- `r1` remained mapping + deep timeout class (`canary_rc=124`, `post_echo_rc=124`, encode markers present).
+	- `r2..r4` failed immediately as connection errors (`canary_rc=1`, `source=unknown`) after source-runtime abort.
+	- Same assertion crash signature reproduced (`ccv_nnc_symbolic_graph_compile.c:1365`, `memory_type == CCV_TENSOR_CPU_MEMORY`).
+	- Updated causal branch: crash confound persists with minimal ltx2.3 mapping, further excluding optional mapped companion fields as necessary triggers and pointing to warm lifecycle instability on the mapped ltx2.3 path itself.

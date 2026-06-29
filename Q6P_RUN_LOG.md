@@ -3138,3 +3138,45 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run077_warm_server_text_clip_only/server.log`
   - `output/run077_warm_server_text_clip_only_repeats_summary.tsv`
   - `output/run077_warm_server_text_clip_only_repeats_aggregate.txt`
+
+## Run 078 (2026-06-29): Warm-Server Minimal Mapping Control (`version=ltx2.3` only)
+
+- Goal:
+  - Test whether warm-process crash behavior persists when all optional mapped fields are removed and only `version=ltx2.3` is supplied in the temporary mapped entry.
+
+- Method:
+  - Reused committed runner with minimal-entry control flags:
+    - `tools/run_q6p_warm_server_mod_auto_repeats.sh --tag run078_warm_server_ltx23_min --repeats 4 --timeout-sec 75 --entry-version ltx2.3 --text-encoder none --clip-encoder none --modifier none --autoencoder none`
+  - Same request key and persistent source runtime pattern as run076/run077.
+
+- Repeat summary (canonical artifacts):
+  - `output/run078_warm_server_ltx23_min_repeats_summary.tsv`
+  - `output/run078_warm_server_ltx23_min_repeats_aggregate.txt`
+  - `r1`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode_begin=1`, `encode_loading=1`
+  - `r2`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, no encode markers
+  - `r3`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, no encode markers
+  - `r4`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`, no encode markers
+  - aggregate:
+    - `canary_rc=124`: `1/4`
+    - `post_echo_rc=0`: `0/4`
+    - `post_echo_rc=124`: `4/4`
+
+- Failure evidence captured during run:
+  - Source runtime assertion and abort reproduced again:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` -> `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - crash marker: `*** Program crashed: Aborted ...`
+    - see `output/run078_warm_server_ltx23_min/server.log`
+  - Post-crash client requests fail with connection errors:
+    - `gRPC error: UNAVAILABLE ... connection attempt timed out before receiving SETTINGS frame`
+    - see `output/run078_warm_server_ltx23_min_r2_client.log` through `output/run078_warm_server_ltx23_min_r4_client.log`
+
+- Key findings:
+  - Warm-process crash confound reproduces even when mapped entry is reduced to `version=ltx2.3` only.
+  - This further rules out `modifier`, `autoencoder`, and explicit text/clip pin fields as required triggers.
+  - Updated working interpretation: instability is tied to repeated warm lifecycle on mapped ltx2.3 path itself (or nearby shared runtime state), not to specific optional companion fields.
+
+- Artifacts:
+  - `output/run078_warm_server_ltx23_min_console.log`
+  - `output/run078_warm_server_ltx23_min/server.log`
+  - `output/run078_warm_server_ltx23_min_repeats_summary.tsv`
+  - `output/run078_warm_server_ltx23_min_repeats_aggregate.txt`

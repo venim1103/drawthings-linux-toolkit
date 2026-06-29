@@ -1034,3 +1034,23 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation:
     - warm-process crash confound reproduces in control setup without `modifier`/`autoencoder`.
     - this weakens field-specific crash hypotheses and points to broader warm lifecycle instability on this mapped ltx2.3 path.
+
+- run078 warm-server minimal mapping control (`run078_warm_server_ltx23_min_r1..r4`) completed:
+  - objective: test whether crash behavior persists when temporary mapped entry is reduced to `version=ltx2.3` only.
+  - setup:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same warm-process methodology (single long-lived source runtime)
+    - mapped entry omitted `text_encoder`, `clip_encoder`, `modifier`, and `autoencoder`
+    - executed via scripted flags on `tools/run_q6p_warm_server_mod_auto_repeats.sh`:
+      - `--entry-version ltx2.3 --text-encoder none --clip-encoder none --modifier none --autoencoder none`
+  - outcomes (`output/run078_warm_server_ltx23_min_repeats_summary.tsv`, aggregate in `output/run078_warm_server_ltx23_min_repeats_aggregate.txt`):
+    - `r1`: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, encode markers present
+    - `r2..r4`: `canary_rc=1`, `post_echo_rc=124`, `source=unknown`
+    - aggregate: `canary_rc=124` in `1/4`; `post_echo_rc=0` in `0/4`; `post_echo_rc=124` in `4/4`
+  - failure evidence:
+    - same source-runtime assertion + abort observed in `output/run078_warm_server_ltx23_min/server.log`:
+      - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - post-crash client logs show `UNAVAILABLE ... SETTINGS frame` timeouts.
+  - interpretation:
+    - warm-process crash confound still reproduces on minimal ltx2.3 mapping.
+    - this further weakens companion-field-specific hypotheses and supports a broader warm lifecycle instability on mapped ltx2.3 runtime path.
