@@ -390,3 +390,8 @@ Success means full generation completes (not only first streamed response) and n
 	- All cases remained mapping + deep encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
 	- `+auto` and `+modifier` each shifted `post_echo_rc` to `0` on the same base; combined `+auto+modifier` returned `post_echo_rc` to `124`.
 	- Updated causal branch: post-echo behavior depends on non-additive downstream field interaction; no evidence of branch reversion once `version=ltx2.3` mapping gate is active.
+- 2026-06-29: Run 074 repro matrix (2x repeats each for `+auto`, `+modifier`, `+modifier+auto`) completed.
+	- Same request key, source runtime, and strict canary gates held constant across six repeat cases.
+	- All repeats remained mapping + deep encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
+	- `+auto` and `+modifier` were stable at `post_echo_rc=0` (2/2 each); `+modifier+auto` was mixed (0 then 124).
+	- Updated causal branch: combined-field post-echo behavior is state-sensitive/non-deterministic, while deep-path branch gate remains controlled by mapped `version=ltx2.3`.

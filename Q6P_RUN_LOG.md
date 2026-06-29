@@ -2949,3 +2949,51 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
     - `output/run0732_source_trace_mapped_ltx23_text_clip_auto_console.log`
     - `output/run0733_source_trace_mapped_ltx23_text_clip_mod_console.log`
     - `output/run0734_source_trace_mapped_ltx23_text_clip_mod_auto_console.log`
+
+## Run 074 (2026-06-29): Repro Check (`+auto`, `+modifier`, `+modifier+auto`) with 2x repeats
+
+- Goal:
+  - Test reproducibility of `run073` post-echo modulation behavior with low-footprint repeats and no large artifact growth.
+
+- Method:
+  - Fixed request, runtime, and strict canary gates across all six cases:
+    - `--model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `--grpc-bin /workspaces/drawthings-linux-toolkit/draw-things-community/.build/release/gRPCServerCLI`
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75 --soft-fail`)
+  - Temporary mapped probe entry base held:
+    - `version=ltx2.3`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - Repeated variants:
+    - `run0741` / `run0742`: `+auto`
+    - `run0743` / `run0744`: `+modifier`
+    - `run0745` / `run0746`: `+modifier+auto`
+
+- Matrix summary (canonical artifact):
+  - `output/run074_repro_summary.tsv`
+  - `run0741` `+auto` r1: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0742` `+auto` r2: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0743` `+modifier` r1: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0744` `+modifier` r2: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0745` `+modifier+auto` r1: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - `run0746` `+modifier+auto` r2: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+
+- Key findings:
+  - All six repeats stayed in the same mapping + deep-encode timeout class (`canary_rc=124`, `source=mapping`, `encode=1/1`).
+  - `+auto` and `+modifier` were stable across repeats at `post_echo_rc=0` (2/2 each).
+  - `+modifier+auto` showed mixed post-echo behavior (1x `0`, 1x `124`), so the combined-field effect is reproducible as a variability surface, not a fixed single outcome.
+  - This reinforces branch-gate separation: `version=ltx2.3` controls deep-path entry; post-echo behavior remains downstream and state-sensitive.
+
+- Artifacts:
+  - case dirs:
+    - `output/q6p_canary_run0741_source_trace_mapped_ltx23_text_clip_auto_r1`
+    - `output/q6p_canary_run0742_source_trace_mapped_ltx23_text_clip_auto_r2`
+    - `output/q6p_canary_run0743_source_trace_mapped_ltx23_text_clip_mod_r1`
+    - `output/q6p_canary_run0744_source_trace_mapped_ltx23_text_clip_mod_r2`
+    - `output/q6p_canary_run0745_source_trace_mapped_ltx23_text_clip_mod_auto_r1`
+    - `output/q6p_canary_run0746_source_trace_mapped_ltx23_text_clip_mod_auto_r2`
+  - console logs:
+    - `output/run0741_source_trace_mapped_ltx23_text_clip_auto_r1_console.log`
+    - `output/run0742_source_trace_mapped_ltx23_text_clip_auto_r2_console.log`
+    - `output/run0743_source_trace_mapped_ltx23_text_clip_mod_r1_console.log`
+    - `output/run0744_source_trace_mapped_ltx23_text_clip_mod_r2_console.log`
+    - `output/run0745_source_trace_mapped_ltx23_text_clip_mod_auto_r1_console.log`
+    - `output/run0746_source_trace_mapped_ltx23_text_clip_mod_auto_r2_console.log`

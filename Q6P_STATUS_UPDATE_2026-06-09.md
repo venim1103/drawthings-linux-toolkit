@@ -961,3 +961,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - branch class is unchanged across all four variants (mapping/deep-timeout retained).
     - `auto` and `modifier` independently flip `post_echo_rc` to `0`, but their combination restores `124`, indicating non-additive downstream interaction.
     - reinforces prior branch gate: `version=ltx2.3` controls deep-path entry; these fields modulate downstream/post-echo behavior only.
+
+- run074 low-footprint reproducibility matrix (`run0741..run0746`) completed:
+  - objective: verify repeat stability of post-echo modulation for `+auto`, `+modifier`, and `+modifier+auto`.
+  - fixed across all cases:
+    - same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`)
+    - same source runtime (`draw-things-community/.build/release/gRPCServerCLI`)
+    - strict canary gates (`--final-mode --require-complete-stream --require-final-output --max-responses 0 --timeout-sec 75`).
+  - matrix outcomes (`output/run074_repro_summary.tsv`):
+    - `run0741` `+auto` r1: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0742` `+auto` r2: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0743` `+modifier` r1: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0744` `+modifier` r2: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0745` `+modifier+auto` r1: `canary_rc=124`, `post_echo_rc=0`, `source=mapping`, `text_init=1`, `encode=1/1`
+    - `run0746` `+modifier+auto` r2: `canary_rc=124`, `post_echo_rc=124`, `source=mapping`, `text_init=1`, `encode=1/1`
+  - interpretation:
+    - deep-encode branch class remains unchanged across all repeats.
+    - `+auto` and `+modifier` are repeat-stable at `post_echo_rc=0` in this run.
+    - `+modifier+auto` remains mixed across repeats (0/124), indicating state-sensitive downstream interaction rather than fixed deterministic combined behavior.
