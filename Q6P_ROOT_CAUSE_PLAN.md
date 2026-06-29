@@ -425,3 +425,9 @@ Success means full generation completes (not only first streamed response) and n
 	- Assertion/abort branch persisted for `min_none`, `text_clipvit_only`, and `text_clipvit_clip_traced` (`assert_count=2`, `abort_count=2` each).
 	- `text_gemma_only` diverged: `post_echo_rc=0` with `assert_count=0`, `abort_count=0`.
 	- Updated causal branch: within cold-per-repeat per-request behavior, text/encoder path identity is a strong gate for assertion-abort activation; warm-reuse collapse remains a separate process-lifecycle layer.
+- 2026-06-29: Run 081 restart-per-repeat text-gate companion matrix (6 cases x 2 repeats) completed.
+	- All cases stayed mapping timeout class (`canary_rc=124`, no `canary_rc=1`, no `UNAVAILABLE` cascade).
+	- Gemma-only became mixed (`post_echo_rc`: 124/0; `assert_count=1`, `abort_count=1`), showing boundary instability.
+	- Gemma + clip companions (`clip_traced` and `clip_vit`) both stabilized to non-assert branch (`post_echo_rc=0`, `assert_count=0`, `abort_count=0`).
+	- Clip-vit-only and no-text+clip-traced controls remained assertion-positive (`assert_count=2`, `abort_count=2`).
+	- Updated causal branch: per-request failure surface is governed by text/companion pairing (not text encoder alone), with a mixed boundary around gemma-only and a stable non-assert regime when gemma is paired with a clip companion.

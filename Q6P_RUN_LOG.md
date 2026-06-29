@@ -3273,3 +3273,62 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run080_restart_per_repeat_textclip_matrix/cases/text_clipvit_only.log`
   - `output/run080_restart_per_repeat_textclip_matrix/cases/text_gemma_only.log`
   - `output/run080_restart_per_repeat_textclip_matrix/cases/text_clipvit_clip_traced.log`
+
+## Run 081 (2026-06-29): Restart-Per-Repeat Text-Gate Clip Companion Matrix (6 cases x 2 repeats)
+
+- Goal:
+  - Test whether clip companion choice can override or stabilize the run080 gemma text-path branch boundary, and compare against clip-vit / no-text controls.
+
+- Method:
+  - Added focused matrix runner:
+    - `tools/run_q6p_restart_per_repeat_textgate_clip_matrix.sh`
+  - Executed:
+    - `bash tools/run_q6p_restart_per_repeat_textgate_clip_matrix.sh --tag run081_restart_per_repeat_textgate_clip_matrix --repeats 2 --timeout-sec 75`
+  - Fixed controls:
+    - `model=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `entry_version=ltx2.3`
+    - `modifier=none`, `autoencoder=none`
+    - `--restart-per-repeat` active for every repeat.
+
+- Case matrix:
+  - `text_gemma_only`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=none`
+  - `text_gemma_clip_traced`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - `text_gemma_clipvit`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=clip_vit_l14_f16.ckpt`
+  - `text_clipvit_only`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=none`
+  - `text_clipvit_clip_traced`: `text_encoder=clip_vit_l14_f16.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - `text_none_clip_traced`: `text_encoder=none`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+
+- Matrix outcomes (canonical artifact):
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/results.tsv`
+  - global:
+    - all cases: `canary_rc_124=2/2`, `canary_rc_1=0/2`, `source_mapping=2/2`, `unavailable_count=0`
+    - `cases_with_any_assertion=4/6`
+  - per-case split:
+    - `text_gemma_only`: `post_echo_rc_124=1`, `post_echo_rc_0=1`, `assert_count=1`, `abort_count=1`
+    - `text_gemma_clip_traced`: `post_echo_rc_124=0`, `post_echo_rc_0=2`, `assert_count=0`, `abort_count=0`
+    - `text_gemma_clipvit`: `post_echo_rc_124=0`, `post_echo_rc_0=2`, `assert_count=0`, `abort_count=0`
+    - `text_clipvit_only`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+    - `text_clipvit_clip_traced`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+    - `text_none_clip_traced`: `post_echo_rc_124=2`, `post_echo_rc_0=0`, `assert_count=2`, `abort_count=2`
+
+- Failure evidence and controls:
+  - Assertion/abort signature when active:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - `*** Program crashed: Aborted ...`
+  - No `UNAVAILABLE ... SETTINGS frame` cascade observed in this run.
+
+- Key findings:
+  - Gemma text path is not uniformly non-assert: `text_gemma_only` is mixed (1 assertion repeat, 1 non-assert repeat).
+  - Adding clip companion (`clip_traced` or `clip_vit`) to gemma text stabilized both repeats onto the non-assert/post-echo-0 branch.
+  - Clip-vit-only and no-text+clip-traced controls remain fully assertion-positive.
+  - Updated interpretation: text/companion pairing controls a boundary between assertion-positive and non-assert sub-branches inside the cold-per-repeat mapped ltx2.3 surface.
+
+- Artifacts:
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/results.tsv`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/summary.md`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_gemma_only.log`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_gemma_clip_traced.log`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_gemma_clipvit.log`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_clipvit_only.log`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_clipvit_clip_traced.log`
+  - `output/run081_restart_per_repeat_textgate_clip_matrix/cases/text_none_clip_traced.log`

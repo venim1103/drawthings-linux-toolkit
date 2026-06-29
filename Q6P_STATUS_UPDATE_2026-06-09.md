@@ -1093,3 +1093,21 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - cold-per-repeat per-request assertion/abort is not universal across mapped ltx2.3 entries.
     - text path identity is a strong discriminator: gemma-only text pin avoids assertion/abort, while none/clip-vit text paths remain assertion-positive.
     - this refines the run079 layered model by adding an intra-layer gate (text/encoder path) within the per-request failure surface.
+
+- run081 restart-per-repeat text-gate clip companion matrix (`6 cases x 2 repeats`) completed:
+  - objective: test whether clip companion choice can stabilize or flip the gemma-path boundary identified in run080.
+  - setup:
+    - new focused scripted runner: `tools/run_q6p_restart_per_repeat_textgate_clip_matrix.sh`
+    - fixed controls: same request key (`10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`), `version=ltx2.3`, `modifier=none`, `autoencoder=none`, restart-per-repeat enabled.
+    - cases:
+      - `text_gemma_only`, `text_gemma_clip_traced`, `text_gemma_clipvit`, `text_clipvit_only`, `text_clipvit_clip_traced`, `text_none_clip_traced`
+  - outcomes (`output/run081_restart_per_repeat_textgate_clip_matrix/results.tsv`, summary in `output/run081_restart_per_repeat_textgate_clip_matrix/summary.md`):
+    - all cases: `canary_rc_124=2/2`, `canary_rc_1=0/2`, `source_mapping=2/2`, `unavailable_count=0`
+    - `text_gemma_only`: mixed branch (`post_echo_rc_124=1`, `post_echo_rc_0=1`, `assert_count=1`, `abort_count=1`)
+    - `text_gemma_clip_traced`: stable non-assert (`post_echo_rc_0=2`, `assert_count=0`, `abort_count=0`)
+    - `text_gemma_clipvit`: stable non-assert (`post_echo_rc_0=2`, `assert_count=0`, `abort_count=0`)
+    - `text_clipvit_only`, `text_clipvit_clip_traced`, `text_none_clip_traced`: stable assertion-positive (`post_echo_rc_124=2`, `assert_count=2`, `abort_count=2`)
+  - interpretation:
+    - boundary is not governed by text-encoder identity alone.
+    - gemma-only sits on a mixed edge, while gemma+clip companion pairings moved into stable non-assert branch in this run.
+    - clip-vit/no-text regimes remained stable assertion-positive, strengthening text/companion pairing as the active gate inside the cold-per-repeat per-request surface.
