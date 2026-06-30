@@ -1141,3 +1141,14 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - no gemma-side variant is deterministically non-assert at 8 repeats.
     - companion choice shifts frequency (lowest assertion count observed in `text_gemma_clip_traced`) but does not create a hard binary split.
     - preferred framing is probabilistic branch rates rather than binary per-case labels.
+
+- run083 restart-per-repeat gemma-boundary repro pass (`3 cases x 8 repeats`) completed:
+  - objective: replicate run082 immediately to test short-horizon stability of per-case assertion frequencies.
+  - outcomes (`output/run083_restart_per_repeat_textgate_boundary_matrix/results.tsv`, summary in `output/run083_restart_per_repeat_textgate_boundary_matrix/summary.md`):
+    - all cases: `canary_rc_124=8/8`, `canary_rc_1=0/8`, `source_mapping=8/8`, `unavailable_count=0`
+    - `text_gemma_only`: `post_echo_rc_124=1`, `post_echo_rc_0=7`, `assert_count=1`
+    - `text_gemma_clip_traced`: `post_echo_rc_124=2`, `post_echo_rc_0=6`, `assert_count=2`
+    - `text_gemma_clipvit`: `post_echo_rc_124=2`, `post_echo_rc_0=6`, `assert_count=2`
+  - interpretation update:
+    - run082 high-level conclusion stands (all gemma-side variants are non-deterministic with majority non-assert repeats).
+    - per-case rank ordering is not stable run-to-run (clip-traced was lowest in run082, tied-highest in run083), so treat companion effects as probabilistic shifts rather than fixed ordering.

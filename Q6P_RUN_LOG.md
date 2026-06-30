@@ -3444,3 +3444,52 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run082_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_only.log`
   - `output/run082_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_clip_traced.log`
   - `output/run082_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_clipvit.log`
+
+## Run 083 (2026-06-30): Restart-Per-Repeat Gemma-Boundary Repro Pass (3 cases x 8 repeats)
+
+- Goal:
+  - Re-run the same focused boundary matrix as run082 to test short-horizon reproducibility of gemma-side branch rates.
+
+- Method:
+  - Reused focused boundary runner:
+    - `tools/run_q6p_restart_per_repeat_textgate_boundary_matrix.sh`
+  - Executed:
+    - `bash tools/run_q6p_restart_per_repeat_textgate_boundary_matrix.sh --tag run083_restart_per_repeat_textgate_boundary_matrix --repeats 8 --timeout-sec 75`
+  - Fixed controls unchanged:
+    - `model=10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `entry_version=ltx2.3`
+    - `modifier=none`, `autoencoder=none`
+    - `--restart-per-repeat` active for every repeat.
+
+- Case matrix:
+  - `text_gemma_only`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=none`
+  - `text_gemma_clip_traced`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_q6p.ckpt`
+  - `text_gemma_clipvit`: `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `clip_encoder=clip_vit_l14_f16.ckpt`
+
+- Matrix outcomes (canonical artifact):
+  - `output/run083_restart_per_repeat_textgate_boundary_matrix/results.tsv`
+  - global:
+    - all cases: `canary_rc_124=8/8`, `canary_rc_1=0/8`, `source_mapping=8/8`, `unavailable_count=0`
+    - `cases_with_any_assertion=3/3`
+  - per-case split:
+    - `text_gemma_only`: `post_echo_rc_124=1`, `post_echo_rc_0=7`, `assert_count=1`, `abort_count=1`
+    - `text_gemma_clip_traced`: `post_echo_rc_124=2`, `post_echo_rc_0=6`, `assert_count=2`, `abort_count=2`
+    - `text_gemma_clipvit`: `post_echo_rc_124=2`, `post_echo_rc_0=6`, `assert_count=2`, `abort_count=2`
+
+- Failure evidence and controls:
+  - Assertion/abort signature when active:
+    - `ccv_nnc_symbolic_graph_compile.c:1365` with `Assertion \`memory_type == CCV_TENSOR_CPU_MEMORY\` failed.`
+    - `*** Program crashed: Aborted ...`
+  - No `canary_rc=1` and no client-side `UNAVAILABLE ... SETTINGS frame` in this run.
+
+- Key findings:
+  - Repro pass preserved the same high-level shape as run082: all gemma-side variants remain majority non-assert yet non-deterministic.
+  - Case-level ordering shifted versus run082 (`text_gemma_only` 1/8 assertions here vs 2/8 in run082; `text_gemma_clip_traced` 2/8 here vs 1/8 in run082), reinforcing sampling variability.
+  - Updated interpretation: cold-per-repeat gemma-boundary behavior is rate-based and state-sensitive; single-run rank ordering across companion variants is not stable enough to treat as a hard rule.
+
+- Artifacts:
+  - `output/run083_restart_per_repeat_textgate_boundary_matrix/results.tsv`
+  - `output/run083_restart_per_repeat_textgate_boundary_matrix/summary.md`
+  - `output/run083_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_only.log`
+  - `output/run083_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_clip_traced.log`
+  - `output/run083_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_clipvit.log`

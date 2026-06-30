@@ -444,3 +444,9 @@ Success means full generation completes (not only first streamed response) and n
 	- All three cases still produced assertion-positive repeats: `text_gemma_only` 2/8, `text_gemma_clip_traced` 1/8, `text_gemma_clipvit` 2/8.
 	- Each case was majority non-assert (`post_echo_rc_0` as 6/8, 7/8, and 6/8 respectively), but none were deterministic.
 	- Updated causal branch: gemma-boundary sub-branches are probabilistic under cold-per-repeat sampling; companion choice modulates assertion frequency but does not define a hard regime split.
+
+- 2026-06-30: Run 083 restart-per-repeat gemma-boundary repro pass (3 cases x 8 repeats) completed.
+	- Same focused case set and controls as run082 reproduced mapped timeout-class behavior in all repeats (`canary_rc_124=8/8`, `canary_rc_1=0/8`, `source_mapping=8/8`, `unavailable_count=0`).
+	- Assertion-positive repeats persisted in every case (`text_gemma_only` 1/8, `text_gemma_clip_traced` 2/8, `text_gemma_clipvit` 2/8).
+	- Relative ordering across companions changed versus run082 (clip-traced moved from lowest to tied-highest assertion count), while all remained majority non-assert.
+	- Updated causal branch: branch behavior is statistically stable only at the distribution level; per-case rank ordering across short runs is itself state-sensitive/noisy.
