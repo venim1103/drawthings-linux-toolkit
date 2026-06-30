@@ -29,3 +29,6 @@ ComfyUI/input/
 
 # Optional local binaries
 tools/grpcurl
+
+# Local AI scratch workspace
+ai/
