@@ -1125,3 +1125,19 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation update:
     - run081 "gemma+clip stable non-assert" does not hold under higher repeat depth.
     - stronger current model: text/companion configuration shifts probability of entering assertion-positive sub-branch, but boundary behavior remains state-sensitive and non-deterministic in cold-per-repeat sampling.
+
+- run082 restart-per-repeat gemma-boundary stress pass (`3 cases x 8 repeats`) completed:
+  - objective: isolate the gemma-side boundary and estimate assertion frequency with higher repeat depth.
+  - setup:
+    - new focused runner: `tools/run_q6p_restart_per_repeat_textgate_boundary_matrix.sh`
+    - cases: `text_gemma_only`, `text_gemma_clip_traced`, `text_gemma_clipvit`
+    - fixed controls unchanged (`version=ltx2.3`, `modifier=none`, `autoencoder=none`, restart-per-repeat).
+  - outcomes (`output/run082_restart_per_repeat_textgate_boundary_matrix/results.tsv`, summary in `output/run082_restart_per_repeat_textgate_boundary_matrix/summary.md`):
+    - all cases: `canary_rc_124=8/8`, `canary_rc_1=0/8`, `source_mapping=8/8`, `unavailable_count=0`
+    - `text_gemma_only`: `post_echo_rc_124=2`, `post_echo_rc_0=6`, `assert_count=2`
+    - `text_gemma_clip_traced`: `post_echo_rc_124=1`, `post_echo_rc_0=7`, `assert_count=1`
+    - `text_gemma_clipvit`: `post_echo_rc_124=2`, `post_echo_rc_0=6`, `assert_count=2`
+  - interpretation update:
+    - no gemma-side variant is deterministically non-assert at 8 repeats.
+    - companion choice shifts frequency (lowest assertion count observed in `text_gemma_clip_traced`) but does not create a hard binary split.
+    - preferred framing is probabilistic branch rates rather than binary per-case labels.

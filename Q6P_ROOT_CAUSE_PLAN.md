@@ -438,3 +438,9 @@ Success means full generation completes (not only first streamed response) and n
 	- Gemma + clip companion pairings were no longer cleanly non-assert: `text_gemma_clip_traced` was 2/4 assertion-positive and `text_gemma_clipvit` 1/4 assertion-positive.
 	- Clip-vit/no-text controls stayed strongly assertion-positive (`text_clipvit_only` 4/4 asserts; traced-clip controls 4/4 asserts each).
 	- Updated causal branch: text/companion pairing influences branch probability, but the boundary is state-sensitive and non-deterministic under higher-repeat cold-per-repeat sampling; deterministic “gemma+clip stable non-assert” interpretation is not supported by run081b.
+
+- 2026-06-30: Run 082 restart-per-repeat gemma-boundary stress pass (3 cases x 8 repeats) completed.
+	- Focused cases (`text_gemma_only`, `text_gemma_clip_traced`, `text_gemma_clipvit`) all remained mapped and timeout-class every repeat (`canary_rc_124=8/8`, `canary_rc_1=0/8`, `source_mapping=8/8`, `unavailable_count=0`).
+	- All three cases still produced assertion-positive repeats: `text_gemma_only` 2/8, `text_gemma_clip_traced` 1/8, `text_gemma_clipvit` 2/8.
+	- Each case was majority non-assert (`post_echo_rc_0` as 6/8, 7/8, and 6/8 respectively), but none were deterministic.
+	- Updated causal branch: gemma-boundary sub-branches are probabilistic under cold-per-repeat sampling; companion choice modulates assertion frequency but does not define a hard regime split.
