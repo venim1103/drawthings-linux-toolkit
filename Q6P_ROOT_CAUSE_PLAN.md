@@ -450,3 +450,11 @@ Success means full generation completes (not only first streamed response) and n
 	- Assertion-positive repeats persisted in every case (`text_gemma_only` 1/8, `text_gemma_clip_traced` 2/8, `text_gemma_clipvit` 2/8).
 	- Relative ordering across companions changed versus run082 (clip-traced moved from lowest to tied-highest assertion count), while all remained majority non-assert.
 	- Updated causal branch: branch behavior is statistically stable only at the distribution level; per-case rank ordering across short runs is itself state-sensitive/noisy.
+
+- 2026-06-30: Run 084 pipeline stage-gate check completed (structural PASS, q6p runtime FAIL).
+	- Structural validation (`dt_validate_converted_ckpt.py --profile ltx2_3`) passed for `10_e_v1_bf16_regen_0_f16.ckpt`, `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`, and `10_e_v1_bf16_regen_0_q6p.ckpt`.
+	- Strict inference gate with final-output requirement passed on f16 (`RESULT=PASS`, stream completed, final image payload written).
+	- q6p variants failed with two distinct runtime classes:
+		- traced q6p: immediate `Illegal instruction` crash in `TextEncoder.encodeLTX2` (`canary_rc=1`),
+		- regen q6p: no-stream deep timeout (`canary_rc=124`, `post_echo_rc=0`).
+	- Updated causal branch: conversion path is operationally valid; quantized-runtime stability is the blocking layer, and structural parity alone cannot qualify q6p for production inference.

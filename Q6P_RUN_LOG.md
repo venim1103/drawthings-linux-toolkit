@@ -3493,3 +3493,41 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/run083_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_only.log`
   - `output/run083_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_clip_traced.log`
   - `output/run083_restart_per_repeat_textgate_boundary_matrix/cases/text_gemma_clipvit.log`
+
+## Run 084 (2026-06-30): Pipeline Stage-Gate Check (conversion pass, q6p inference fail)
+
+- Goal:
+  - Establish a strict readiness snapshot for the final pipeline objective by gating conversion outputs and quantized variants through both structure validation and final-output inference checks.
+
+- Method:
+  - Structural validation (`ltx2_3` profile):
+    - `.venv/bin/python tools/dt_validate_converted_ckpt.py --file dt-models/10_e_v1_bf16_regen_0_f16.ckpt --profile ltx2_3`
+    - `.venv/bin/python tools/dt_validate_converted_ckpt.py --file dt-models/10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt --profile ltx2_3`
+    - `.venv/bin/python tools/dt_validate_converted_ckpt.py --file dt-models/10_e_v1_bf16_regen_0_q6p.ckpt --profile ltx2_3`
+  - Strict inference gate (`require_complete_stream` + `require_final_output`, timeout 240s):
+    - `bash tools/run_q6p_canary_once.sh --model 10_e_v1_bf16_regen_0_f16.ckpt --tag run084_canary_f16_final_output --timeout-sec 240 --max-responses 0 --require-final-output --require-complete-stream --width 256 --height 256 --steps 8`
+    - `bash tools/run_q6p_canary_once.sh --model 10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt --tag run084_canary_q6p_trace_final_output --timeout-sec 240 --max-responses 0 --require-final-output --require-complete-stream --width 256 --height 256 --steps 8`
+    - `bash tools/run_q6p_canary_once.sh --model 10_e_v1_bf16_regen_0_q6p.ckpt --tag run084_canary_q6p_regen_final_output --timeout-sec 240 --max-responses 0 --require-final-output --require-complete-stream --width 256 --height 256 --steps 8`
+
+- Stage-gate outcomes:
+  - Structural gate:
+    - all three files passed `dt_validate_converted_ckpt.py` under `ltx2_3` profile.
+  - Inference gate:
+    - `f16` model: `RESULT=PASS`, full stream completed, final payload present (`images written: 1`).
+    - `q6p_trace021`: `RESULT=FAIL canary rc=1`; server crashed with `Illegal instruction` in `TextEncoder.encodeLTX2`.
+    - `q6p_regen_0`: `RESULT=FAIL canary timed out (240s)`; server accepted request but no streamed responses before timeout (`post_echo_rc=0`).
+
+- Key findings:
+  - Conversion stage is currently inference-viable on f16 output in strict final-output mode.
+  - q6p stage is not production-ready despite structural PASS; two distinct runtime failure classes remain:
+    - immediate crash (`Illegal instruction` / `encodeLTX2`) for traced q6p,
+    - deep timeout/no-stream for regen q6p.
+  - Structural validation is necessary but not sufficient; runtime gating must remain mandatory for codec qualification.
+
+- Artifacts:
+  - `output/q6p_canary_run084_canary_f16_final_output/client.log`
+  - `output/q6p_canary_run084_canary_f16_final_output/server.log`
+  - `output/q6p_canary_run084_canary_q6p_trace_final_output/client.log`
+  - `output/q6p_canary_run084_canary_q6p_trace_final_output/server.log`
+  - `output/q6p_canary_run084_canary_q6p_regen_final_output/client.log`
+  - `output/q6p_canary_run084_canary_q6p_regen_final_output/server.log`

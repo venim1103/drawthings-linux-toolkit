@@ -1152,3 +1152,18 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
   - interpretation update:
     - run082 high-level conclusion stands (all gemma-side variants are non-deterministic with majority non-assert repeats).
     - per-case rank ordering is not stable run-to-run (clip-traced was lowest in run082, tied-highest in run083), so treat companion effects as probabilistic shifts rather than fixed ordering.
+
+- run084 pipeline stage-gate snapshot completed (conversion vs q6p runtime):
+  - objective: assess end-to-end readiness against final project goal with strict gates (structure + final-output inference).
+  - structural gate (`dt_validate_converted_ckpt.py --profile ltx2_3`):
+    - PASS: `10_e_v1_bf16_regen_0_f16.ckpt`
+    - PASS: `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - PASS: `10_e_v1_bf16_regen_0_q6p.ckpt`
+  - strict inference gate (`run_q6p_canary_once.sh`, `--require-complete-stream --require-final-output --max-responses 0`, timeout 240s):
+    - PASS: f16 canary (`run084_canary_f16_final_output`) with completed stream and `images written: 1`.
+    - FAIL: traced q6p canary (`run084_canary_q6p_trace_final_output`) via `Illegal instruction` crash in `TextEncoder.encodeLTX2` (`canary_rc=1`).
+    - FAIL: regen q6p canary (`run084_canary_q6p_regen_final_output`) via no-stream timeout (`canary_rc=124`, `post_echo_rc=0`).
+  - interpretation update:
+    - conversion stage is currently viable for inference (f16 path).
+    - quantized stage remains the primary blocker for final objective; q6p still fails runtime despite structural PASS.
+    - keep strict runtime gating mandatory for q8p/q6p/q4p qualification.
