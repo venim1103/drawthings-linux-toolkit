@@ -458,3 +458,8 @@ Success means full generation completes (not only first streamed response) and n
 		- traced q6p: immediate `Illegal instruction` crash in `TextEncoder.encodeLTX2` (`canary_rc=1`),
 		- regen q6p: no-stream deep timeout (`canary_rc=124`, `post_echo_rc=0`).
 	- Updated causal branch: conversion path is operationally valid; quantized-runtime stability is the blocking layer, and structural parity alone cannot qualify q6p for production inference.
+- 2026-07-01: Run 085 q8p resume-recovery gate completed (structural PASS, strict runtime PASS, video smoke PASS).
+	- Validated resumed artifact `10_e_v1_bf16_regen_0_q8p_20260630.ckpt` with `dt_validate_converted_ckpt.py --profile ltx2_3` (`RESULT=PASS`).
+	- Strict canary (`run085_canary_q8p_final_output`) passed complete-stream + final-output gates (`responses=14`, `images written: 1`, `canary_rc=0`, `post_echo_rc=0`).
+	- One-frame video smoke (`tools/dt_video_test_run.sh`) completed with playable outputs (`playable.png`, `playable.gif`, `playable.mp4`).
+	- Updated causal branch: q8p is now qualified under current strict gates; remaining quantized readiness uncertainty is concentrated in q4p and repeat-depth coverage, not q8p recovery integrity.

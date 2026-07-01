@@ -1167,3 +1167,15 @@ This handoff summarizes the latest state after Runs 015-017 and timeout-policy u
     - conversion stage is currently viable for inference (f16 path).
     - quantized stage remains the primary blocker for final objective; q6p still fails runtime despite structural PASS.
     - keep strict runtime gating mandatory for q8p/q6p/q4p qualification.
+
+- run085 q8p resume-recovery gate completed (structural + strict runtime + video smoke):
+  - objective: verify interrupted q8 quantization output is production-usable, not just file-complete.
+  - structural gate (`dt_validate_converted_ckpt.py --profile ltx2_3`):
+    - PASS: `10_e_v1_bf16_regen_0_q8p_20260630.ckpt` (`RESULT=PASS`).
+  - strict inference gate (`run_q6p_canary_once.sh`, `--require-complete-stream --require-final-output --max-responses 0`, timeout 240s):
+    - PASS: q8p canary (`run085_canary_q8p_final_output`) with completed stream and final image payload (`responses=14`, `images written: 1`).
+  - practical video-path smoke (`tools/dt_video_test_run.sh` one-frame mode):
+    - PASS: wrote playable outputs (`playable.png`, `playable.gif`, `playable.mp4`) under `output/dt_video_20260701_072007`.
+  - interpretation update:
+    - q8p resume is now closed with strict runtime evidence.
+    - near-term quantized risk concentration shifts to q4p qualification and repeat-depth coverage, not q8p integrity.

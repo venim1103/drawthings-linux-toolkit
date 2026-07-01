@@ -3531,3 +3531,39 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/q6p_canary_run084_canary_q6p_trace_final_output/server.log`
   - `output/q6p_canary_run084_canary_q6p_regen_final_output/client.log`
   - `output/q6p_canary_run084_canary_q6p_regen_final_output/server.log`
+
+## Run 085 (2026-07-01): q8p Resume Recovery + Strict Runtime Gate Pass
+
+- Goal:
+  - Confirm the resumed q8p quantization output is genuinely pipeline-ready (not only structurally intact) after interruption.
+
+- Method:
+  - Structural validation (`ltx2_3` profile):
+    - `.venv/bin/python tools/dt_validate_converted_ckpt.py --file dt-models/10_e_v1_bf16_regen_0_q8p_20260630.ckpt --profile ltx2_3`
+  - Strict inference gate (`require_complete_stream` + `require_final_output`, timeout 240s):
+    - `bash tools/run_q6p_canary_once.sh --model 10_e_v1_bf16_regen_0_q8p_20260630.ckpt --tag run085_canary_q8p_final_output --timeout-sec 240 --max-responses 0 --require-complete-stream --require-final-output --width 256 --height 256 --steps 8`
+  - Practical one-frame video-path check:
+    - start server: `drawthings-grpc --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression /workspaces/drawthings-linux-toolkit/dt-models`
+    - run: `bash tools/dt_video_test_run.sh 10_e_v1_bf16_regen_0_q8p_20260630.ckpt`
+
+- Stage-gate outcomes:
+  - Structural gate:
+    - q8p file passed `dt_validate_converted_ckpt.py` under `ltx2_3` profile (`RESULT=PASS`).
+  - Inference gate:
+    - strict q8p canary passed (`RESULT=PASS`), stream completed, final payload written (`responses=14`, `images written: 1`).
+  - Video-path smoke:
+    - one-frame video harness completed end-to-end, writing playable outputs (`playable.png`, `playable.gif`, `playable.mp4`).
+
+- Key findings:
+  - Resumed q8p artifact is operationally valid under the same strict final-output gate used for f16/q6p qualification.
+  - q8p now has both structural and runtime evidence (including media conversion path), closing the resume-recovery uncertainty.
+  - Remaining quantized qualification gap is now centered on q4p and broader multi-case repetition, not q8p integrity.
+
+- Artifacts:
+  - `output/q6p_canary_run085_canary_q8p_final_output/client.log`
+  - `output/q6p_canary_run085_canary_q8p_final_output/server.log`
+  - `output/dt_video_20260701_072007/config.bin`
+  - `output/dt_video_20260701_072007/image_r0014_01.bin`
+  - `output/dt_video_20260701_072007/playable.png`
+  - `output/dt_video_20260701_072007/playable.gif`
+  - `output/dt_video_20260701_072007/playable.mp4`
