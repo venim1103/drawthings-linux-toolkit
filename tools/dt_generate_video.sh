@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${DT_HOST:-127.0.0.1:7861}"
-MODEL="${DT_MODEL:-ltx_2.3_22b_distilled_1.1_q6p.ckpt}"
+MODEL="${DT_MODEL:-ltx_2.3_22b_distilled_f16.ckpt}"
 WIDTH="${DT_WIDTH:-384}"
 HEIGHT="${DT_HEIGHT:-704}"
 DT_ALLOW_LOW_STEPS="${DT_ALLOW_LOW_STEPS:-1}"
@@ -244,6 +244,65 @@ sys.exit(1)
 PY
 }
 
+validate_custom_model_dependencies() {
+  local model_name="$1"
+  local custom_json="${ROOT_DIR}/dt-models/custom.json"
+  local model_dir="${ROOT_DIR}/dt-models"
+
+  if [[ -z "${model_name}" || ! -f "${custom_json}" ]]; then
+  return 0
+  fi
+
+  "${PYTHON_BIN}" - "${model_name}" "${custom_json}" "${model_dir}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+model_name = sys.argv[1]
+json_path = Path(sys.argv[2])
+model_dir = Path(sys.argv[3])
+
+try:
+  payload = json.loads(json_path.read_text(encoding="utf-8"))
+except Exception:
+  sys.exit(0)
+
+if not isinstance(payload, list):
+  sys.exit(0)
+
+entry = None
+for candidate in payload:
+  if not isinstance(candidate, dict):
+    continue
+  if candidate.get("name") == model_name or candidate.get("file") == model_name:
+    entry = candidate
+    break
+
+if entry is None:
+  sys.exit(0)
+
+missing = []
+for field in ("file", "text_encoder", "clip_encoder", "autoencoder"):
+  value = entry.get(field)
+  if not isinstance(value, str):
+    continue
+  value = value.strip()
+  if not value:
+    continue
+  if not (model_dir / value).is_file():
+    missing.append((field, value))
+
+if not missing:
+  sys.exit(0)
+
+print(f"Model '{model_name}' has missing custom.json dependencies:")
+for field, value in missing:
+  print(f"  - {field}: {value}")
+print("Update dt-models/custom.json or restore the missing files before running generation.")
+sys.exit(1)
+PY
+}
+
 ltx23_upscalers_present() {
   local model_dir="${ROOT_DIR}/dt-models"
   local missing=0
@@ -267,6 +326,10 @@ IS_LTX23_MODEL=0
 MODEL_EFFECTIVE="$(resolve_custom_model_file "${MODEL}")"
 if [[ "${MODEL_EFFECTIVE}" != "${MODEL}" ]]; then
   echo "Resolved custom alias for profile checks: ${MODEL} -> ${MODEL_EFFECTIVE}"
+fi
+
+if ! validate_custom_model_dependencies "${MODEL}"; then
+  exit 1
 fi
 
 if is_ltx23_model "${MODEL_EFFECTIVE}"; then

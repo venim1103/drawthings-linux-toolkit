@@ -3567,3 +3567,508 @@ DT_LTX23_TRACE=1 bash tools/run_q6p_canary_once.sh \
   - `output/dt_video_20260701_072007/playable.png`
   - `output/dt_video_20260701_072007/playable.gif`
   - `output/dt_video_20260701_072007/playable.mp4`
+
+## Run 086 (2026-07-01): Official q6p Long Final-Gate Reconfirm PASS
+
+- Goal:
+  - Reconfirm a clean official distilled q6p end-to-end pass with enough time budget to avoid timeout false negatives.
+
+- Command:
+
+```bash
+bash tools/run_q6p_canary_once.sh \
+  --model ltx_2.3_22b_distilled_1.1_q6p.ckpt \
+  --width 256 --height 256 --steps 8 \
+  --timeout-sec 1800 --max-responses 0 --require-final-output \
+  --tag official_q6p_singleframe_wait30_20260701
+```
+
+- Outcome:
+  - PASS (`canary_rc=0`, `post_echo_rc=0`)
+  - stream complete (`responses=15`, `generation stream finished`)
+  - final payloads present (`images written: 1`, `audio written: 1`)
+  - no crash signature in server log.
+
+- Artifacts:
+  - `output/official_q6p_singleframe_wait30_20260701/client.log`
+  - `output/official_q6p_singleframe_wait30_20260701/server.log`
+  - `output/official_q6p_singleframe_wait30_20260701/official_q6p_singleframe_wait30.png`
+
+## Run 087 (2026-07-01): Custom Raw-Key Runtime Checks (Alias Disabled)
+
+- Goal:
+  - Remove custom-entry schema confounds and test custom bytes directly.
+
+- Method summary:
+  - Temporarily moved `dt-models/custom.json` out of the way.
+  - Stage-gate canary (`max-responses=3`) on:
+    - `10_e_v1_bf16_regen_0_q6p.ckpt`
+    - `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt`
+  - Long final-gate raw-key runs on:
+    - `10_e_v1_bf16_regen_0_q6p.ckpt`
+    - `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - `10_e_v1_bf16_regen_0_q8p_20260630.ckpt` (control)
+
+- Runtime outcome:
+  - All stage-gates reached `textEncoded -> imageEncoded -> sampling` and PASSed.
+  - Long raw-key runs for custom q6p/q8p completed stream and wrote final image payloads.
+
+- Quality outcome:
+  - Decoded PNGs from custom raw-key outputs were visually noisy during manual inspection in this session.
+  - Therefore raw-key runtime completion was not accepted as quality success.
+
+- Artifacts:
+  - `output/custom_q6p_main_singleframe_wait30_rawkey_20260701/`
+  - `output/custom_q6p_trace021_singleframe_wait30_rawkey_20260701/`
+  - `output/custom_q8p_control_singleframe_20260701/`
+
+## Run 088 (2026-07-01): Alias Schema Regression and Minimal-v1 Mitigation
+
+- Goal:
+  - Re-test `10_e_v1` custom alias path and isolate schema-triggered crashes.
+
+- Outcomes:
+  - `10_e_v1` under prior ltx2.3-style entry failed with deterministic illegal-instruction crash:
+    - `TextEncoder.encodeLTX2`
+    - client `UNAVAILABLE: Socket closed`
+  - After changing `10_e_v1` entry to minimal `version=v1` shape, stage-gate PASSed and long run completed.
+  - However, decoded PNG from that long alias run remained visually noisy in this session.
+
+- Artifacts:
+  - fail: `output/q6p_canary_alias_10_e_v1_stagegate_20260701/`
+  - pass (runtime only): `output/q6p_canary_alias_10_e_v1_stagegate_minv1schema_20260701/`
+  - long runtime pass with noisy PNG: `output/alias_10_e_v1_singleframe_wait30_minv1schema_20260701/`
+
+## Run 089 (2026-07-01): Custom-Main + Official-Clip Alias Final-Gate Failure
+
+- Goal:
+  - Test whether ltx2.3 alias wiring with custom main and official clip recovers quality/stability.
+
+- Commands:
+  - stage-gate: `alias_10e_main_official_clip_stagegate_20260701`
+  - final-gate: `alias_10e_main_official_clip_finalgate_wait30_20260701`
+
+- Outcome:
+  - stage-gate timed out in one run (`canary_rc=124`, request accepted, no stream)
+  - long final-gate crashed (`canary_rc=1`) after `imageEncoded`
+  - server stack included cuDNN graph frames and `ccv_nnc_tensor_read`.
+
+- Artifacts:
+  - `output/q6p_canary_alias_10e_main_official_clip_stagegate_20260701/`
+  - `output/q6p_canary_alias_10e_main_official_clip_finalgate_wait30_20260701/`
+
+## Run 090 (2026-07-02): Custom f16 Raw-Key Long Control (Runtime PASS, Visual FAIL)
+
+- Goal:
+  - Determine whether quality failure starts before q6p quantization by testing custom f16 directly.
+
+- Method:
+  - Temporarily moved `dt-models/custom.json` out of the way.
+  - Long raw-key run on `10_e_v1_bf16_regen_0_f16.ckpt` (256x256, steps=8, timeout 1800s).
+  - Converted final tensor to PNG for visual inspection.
+
+- Runtime outcome:
+  - PASS (`canary_rc=0`, `post_echo_rc=0`)
+  - stream complete (`responses=14`, `generation stream finished`)
+  - final payload present (`images written: 1`)
+  - no crash signature in server log.
+
+- Visual outcome:
+  - FAIL for quality objective: PNG is noise/non-coherent.
+
+- Interpretation:
+  - Noise appears upstream of q6p quantization; conversion-stage/custom-model semantics are now the primary suspect.
+
+- Artifacts:
+  - `output/custom_f16_control_singleframe_wait30_rawkey_20260702/client.log`
+  - `output/custom_f16_control_singleframe_wait30_rawkey_20260702/server.log`
+  - `output/custom_f16_control_singleframe_wait30_rawkey_20260702/custom_f16_control_singleframe_wait30_rawkey.png`
+
+## Run 091 (2026-07-02): Custom f16 Full-Schema Alias Stage-Gate (Loader Crash)
+
+- Goal:
+  - Test whether explicit ltx2.3 alias wiring restores stable custom f16 path.
+
+- Alias tested:
+  - `name=10_e_v1_f16_fullschema_test`
+  - `version=ltx2.3`, `file=10_e_v1_bf16_regen_0_f16.ckpt`, `clip_encoder=10_e_v1_bf16_regen_0_f16.ckpt`, `text_encoder=gemma_3_12b_it_qat_q8p.ckpt`, `autoencoder=ltx_2.3_audio_video_vae_f16.ckpt`.
+
+- Outcome:
+  - FAIL (`canary_rc=1`, `post_echo_rc=1`)
+  - crash before first streamed response
+  - server crash head: `ccv_nnc_tensor_read -> ccv_cnnp_model_read`
+
+- Interpretation:
+  - Full-schema aliasing did not recover custom f16 stability and reintroduced loader-path crash behavior.
+
+- Artifacts:
+  - `output/q6p_canary_alias_10e_f16_fullschema_stagegate_20260702/client.log`
+  - `output/q6p_canary_alias_10e_f16_fullschema_stagegate_20260702/server.log`
+
+## Run 092 (2026-07-02): Persistent Raw-Key Custom f16 Repro (Immediate Loader Crash)
+
+- Goal:
+  - Reproduce the paired persistent-server custom f16 failure under apples-to-apples controls and capture definitive server crash evidence.
+
+- Method:
+  - Started visible persistent server with tee log capture:
+    - `drawthings-grpc --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression dt-models 2>&1 | tee output/persistent_server_logs_20260702_081754/server.log`
+  - Built raw-key config and executed custom f16 request:
+    - model: `10_e_v1_bf16_regen_0_f16.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - command output dir: `output/persistent_repro_custom_f16_crash_20260702_081813`
+
+- Outcome:
+  - FAIL immediately (`gRPC error: UNAVAILABLE: Socket closed`)
+  - no streamed responses (`responses=0`, `last_signpost=none`)
+  - post-run health check failed (`server_alive_after_custom=0`)
+  - server crashed with SIGSEGV in loader path:
+    - `ccv_nnc_tensor_read -> ccv_cnnp_model_read`
+
+- Artifacts:
+  - `output/persistent_repro_custom_f16_crash_20260702_081813/client.log`
+  - `output/persistent_repro_custom_f16_crash_20260702_081813/config.bin`
+  - `output/persistent_server_logs_20260702_081754/server.log`
+
+## Run 093 (2026-07-02): Persistent Official q6p Short Control (Healthy, Deep Sampling)
+
+- Goal:
+  - Run a matching official control after Run 092 to confirm behavior split is model-path specific, not a generic persistent-server failure.
+
+- Method:
+  - Started fresh visible persistent server with tee log capture:
+    - `drawthings-grpc --address 127.0.0.1 --port 7861 --gpu 0 --no-tls --model-browser --no-response-compression dt-models 2>&1 | tee output/persistent_server_logs_20260702_082117/server.log`
+  - Built config and executed official raw-key request with same prompt/settings as Run 092:
+    - model: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - bounded window: `timeout 600s`
+    - command output dir: `output/persistent_control_official_short_20260702_082130`
+
+- Outcome:
+  - PASS for bounded-control objective (no crash, server remained alive)
+  - stream progressed deep into sampling before timeout cancellation:
+    - client reached `response #9`
+    - signposts observed: `textEncoded -> imageEncoded -> sampling`
+  - bounded command terminated by timeout at 600s, and server log recorded expected cancellation:
+    - `cacncelled image generation`
+    - `Image processed cancelled, generated images return nil`
+  - post-run health check succeeded (`Received echo from: post_official_short_health`)
+
+- Interpretation:
+  - Under matched settings, official q6p remains stable while custom f16 dies pre-stream in loader read path.
+  - This isolates the current failure to custom model-load/serialization behavior rather than persistent server orchestration.
+
+- Artifacts:
+  - `output/persistent_control_official_short_20260702_082130/client.log`
+  - `output/persistent_control_official_short_20260702_082130/config.bin`
+  - `output/persistent_control_official_short_20260702_082130/preview_0004.bin`
+  - `output/persistent_control_official_short_20260702_082130/preview_0006.bin`
+  - `output/persistent_control_official_short_20260702_082130/preview_0008.bin`
+  - `output/persistent_control_official_short_20260702_082130/preview_0009.bin`
+  - `output/persistent_server_logs_20260702_082117/server.log`
+
+## Run 094 (2026-07-02): Persistent Raw-Key Custom q8p Stage-Gate (Healthy Sampling)
+
+- Goal:
+  - Verify whether the immediate persistent-loader crash seen in Run 092 is specific to custom f16 or a broader custom-path failure.
+
+- Method:
+  - Reused the active persistent server from Run 093.
+  - Built raw-key config and executed bounded stage-gate request:
+    - model: `10_e_v1_bf16_regen_0_q8p_20260630.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - bounded stream: `--max-responses 3`
+    - output dir: `output/persistent_probe_custom_q8p_stagegate_20260702_083324`
+
+- Outcome:
+  - PASS (`rc=0`, `responses=3`, `last_signpost=sampling`)
+  - signpost path: `textEncoded -> imageEncoded -> sampling`
+  - expected early-stop behavior observed (`stopping early at max responses: 3`)
+  - server remained healthy (`server_alive_after_q8p_stagegate=1`)
+
+- Interpretation:
+  - Immediate loader crash is not a universal custom-path behavior under this setup.
+  - Current high-signal split is now: custom f16 can crash pre-stream in loader read path, while custom q8p can reach stable sampling in the same persistent environment.
+
+- Artifacts:
+  - `output/persistent_probe_custom_q8p_stagegate_20260702_083324/client.log`
+  - `output/persistent_probe_custom_q8p_stagegate_20260702_083324/config.bin`
+  - `output/persistent_server_logs_20260702_082117/server.log`
+
+## Run 095 (2026-07-02): Persistent Raw-Key Custom q8p Final-Gate (Runtime PASS, Visual FAIL)
+
+- Goal:
+  - Execute a full final-output persistent run for custom q8p under the same prompt/settings used in recent A/B checks, then verify visual quality.
+
+- Method:
+  - Reused healthy persistent server (`127.0.0.1:7861`).
+  - Config/model:
+    - model: `10_e_v1_bf16_regen_0_q8p_20260630.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+  - Full run window: `timeout 1800s`, `--max-responses 0`.
+  - Converted final tensor to media:
+    - base name: `persistent_final_custom_q8p`
+
+- Outcome:
+  - Runtime PASS:
+    - `rc=0`
+    - `generation stream finished`
+    - `responses=14`
+    - `images written=1`
+    - `audio written=0`
+    - server healthy after run (`HELLO after_custom_q8p_final_health`)
+  - Visual FAIL:
+    - PNG output is still noise/non-coherent.
+
+- Interpretation:
+  - Confirms prior pattern: custom pipeline can complete stream and write final payload while still failing visual-quality objective.
+
+- Artifacts:
+  - `output/persistent_final_custom_q8p_20260702_095806/client.log`
+  - `output/persistent_final_custom_q8p_20260702_095806/config.bin`
+  - `output/persistent_final_custom_q8p_20260702_095806/image_r0014_01.bin`
+  - `output/persistent_final_custom_q8p_20260702_095806/persistent_final_custom_q8p.png`
+  - `output/persistent_final_custom_q8p_20260702_095806/persistent_final_custom_q8p.gif`
+  - `output/persistent_final_custom_q8p_20260702_095806/persistent_final_custom_q8p.mp4`
+  - `output/persistent_final_custom_q8p_20260702_095806/convert.log`
+
+## Run 096 (2026-07-02): Persistent Official q6p Final-Gate Control (Runtime PASS, Visual PASS)
+
+- Goal:
+  - Produce a same-session official control under identical settings to Run 095 for direct visual and runtime comparison.
+
+- Method:
+  - Reused same persistent server/session as Run 095.
+  - Config/model:
+    - model: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+  - Full run window: `timeout 1800s`, `--max-responses 0`.
+  - Converted final tensor to media:
+    - base name: `persistent_final_official_q6p`
+
+- Outcome:
+  - Runtime PASS:
+    - `rc=0`
+    - `generation stream finished`
+    - `responses=15`
+    - `images written=1`
+    - `audio written=1`
+    - server healthy after run (`server_alive_after_official_q6p_final=1`)
+  - Visual PASS:
+    - PNG output is coherent (red car on mountain road at sunset).
+
+- Interpretation:
+  - Same-session, same-settings A/B now explicitly shows quality divergence:
+    - custom q8p: runtime pass + visual fail
+    - official q6p: runtime pass + visual pass
+
+- Artifacts:
+  - `output/persistent_final_official_q6p_20260702_095927/client.log`
+  - `output/persistent_final_official_q6p_20260702_095927/config.bin`
+  - `output/persistent_final_official_q6p_20260702_095927/image_r0014_01.bin`
+  - `output/persistent_final_official_q6p_20260702_095927/audio_r0015_01.bin`
+  - `output/persistent_final_official_q6p_20260702_095927/persistent_final_official_q6p.png`
+  - `output/persistent_final_official_q6p_20260702_095927/persistent_final_official_q6p.gif`
+  - `output/persistent_final_official_q6p_20260702_095927/persistent_final_official_q6p.mp4`
+  - `output/persistent_final_official_q6p_20260702_095927/persistent_final_official_q6p.wav`
+  - `output/persistent_final_official_q6p_20260702_095927/convert.log`
+
+## Run 097 (2026-07-02): Persistent Raw-Key Custom q6p Trace021 Final-Gate (Hard Crash)
+
+- Goal:
+  - Run a full final-gate raw-key test for custom trace021 under matched settings to determine whether this q6p branch can complete end-to-end.
+
+- Method:
+  - Started fresh persistent server and captured logs:
+    - `output/persistent_server_logs_20260702_101533/server.log`
+  - Built raw-key config and executed full final-gate request:
+    - model: `10_e_v1_bf16_regen_0_q6p_trace021_20260610.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+    - run dir: `output/persistent_final_custom_trace021_q6p_20260702_101649`
+
+- Outcome:
+  - Runtime FAIL:
+    - client error: `gRPC error: UNAVAILABLE: Socket closed`
+    - summary: `custom_rc=1`, `server_alive_after_custom=0`
+    - no final payload written (`no_custom_final_image_bin`)
+  - Server crash signature:
+    - `Program crashed: Illegal instruction`
+    - crash site: `TextEncoder.encodeLTX2(...)`
+
+- Interpretation:
+  - Custom trace021 q6p currently fails in text-encoder path before stream progression.
+  - This is a distinct failure mode from custom q8p final-gate (which can complete stream but still fail visually).
+
+- Artifacts:
+  - `output/persistent_final_custom_trace021_q6p_20260702_101649/client.log`
+  - `output/persistent_final_custom_trace021_q6p_20260702_101649/config.bin`
+  - `output/persistent_final_custom_trace021_q6p_20260702_101649/summary.txt`
+  - `output/persistent_final_custom_trace021_q6p_20260702_101649/convert.log`
+  - `output/persistent_server_logs_20260702_101533/server.log`
+
+## Run 098 (2026-07-02): Persistent Official q6p Final-Gate Control After Run 097 Crash (Runtime PASS, Visual PASS)
+
+- Goal:
+  - Verify whether Run 097 crash is model-path specific by running a same-settings official control on a fresh server immediately after the custom crash.
+
+- Method:
+  - Restarted server cleanly and captured logs:
+    - `output/persistent_server_logs_20260702_101940_official_control/server.log`
+  - Ran full final-gate control with same settings as Run 097:
+    - model: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+    - run dir: `output/persistent_final_official_q6p_20260702_101958_post_custom_crash`
+
+- Outcome:
+  - Runtime PASS:
+    - `official_rc=0`
+    - `generation stream finished`
+    - `responses=15`
+    - `images written=1`
+    - `audio written=1`
+    - server healthy after run (`server_alive_after_official=1`)
+  - Visual PASS:
+    - final PNG is coherent.
+
+- Interpretation:
+  - Immediate post-crash control confirms runtime environment remained valid; Run 097 failure is specific to custom trace021 path, not a generic server health issue.
+
+- Artifacts:
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/client.log`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/config.bin`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/image_r0014_01.bin`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/audio_r0015_01.bin`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/persistent_final_official_q6p.png`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/persistent_final_official_q6p.gif`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/persistent_final_official_q6p.mp4`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/summary.txt`
+  - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/convert.log`
+  - `output/persistent_server_logs_20260702_101940_official_control/server.log`
+
+## Run 099 (2026-07-02): Persistent Raw-Key Custom q8p 3-Seed Sweep (Runtime PASS, Visual FAIL 3/3)
+
+- Goal:
+  - Determine whether custom q8p noisy output is seed-sensitive or deterministic under the established final-gate profile.
+
+- Method:
+  - Started fresh persistent server with dedicated log capture:
+    - `output/persistent_server_logs_20260702_110531_q8p_seed_sweep/server.log`
+  - Executed three full raw-key final-gate runs using identical settings except seed:
+    - model: `10_e_v1_bf16_regen_0_q8p_20260630.ckpt`
+    - size/steps: `256x256`, `steps=8`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+    - seeds: `4242`, `4243`, `4244`
+    - root dir: `output/persistent_seed_sweep_custom_q8p_20260702_110812`
+
+- Outcome:
+  - Runtime PASS for all seeds (3/3):
+    - each run: `rc=0`, `generation stream finished`, `responses=14`, `images written=1`, `audio written=0`
+    - server remained healthy after each run (`post_seed_4242_health`, `post_seed_4243_health`, `post_seed_4244_health` echoes observed)
+    - no crash markers (`Program crashed`, `Illegal instruction`, `Signal 11`) in sweep server log
+  - Visual FAIL for all seeds (3/3):
+    - all three PNGs were noise/non-coherent.
+
+- Interpretation:
+  - Custom q8p quality failure is robust across nearby seed changes under this profile.
+  - This strengthens the hypothesis that the blocker is semantic/model-path corruption rather than a seed-specific sampling artifact.
+
+- Artifacts:
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/summary.tsv`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4242/client.log`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4242/config.bin`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4242/convert.log`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4242/persistent_seed_4242_custom_q8p.png`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4243/client.log`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4243/config.bin`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4243/convert.log`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4243/persistent_seed_4243_custom_q8p.png`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4244/client.log`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4244/config.bin`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4244/convert.log`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4244/persistent_seed_4244_custom_q8p.png`
+  - `output/persistent_server_logs_20260702_110531_q8p_seed_sweep/server.log`
+
+## Run 100 (2026-07-02): Persistent Raw-Key Official q6p 3-Seed Matched Control (Runtime PASS, Visual PASS 3/3)
+
+- Goal:
+  - Run the same 3-seed final-gate protocol as Run 099 on official q6p to provide a matched distribution control.
+
+- Method:
+  - Started fresh persistent server with dedicated log capture:
+    - `output/persistent_server_logs_20260702_120218_official_seed_sweep/server.log`
+  - Executed three full raw-key final-gate runs using identical settings except seed:
+    - model: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - size/steps: `256x256`, `steps=8`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+    - seeds: `4242`, `4243`, `4244`
+    - root dir: `output/persistent_seed_sweep_official_q6p_20260702_133851`
+
+- Outcome:
+  - Runtime PASS for all seeds (3/3):
+    - each run: `rc=0`, `generation stream finished`, `responses=15`, `images written=1`, `audio written=1`
+    - server remained healthy after each run (`post_official_seed_4242_health`, `post_official_seed_4243_health`, `post_official_seed_4244_health` echoes observed)
+    - no crash markers (`Program crashed`, `Illegal instruction`, `Signal 11`) in sweep server log
+  - Visual PASS for all seeds (3/3):
+    - all three PNGs were coherent/non-noise outputs.
+
+- Interpretation:
+  - Compared against Run 099 (custom q8p visual fail 3/3), this matched control strengthens the conclusion that the custom-path quality failure is model-path semantic and not due to seed variance or generic runtime instability.
+
+- Artifacts:
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/summary.tsv`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4242/client.log`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4242/config.bin`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4242/convert.log`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4242/persistent_seed_4242_official_q6p.png`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4243/client.log`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4243/config.bin`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4243/convert.log`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4243/persistent_seed_4243_official_q6p.png`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4244/client.log`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4244/config.bin`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4244/convert.log`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4244/persistent_seed_4244_official_q6p.png`
+  - `output/persistent_server_logs_20260702_120218_official_seed_sweep/server.log`
+
+## Run 101 (2026-07-02): Quantitative PNG Metrics for Matched 3-Seed A/B (Custom q8p vs Official q6p)
+
+- Goal:
+  - Add objective image-statistics evidence to complement manual visual verdicts from Runs 099 and 100.
+
+- Method:
+  - Computed grayscale summary metrics on all six PNGs (custom q8p seeds `4242/4243/4244` and official q6p seeds `4242/4243/4244`):
+    - `gray_mean`, `gray_std`, `entropy`, `hf_delta` (neighbor delta), `grad_mean`
+  - Wrote per-image rows plus aggregate means:
+    - `output/seed_sweep_png_metrics_20260702_135352.tsv`
+
+- Outcome (aggregate means):
+  - custom q8p:
+    - `gray_mean=0.504858`
+    - `gray_std=0.097851`
+    - `entropy=6.694596`
+    - `hf_delta=0.045156`
+    - `grad_mean=0.047160`
+  - official q6p:
+    - `gray_mean=0.333414`
+    - `gray_std=0.308807`
+    - `entropy=7.122476`
+    - `hf_delta=0.033813`
+    - `grad_mean=0.049277`
+
+- Interpretation:
+  - Custom q8p outputs are quantitatively clustered into a narrow mid-tone band with low global contrast and lower entropy, consistent with the observed noise/non-coherent quality failure.
+  - Official q6p outputs show substantially higher contrast and entropy with coherent scene structure.
+
+- Artifacts:
+  - `output/seed_sweep_png_metrics_20260702_135352.tsv`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4242/persistent_seed_4242_custom_q8p.png`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4243/persistent_seed_4243_custom_q8p.png`
+  - `output/persistent_seed_sweep_custom_q8p_20260702_110812/seed_4244/persistent_seed_4244_custom_q8p.png`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4242/persistent_seed_4242_official_q6p.png`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4243/persistent_seed_4243_official_q6p.png`
+  - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4244/persistent_seed_4244_official_q6p.png`

@@ -2,6 +2,13 @@
 
 This handoff summarizes the latest state after Runs 015-017 and timeout-policy updates.
 
+## Addendum (2026-07-02)
+
+- For the current known-good originals and latest custom-runtime findings, use:
+  - `Q6P_WORKING_BASELINES_2026-07-02.md`
+- New append-only run entries were added in `Q6P_RUN_LOG.md`:
+  - Run 086..089
+
 ## 1) What changed today
 
 - Added final-mode timeout policy to canary flows:
