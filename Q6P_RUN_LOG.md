@@ -4072,3 +4072,156 @@ bash tools/run_q6p_canary_once.sh \
   - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4242/persistent_seed_4242_official_q6p.png`
   - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4243/persistent_seed_4243_official_q6p.png`
   - `output/persistent_seed_sweep_official_q6p_20260702_133851/seed_4244/persistent_seed_4244_official_q6p.png`
+
+## Run 102 (2026-07-03): Persistent Raw-Key Custom q6p Main 3-Seed Sweep Attempt (Seed 4242 Hard Crash)
+
+- Goal:
+  - Extend the seed-sweep protocol to custom q6p main (`10_e_v1_bf16_regen_0_q6p.ckpt`) under the same final-gate settings used in Runs 099/100.
+
+- Method:
+  - Started fresh persistent server with dedicated log capture:
+    - `output/persistent_server_logs_20260703_102119_custom_q6p_main_seed_sweep/server.log`
+  - Started 3-seed sweep (`4242/4243/4244`) with matched profile:
+    - model: `10_e_v1_bf16_regen_0_q6p.ckpt`
+    - size/steps: `256x256`, `steps=8`
+    - sampler/guidance/shift: `17 / 1.0 / 3.0`
+    - root dir: `output/persistent_seed_sweep_custom_q6p_main_20260703_102142`
+
+- Outcome:
+  - FAIL on first seed (`4242`) before sweep could continue:
+    - client reached `textEncoded` then `imageEncoded`
+    - then `gRPC error: UNAVAILABLE: Socket closed`
+    - summary row: `4242\t1\t0\t0\t0\t0\t0\t0\t0`
+  - Server crash signature:
+    - `Program crashed: Bad pointer dereference`
+    - stack head includes `libcudnn_graph.so.9.8.0` and `ccv_nnc_tensor_read`
+  - No final payloads written and no downstream seeds executed.
+
+- Interpretation:
+  - Custom q6p main currently exhibits a hard runtime instability class distinct from the custom q8p case (which is runtime-stable but visually degraded).
+  - This adds a third clear custom failure surface in current evidence: (1) text-path illegal-instruction (trace021), (2) loader/cudnn pointer crash (q6p main), (3) runtime-pass visual-noise (q8p/f16).
+
+- Artifacts:
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/summary.tsv`
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/pre_echo.log`
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/seed_4242/client.log`
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/seed_4242/config.bin`
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/seed_4242/config.log`
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/seed_4242/post_echo.log`
+  - `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/seed_4242/convert.log`
+  - `output/persistent_server_logs_20260703_102119_custom_q6p_main_seed_sweep/server.log`
+
+## Run 103 (2026-07-03): Custom q6p Main Stage-Gate Long-Wait Recheck (1800s Budget, Hard Crash)
+
+- Goal:
+  - Validate whether prior custom q6p main failure was merely insufficient wait time by rerunning with a full 1800s timeout budget.
+
+- Method:
+  - Fresh server and single-case bounded stage-gate (`--max-responses 3`) with long timeout:
+    - model: `10_e_v1_bf16_regen_0_q6p.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - timeout: `1800s`
+    - run dir: `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait`
+    - server log: `output/run103_longwait_20260703_122344/server_custom_q6p_main_stagegate_longwait/server.log`
+
+- Outcome:
+  - FAIL quickly despite long timeout budget:
+    - client reached `textEncoded -> imageEncoded`
+    - then `gRPC error: UNAVAILABLE: Socket closed`
+    - summary: `rc=1`, `finished=0`, `responses=0`, `last_signpost=imageEncoded`, `server_alive_after=0`
+  - Server crash signature:
+    - `Signal 11`
+    - `Program crashed: Bad pointer dereference`
+    - stack includes `libcudnn_graph.so.9.8.0` and `ccv_nnc_tensor_read`
+
+- Interpretation:
+  - This failure is not explained by short timeout windows; crash occurs early in execution path.
+
+- Artifacts:
+  - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/summary.txt`
+  - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/client.log`
+  - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/config.bin`
+  - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/config.log`
+  - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/pre_echo.log`
+  - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/post_echo.log`
+  - `output/run103_longwait_20260703_122344/server_custom_q6p_main_stagegate_longwait/server.log`
+
+## Run 104 (2026-07-03): Official q6p Stage-Gate Long-Wait Matched Control (PASS)
+
+- Goal:
+  - Run a same-profile long-wait control immediately after Run 103 to determine whether the crash is custom-path specific.
+
+- Method:
+  - Fresh server and same bounded stage-gate (`--max-responses 3`) with 1800s timeout:
+    - model: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - size/steps/seed: `256x256`, `steps=8`, `seed=4242`
+    - run dir: `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control`
+    - server log: `output/run104_longwait_20260703_123501/server_official_q6p_stagegate_longwait_control/server.log`
+
+- Outcome:
+  - PASS:
+    - signposts reached: `textEncoded -> imageEncoded -> sampling`
+    - bounded stop observed: `stopping early at max responses: 3`
+    - `generation stream finished`
+    - summary: `rc=0`, `finished=1`, `responses=3`, `last_signpost=sampling`, `server_alive_after=1`
+  - No crash markers in server log.
+
+- Interpretation:
+  - Under matched settings and long wait budget, official control remains stable while custom q6p main crashes; this localizes the failure to custom model path, not to insufficient wait or generic runtime instability.
+
+- Artifacts:
+  - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/summary.txt`
+  - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/client.log`
+  - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/config.bin`
+  - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/config.log`
+  - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/pre_echo.log`
+  - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/post_echo.log`
+  - `output/run104_longwait_20260703_123501/server_official_q6p_stagegate_longwait_control/server.log`
+
+## Run 105 (2026-07-03): Converter-Side Focused Diagnostics (Custom q6p Main vs Official q6p)
+
+- Goal:
+  - Move from runtime symptom checks to serializer/content diagnostics for custom q6p main (`10_e_v1_bf16_regen_0_q6p.ckpt`) against official q6p baseline.
+
+- Method:
+  - Intended deep diff run was started but produced no output for multiple minutes (likely heavy-scan stall in this environment):
+    - `output/run105_converter_focus_20260703_124301/deep_diff.log`
+  - Switched to stable fallback probe path:
+    1. row-wise metadata/length probe over all shared tensors
+    2. equal-length payload signature probe on first 2500 shared rows (`allow-metadata-mismatch`) to avoid full-scan hangs
+
+- Key outcomes:
+  - Row-wise meta/len (`5746` shared, `5745` readable):
+    - `meta_mismatch_any=5745`
+    - `meta_full_match=0`
+    - `meta_metadata_mismatch_type=5745`
+    - `meta_data_len_mismatch=5546`
+    - `meta_unreadable_only_file=1` (`__text_feature_extractor__[t-video_aggregate_embed-0-0]`)
+  - Top mismatch families (row-wise):
+    - `__dit__`: `5484/5484`
+    - `__text_video_connector__`: `128/128`
+    - `__text_audio_connector__`: `128/128`
+    - `__text_feature_extractor__`: `3/4`
+    - connector learnable registers: `1/1` each
+  - Equal-length payload probe (first `2500` rows):
+    - `payload_metadata_mismatch=2500`
+    - `payload_data_len_equal=23`
+    - among equal-length rows: `0` head-signature matches, `23` head-signature mismatches
+    - small-hash checks: `21/21` mismatched
+    - all sampled payload mismatches concentrated in `__dit__`
+
+- Interpretation:
+  - Custom q6p main remains globally non-equivalent to official q6p in both metadata type and data length, dominated by `__dit__` but including connector/text-feature families.
+  - The crash class is consistent with broad serializer/content divergence rather than a narrow single-row issue.
+
+- Artifacts:
+  - `output/run105_converter_focus_20260703_124301/summary.txt`
+  - `output/run105_converter_focus_20260703_124301/summary_metrics.txt`
+  - `output/run105_converter_focus_20260703_124301/meta_len_rowwise.json`
+  - `output/run105_converter_focus_20260703_124301/meta_len_rowwise.tsv`
+  - `output/run105_converter_focus_20260703_124301/meta_len_rowwise.log`
+  - `output/run105_converter_focus_20260703_124301/meta_len_mismatch_names.txt`
+  - `output/run105_converter_focus_20260703_124301/payload_mismatch_first2500.json`
+  - `output/run105_converter_focus_20260703_124301/payload_mismatch_first2500.log`
+  - `output/run105_converter_focus_20260703_124301/payload_mismatch_names_first2500.txt`
+  - `output/run105_converter_focus_20260703_124301/deep_diff.log`

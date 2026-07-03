@@ -136,6 +136,27 @@ Tensor conversion command:
    - immediate fresh-server official control under the same settings passed end-to-end (`responses=15`, image+audio written, post-run echo healthy) with coherent PNG:
       - `output/persistent_final_official_q6p_20260702_101958_post_custom_crash/`
       - `output/persistent_server_logs_20260702_101940_official_control/server.log`
+- Custom q6p main matched-seed sweep attempt (`10_e_v1_bf16_regen_0_q6p.ckpt`) failed on first seed before continuation:
+   - sweep root: `output/persistent_seed_sweep_custom_q6p_main_20260703_102142/`
+   - seed `4242` reached `textEncoded -> imageEncoded` then client `UNAVAILABLE: Socket closed`
+   - server crashed with bad-pointer dereference in cuDNN graph path with `ccv_nnc_tensor_read` in stack head:
+      - `output/persistent_server_logs_20260703_102119_custom_q6p_main_seed_sweep/server.log`
+- Long-wait recheck (1800s timeout budget) confirms this is not a short-timeout artifact:
+   - custom q6p main still crashed quickly after `imageEncoded` with `Signal 11` / bad-pointer dereference and `ccv_nnc_tensor_read`:
+      - `output/run103_longwait_20260703_122344/custom_q6p_main_stagegate_longwait/summary.txt`
+      - `output/run103_longwait_20260703_122344/server_custom_q6p_main_stagegate_longwait/server.log`
+   - matched official long-wait control under same profile passed to `sampling` and exited cleanly at bounded stop (`responses=3`, server alive):
+      - `output/run104_longwait_20260703_123501/official_q6p_stagegate_longwait_control/summary.txt`
+      - `output/run104_longwait_20260703_123501/server_official_q6p_stagegate_longwait_control/server.log`
+- Converter-side focus run (custom q6p main vs official q6p) shows broad serializer/content divergence, not a narrow edge case:
+   - run root: `output/run105_converter_focus_20260703_124301/`
+   - row-wise meta/len over all shared tensors:
+      - `mismatch_any=5745/5745 readable`, `full_match=0`, `metadata_mismatch_type=5745`, `data_len_mismatch=5546`
+      - dominant families: `__dit__` (`5484/5484`), `__text_video_connector__` (`128/128`), `__text_audio_connector__` (`128/128`), `__text_feature_extractor__` (`3/4`)
+   - equal-length payload sample probe (first 2500 rows):
+      - `metadata_mismatch=2500`, `data_len_equal=23`, `head-signature mismatches=23/23`, `small_sha256 mismatches=21/21`
+      - sampled payload mismatches were `__dit__`-dominated
+   - note: full deep-diff path produced no output in this environment and was bypassed in favor of stable row-wise probes.
 - Alias `10_e_v1` under `version=ltx2.3` schema produced deterministic `Illegal instruction` in `TextEncoder.encodeLTX2`:
   - artifact: `output/q6p_canary_alias_10_e_v1_stagegate_20260701`
 - Experimental alias `10_e_v1_main_official_clip_test` timed out in one stage-gate and segfaulted in long final-gate:
@@ -193,7 +214,7 @@ bash tools/run_q6p_canary_once.sh \
 ## 7) Current Plan Continuation Point
 
 - Focus next on restoring custom output quality (not just stream completion).
-- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with two observed failure surfaces in this session: (a) noisy PNGs despite runtime completion (custom f16/q8p/q6p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3) and (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`).
+- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for custom q6p main. Long-wait matched controls and Run 105 converter probes indicate this q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families).
 - Priority order:
   1. establish one coherent raw-key custom output,
   2. then reintroduce alias fields one at a time,
