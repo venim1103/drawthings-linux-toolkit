@@ -4225,3 +4225,127 @@ bash tools/run_q6p_canary_once.sh \
   - `output/run105_converter_focus_20260703_124301/payload_mismatch_first2500.log`
   - `output/run105_converter_focus_20260703_124301/payload_mismatch_names_first2500.txt`
   - `output/run105_converter_focus_20260703_124301/deep_diff.log`
+
+## Run 106 (2026-07-06): Connector+DIT-Slice Content Alignment Canary (In-Place Candidate Copy)
+
+- Goal:
+  - Test whether a surgical content alignment on highest-signal families from Run 105 can mitigate the custom q6p main stage-gate crash class.
+
+- Method:
+  - Reused Run 105 mismatch names to build focused patch list:
+    - all connector/text-feature rows: `__text_video_connector__`, `__text_audio_connector__`, `__text_feature_extractor__`, and both connector learnable register families
+    - plus bounded DIT slice: first `256` `__dit__` rows
+  - Name-list sizes:
+    - connector rows: `261`
+    - DIT slice rows: `256`
+    - union: `517`
+  - Candidate handling:
+    - in-place patch applied to copied custom candidate:
+      - `dt-models/10_e_v1_bf16_regen_0_q6p_run106_connector_ditslice.ckpt`
+      - `dt-models/10_e_v1_bf16_regen_0_q6p_run106_connector_ditslice.ckpt-tensordata`
+  - Alignment tool:
+    - `tools/dt_align_ckpt_content_subset.py` with both dim+data names set to the same 517-name list.
+  - Validation sequence:
+    1. targeted content probe before patch
+    2. dry-run + apply
+    3. targeted content probe after patch
+    4. matched long-wait bounded stage-gate canary (`--timeout-sec 1800 --max-responses 3 --steps 8 --seed 4242`) on patched candidate then official control
+
+- Key outcomes:
+  - Pre-patch targeted probe (`517` selected):
+    - `metadata_mismatch_type=517`
+    - `data_small_sha256_compared=170`
+    - `data_small_sha256_mismatch=138`
+  - Apply results:
+    - `rows_updated=517`
+    - `dim_rows_updated=517`
+    - `data_rows_updated=517`
+    - `post_dim_head_mismatch=0`
+    - `post_data_head_mismatch=0`
+  - Post-patch targeted probe (`517` selected):
+    - `metadata_mismatch_type=517` (unchanged)
+    - `data_small_sha256_compared=413`
+    - `data_small_sha256_mismatch=0`
+  - Stage-gate canary (patched candidate):
+    - `canary_rc=0`, `RESULT=PASS`
+    - signposts: `textEncoded -> imageEncoded -> sampling`
+    - bounded stop at `responses=3`, stream finished, no crash markers.
+  - Matched official stage-gate control:
+    - `canary_rc=0`, `RESULT=PASS`
+    - same signpost progression and bounded-stop behavior.
+
+- Interpretation:
+  - Surgical connector+DIT-slice content alignment removed observed payload/head mismatches in the selected subset and avoided the immediate stage-gate crash for this bounded scenario.
+  - Metadata type mismatch remains for selected rows, and global mismatch outside the 517-row subset is still expected; this is evidence of partial mitigation, not full model equivalence.
+
+- Artifacts:
+  - `output/run106_connector_ditslice_20260703_131008/summary.txt`
+  - `output/run106_connector_ditslice_20260703_131008/connector_names.txt`
+  - `output/run106_connector_ditslice_20260703_131008/dit_slice_256.txt`
+  - `output/run106_connector_ditslice_20260703_131008/patch_names_connector_plus_dit256.txt`
+  - `output/run106_connector_ditslice_20260703_131008/targeted_before.log`
+  - `output/run106_connector_ditslice_20260703_131008/targeted_before.json`
+  - `output/run106_connector_ditslice_20260703_131008/targeted_before.md`
+  - `output/run106_connector_ditslice_20260703_131008/content_align_dryrun.log`
+  - `output/run106_connector_ditslice_20260703_131008/content_align_apply.log`
+  - `output/run106_connector_ditslice_20260703_131008/targeted_after.log`
+  - `output/run106_connector_ditslice_20260703_131008/targeted_after.json`
+  - `output/run106_connector_ditslice_20260703_131008/targeted_after.md`
+  - `output/run106_connector_ditslice_20260703_131008/patched_stagegate.log`
+  - `output/run106_connector_ditslice_20260703_131008/official_stagegate.log`
+  - `output/q6p_canary_run106_patched_connector_ditslice_stagegate_longwait_20260706_054624/client.log`
+  - `output/q6p_canary_run106_patched_connector_ditslice_stagegate_longwait_20260706_054624/server.log`
+  - `output/q6p_canary_run106_official_q6p_stagegate_longwait_control_20260706_054624/client.log`
+  - `output/q6p_canary_run106_official_q6p_stagegate_longwait_control_20260706_054624/server.log`
+
+## Run 107 (2026-07-06): Full-Gate A/B on Patched Candidate vs Official Control
+
+- Goal:
+  - Validate whether Run 106 patched candidate stability holds in strict full-gate mode and compare output quality against official under matched settings.
+
+- Method:
+  - Matched full-gate profile on both models:
+    - `--timeout-sec 1800 --max-responses 0 --require-complete-stream --require-final-output`
+    - `256x256`, `steps=8`, `seed=4242`
+  - Models:
+    - patched custom: `10_e_v1_bf16_regen_0_q6p_run106_connector_ditslice.ckpt`
+    - official control: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+  - Converted generated tensor outputs to playable media with `tools/dt_tensor_to_playable.py`.
+  - Computed grayscale/entropy metrics on representative PNGs.
+
+- Key outcomes:
+  - Full-gate runtime status:
+    - patched custom: `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - official control: `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+  - Stream/output shape:
+    - patched custom: `responses=14`, `images written=1`, `audio written=0`, `preview frames=5`
+    - official control: `responses=23`, `images written=9`, `audio written=1`, `preview frames=5`
+  - Quantitative PNG comparison:
+    - patched: `gray_mean=0.476247`, `gray_std=0.130545`, `entropy=7.096774`
+    - official: `gray_mean=0.461745`, `gray_std=0.330333`, `entropy=7.483953`
+  - Quality interpretation from metrics:
+    - patched output remains low-contrast and lower-entropy than official despite full-gate PASS, indicating partial runtime recovery without equivalent generation quality.
+
+- Interpretation:
+  - The connector+DIT-slice patch materially improves runtime stability (now passing both stage-gate and full-gate in this profile), but does not yet recover official-like output richness or motion/audio behavior.
+  - This further supports a broad content-divergence root cause and suggests additional alignment coverage is required beyond the current 517-row subset.
+
+- Artifacts:
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/summary.txt`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/patched_finalgate.log`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/official_finalgate.log`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/patched_playable.log`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/official_playable.log`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/png_metrics_run107.txt`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/png_metrics_run107.json`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/patched/patched_run107.png`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/patched/patched_run107.gif`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/patched/patched_run107.mp4`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/official/official_run107.png`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/official/official_run107.gif`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/official/official_run107.mp4`
+  - `output/run107_fullgate_patched_vs_official_20260706_055513/media/official/official_run107.wav`
+  - `output/q6p_canary_run107_patched_connector_ditslice_finalgate_20260706_055513/client.log`
+  - `output/q6p_canary_run107_patched_connector_ditslice_finalgate_20260706_055513/server.log`
+  - `output/q6p_canary_run107_official_q6p_finalgate_control_20260706_055513/client.log`
+  - `output/q6p_canary_run107_official_q6p_finalgate_control_20260706_055513/server.log`

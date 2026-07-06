@@ -157,6 +157,31 @@ Tensor conversion command:
       - `metadata_mismatch=2500`, `data_len_equal=23`, `head-signature mismatches=23/23`, `small_sha256 mismatches=21/21`
       - sampled payload mismatches were `__dit__`-dominated
    - note: full deep-diff path produced no output in this environment and was bypassed in favor of stable row-wise probes.
+- Connector+DIT-slice surgical content alignment canary (Run 106) produced partial mitigation in bounded stage-gate:
+   - run root: `output/run106_connector_ditslice_20260703_131008/`
+   - selected patch set from Run 105 mismatch names:
+      - connector/text-feature families (`261` names) + first `256` DIT names, union `517`
+   - targeted probe before patch (`517` selected):
+      - `metadata_mismatch_type=517`, `small_sha256_mismatch=138/170 compared`
+   - after `dt_align_ckpt_content_subset.py` apply:
+      - `rows_updated=517`, `post_dim_head_mismatch=0`, `post_data_head_mismatch=0`
+      - targeted post-probe: `small_sha256_mismatch=0/413 compared` (for selected rows)
+      - metadata type mismatch remained for selected rows (`metadata_mismatch_type=517`)
+   - matched long-wait bounded stage-gate (`--timeout-sec 1800 --max-responses 3`, seed `4242`) passed for both patched custom candidate and official control:
+      - patched custom: `output/q6p_canary_run106_patched_connector_ditslice_stagegate_longwait_20260706_054624/`
+      - official control: `output/q6p_canary_run106_official_q6p_stagegate_longwait_control_20260706_054624/`
+   - interpretation: targeted content surgery can suppress the immediate stage-gate crash in this bounded profile, but does not establish global equivalence or full-run quality.
+- Full-gate follow-up (Run 107) confirms stability improvement but persistent quality gap:
+   - run root: `output/run107_fullgate_patched_vs_official_20260706_055513/`
+   - matched full-gate settings: `--timeout-sec 1800 --max-responses 0 --require-complete-stream --require-final-output`, `256x256`, `steps=8`, `seed=4242`
+   - runtime: both patched custom and official control PASSed (`canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`)
+   - output shape diverged materially:
+      - patched custom: `responses=14`, `images=1`, `audio=0`
+      - official control: `responses=23`, `images=9`, `audio=1`
+   - PNG metrics still show patched-quality deficit vs official:
+      - patched: `gray_std=0.130545`, `entropy=7.096774`
+      - official: `gray_std=0.330333`, `entropy=7.483953`
+   - interpretation: surgical patch lifted crash/stability behavior into PASS for this profile but did not recover official-like richness/coherence.
 - Alias `10_e_v1` under `version=ltx2.3` schema produced deterministic `Illegal instruction` in `TextEncoder.encodeLTX2`:
   - artifact: `output/q6p_canary_alias_10_e_v1_stagegate_20260701`
 - Experimental alias `10_e_v1_main_official_clip_test` timed out in one stage-gate and segfaulted in long final-gate:
@@ -214,7 +239,7 @@ bash tools/run_q6p_canary_once.sh \
 ## 7) Current Plan Continuation Point
 
 - Focus next on restoring custom output quality (not just stream completion).
-- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for custom q6p main. Long-wait matched controls and Run 105 converter probes indicate this q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families).
+- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicate the q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families). Runs 106-107 show this crash surface can be partially mitigated in both bounded and full-gate profiles by targeted connector+DIT content alignment, strengthening the content-divergence causal link while leaving full equivalence and output quality unresolved.
 - Priority order:
   1. establish one coherent raw-key custom output,
   2. then reintroduce alias fields one at a time,
