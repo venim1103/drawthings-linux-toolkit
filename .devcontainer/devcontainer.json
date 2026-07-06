@@ -21,9 +21,7 @@
     "--env",
     "NVIDIA_VISIBLE_DEVICES=all",
     "--env",
-    "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-    "--env",
-    "LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda/targets/x86_64-linux/lib"
+    "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
   ],
   "initializeCommand": "mkdir -p /tmp/devcontainer-certs && (cp /etc/ssl/certs/ZscalerRootCertificate-2048-SHA256.pem /tmp/devcontainer-certs/ZscalerRootCertificate-2048-SHA256.crt 2>/dev/null || touch /tmp/devcontainer-certs/ZscalerRootCertificate-2048-SHA256.crt)",
   "mounts": [

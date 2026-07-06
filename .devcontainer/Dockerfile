@@ -75,8 +75,13 @@ RUN set -eux; \
     'ADDRESS="${DRAWTHINGS_ADDRESS:-127.0.0.1}"' \
     'PORT="${DRAWTHINGS_PORT:-7861}"' \
     'GPU="${DRAWTHINGS_GPU:-0}"' \
+    'SWIFT_LIB="/usr/local/swift/usr/lib/swift/linux"' \
     '' \
     'mkdir -p "$MODEL_DIR"' \
+    '' \
+    'if [ -d "$SWIFT_LIB" ]; then' \
+    '    export LD_LIBRARY_PATH="$SWIFT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+    'fi' \
     '' \
     'if [ "$#" -eq 0 ]; then' \
     '    exec gRPCServerCLI \' \
