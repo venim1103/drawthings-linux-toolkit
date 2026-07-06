@@ -4514,3 +4514,136 @@ bash tools/run_q6p_canary_once.sh \
   - `output/q6p_canary_run109_patched_connector_dit1024_stratified_finalgate_20260706_064651/server.log`
   - `output/q6p_canary_run109_official_q6p_finalgate_control_20260706_064651/client.log`
   - `output/q6p_canary_run109_official_q6p_finalgate_control_20260706_064651/server.log`
+
+## Run 110 (2026-07-06): Semantic CoreAV Targeting (Connector + DIT Core Families)
+
+- Goal:
+  - Move beyond fixed-size DIT row geometry changes by targeting a semantic DIT bundle more likely to influence coherent output behavior while preserving full connector coverage.
+
+- Method:
+  - Fresh candidate copy:
+    - `dt-models/10_e_v1_bf16_regen_0_q6p_run110_semantic_coreav.ckpt`
+  - Selection list (`2573` union rows):
+    - connector/text-feature families: `261`
+    - semantic DIT CoreAV subset: `2312`
+      - output/gate families (`*_gate`, `*_out_proj`, selected `*_linear1`)
+      - AV q/k/v/o for primary audio/video branches (`t-a_*`, `t-x_*`)
+      - branch norms (`*_norm_q`, `*_norm_k` across selected AV/cross branches)
+      - embedders (`t-a2v_embedder_*`, `t-a_embedder`, `t-x_embedder`)
+  - Applied `tools/dt_align_ckpt_content_subset.py` with both dim+data names set to the `2573` semantic-union names.
+  - Validation sequence completed before runtime gate:
+    1. targeted content probe before patch
+    2. dry-run + apply
+    3. targeted content probe after patch
+
+- Key outcomes (content alignment stage):
+  - Pre-patch targeted probe (`2573` selected):
+    - `metadata_mismatch_type=2573`
+    - `data_small_sha256_compared=986`
+    - `data_small_sha256_mismatch=954`
+  - Apply:
+    - `rows_updated=2573`, `dim_rows_updated=2573`, `data_rows_updated=2573`
+    - `post_dim_head_mismatch=0`, `post_data_head_mismatch=0`
+    - `rows_skipped_dataerror=0`
+  - Post-patch targeted probe (`2573` selected):
+    - `metadata_mismatch_type=2573` (unchanged)
+    - `data_small_sha256_compared=1969`
+    - `data_small_sha256_mismatch=0`
+
+- Key outcomes (runtime gate stage):
+  - First matched full-gate A/B attempt failed for both patched and official control:
+    - patched custom: `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL canary rc=1`
+    - official control: `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL canary rc=1`
+  - Official control was retried under multiple profiles and remained failing:
+    - standard retries (`retry1`, `retry2`): both failed (`canary_rc=1`)
+    - `--server-no-flash-attention`: failed (`canary_rc=1`)
+    - `--server-cpu-offload --server-no-flash-attention`: failed (`canary_rc=1`), with repeated CUDA/CUFILE initialization errors in server log.
+  - Because official control did not recover, Run 110 did not produce a valid matched A/B quality comparison and generated no new PNG metrics.
+
+- Interpretation:
+  - Semantic subset alignment itself worked as intended at selected-row content level (`small_sha256_mismatch -> 0`), but runtime evaluation was blocked by environment-level instability affecting official and patched runs alike.
+  - Run 110 should be treated as:
+    - content-alignment PASS,
+    - runtime-quality verdict INCONCLUSIVE (baseline control unavailable).
+
+- Artifacts:
+  - `output/run110_semantic_coreav_20260706_070329/summary.txt`
+  - `output/run110_semantic_coreav_20260706_070329/connector_names.txt`
+  - `output/run110_semantic_coreav_20260706_070329/dit_semantic_coreav_names.txt`
+  - `output/run110_semantic_coreav_20260706_070329/patch_names_connector_plus_dit_semantic_coreav.txt`
+  - `output/run110_semantic_coreav_20260706_070329/targeted_before.log`
+  - `output/run110_semantic_coreav_20260706_070329/targeted_before.json`
+  - `output/run110_semantic_coreav_20260706_070329/targeted_before.md`
+  - `output/run110_semantic_coreav_20260706_070329/content_align_dryrun.log`
+  - `output/run110_semantic_coreav_20260706_070329/content_align_apply.log`
+  - `output/run110_semantic_coreav_20260706_070329/targeted_after.log`
+  - `output/run110_semantic_coreav_20260706_070329/targeted_after.json`
+  - `output/run110_semantic_coreav_20260706_070329/targeted_after.md`
+  - `output/run110_semantic_coreav_20260706_070329/patched_finalgate.log`
+  - `output/run110_semantic_coreav_20260706_070329/official_finalgate.log`
+  - `output/run110_semantic_coreav_20260706_070329/official_finalgate_retry1.log`
+  - `output/run110_semantic_coreav_20260706_070329/official_finalgate_retry2.log`
+  - `output/run110_semantic_coreav_20260706_070329/official_finalgate_noflash.log`
+  - `output/run110_semantic_coreav_20260706_070329/official_finalgate_cpuoff_noflash.log`
+  - `output/q6p_canary_run110_patched_semantic_coreav_finalgate_20260706_084209/client.log`
+  - `output/q6p_canary_run110_patched_semantic_coreav_finalgate_20260706_084209/server.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_control_20260706_084241/client.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_control_20260706_084241/server.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_retry1_20260706_084345/client.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_retry1_20260706_084345/server.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_retry2_20260706_084418/client.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_retry2_20260706_084418/server.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_noflash_20260706_084512/client.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_noflash_20260706_084512/server.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_cpuoff_noflash_20260706_084557/client.log`
+  - `output/q6p_canary_run110_official_q6p_finalgate_cpuoff_noflash_20260706_084557/server.log`
+
+## Run 110R (2026-07-06): Environment Recovery Check (Post-Run110)
+
+- Goal:
+  - Re-establish a valid official control baseline after Run 110 dual-fail outcomes before any further custom quality interpretation.
+
+- Method:
+  - Executed official-only canary recovery sweep:
+    - official q6p default
+    - official q6p no-flash
+  - Executed known-good historical custom sanity check:
+    - `10_e_v1_bf16_regen_0_q8p_20260630.ckpt`
+  - Executed alternate server binary check:
+    - `--grpc-bin draw-things-community/.build/release/gRPCServerCLI`
+  - Performed runtime environment preflight:
+    - `/dev/nvidia*` device presence
+    - NVML visibility
+
+- Key outcomes:
+  - Official q6p remained failing in both default and no-flash profiles:
+    - `canary_rc=1`, `post_echo_rc=1`, `RESULT=FAIL canary rc=1`
+  - Historical custom q8p sanity model also failed with the same class:
+    - `Signal 11`, bad pointer, `_ccv_nnc_index_select_forw`
+  - Alternate source-built binary did not recover generation path:
+    - aborted with assertion path (`memory_type == CCV_TENSOR_CPU_MEMORY`) and `RESULT=FAIL canary rc=1`
+  - Environment preflight showed GPU device loss in-container:
+    - `/dev/nvidia*` missing
+    - `nvidia-smi` unusable (`Failed to initialize NVML: N/A`)
+
+- Interpretation:
+  - This is an infrastructure/runtime blocker, not a model-content discriminator for current runs.
+  - Until GPU device visibility is restored in the container, full-gate A/B results are not trustworthy for converter-quality decisions.
+
+- Artifacts:
+  - `output/run110_env_recovery_20260706_092927/summary.txt`
+  - `output/run110_env_recovery_20260706_092927/official_q6p_default.log`
+  - `output/run110_env_recovery_20260706_092927/official_q6p_noflash.log`
+  - `output/run110_env_recovery_20260706_092927/official_q6p_default_stderr_capture.log`
+  - `output/run110_env_recovery_20260706_092927/sanity_custom_q8p.log`
+  - `output/run110_env_recovery_20260706_092927/altbin_official_q6p.log`
+  - `output/q6p_canary_official_q6p_default/client.log`
+  - `output/q6p_canary_official_q6p_default/server.log`
+  - `output/q6p_canary_official_q6p_noflash/client.log`
+  - `output/q6p_canary_official_q6p_noflash/server.log`
+  - `output/q6p_canary_official_q6p_default_stderr_capture_20260706_093238/client.log`
+  - `output/q6p_canary_official_q6p_default_stderr_capture_20260706_093238/server.log`
+  - `output/q6p_canary_sanity_custom_q8p_20260706_093248/client.log`
+  - `output/q6p_canary_sanity_custom_q8p_20260706_093248/server.log`
+  - `output/q6p_canary_altbin_official_q6p_20260706_093325/client.log`
+  - `output/q6p_canary_altbin_official_q6p_20260706_093325/server.log`

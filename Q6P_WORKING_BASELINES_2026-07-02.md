@@ -200,6 +200,20 @@ Tensor conversion command:
       - Run 108 patched: `gray_std=0.128570`, `entropy=7.074494`
       - Run 109 patched: `gray_std=0.125271`, `entropy=7.035664`
    - interpretation: at fixed coverage size, switching DIT selection from contiguous to stratified does not recover quality.
+- Semantic targeting follow-up (Run 110, connector + DIT CoreAV bundle) completed content alignment but did not yield a valid quality verdict due control instability:
+   - run root: `output/run110_semantic_coreav_20260706_070329/`
+   - selected rows increased to `2573` (`261` connector/text-feature + `2312` semantic DIT rows)
+   - selected-row payload mismatch reached zero post-patch (`small_sha256_mismatch=0/1969 compared`)
+   - runtime stage failed for both patched and official in matched full-gate profile (`canary_rc=1` / `RESULT=FAIL` on each)
+   - official control remained failing across retries and mitigation variants (`retry1`, `retry2`, `--server-no-flash-attention`, `--server-cpu-offload --server-no-flash-attention`)
+   - CPU-offload/no-flash official log surfaced repeated CUDA/CUFILE initialization failures (`Cuda version not Supported`, `CUFILE - NVFS driver initialization error`)
+   - interpretation: Run 110 is content-alignment PASS but runtime-quality INCONCLUSIVE because baseline official generation was unavailable in-session.
+- Post-Run110 environment recovery check (Run 110R) found a container-level runtime blocker:
+   - official q6p default and no-flash controls both failed immediately (`canary_rc=1`, `post_echo_rc=1`)
+   - previously known-good custom q8p sanity model also failed with the same `_ccv_nnc_index_select_forw` bad-pointer crash class
+   - source-built alternate server binary also failed (assert path), so wrapper-vs-source switch did not restore generation
+   - container preflight showed missing GPU devices (`/dev/nvidia*` absent; `nvidia-smi` unavailable with NVML init failure)
+   - interpretation: current session is environment-blocked; do not use these failed gates to infer model-quality regressions.
 - Alias `10_e_v1` under `version=ltx2.3` schema produced deterministic `Illegal instruction` in `TextEncoder.encodeLTX2`:
   - artifact: `output/q6p_canary_alias_10_e_v1_stagegate_20260701`
 - Experimental alias `10_e_v1_main_official_clip_test` timed out in one stage-gate and segfaulted in long final-gate:
@@ -232,6 +246,15 @@ Tensor conversion command:
 
 ## 6) Restart Checklist For Next Session
 
+0. Verify runtime prerequisites before any model A/B:
+
+```bash
+ls -l /dev/nvidia*
+nvidia-smi
+```
+
+   - If `/dev/nvidia*` is missing or NVML is unavailable, stop and restore container GPU device access first; model-level conclusions are invalid until this passes.
+
 1. Reconfirm official baseline first (must pass before custom debugging):
 
 ```bash
@@ -241,6 +264,8 @@ bash tools/run_q6p_canary_once.sh \
   --timeout-sec 1800 --max-responses 0 --require-final-output \
   --tag official_q6p_reconfirm_<date>
 ```
+
+    - If this fails, treat as environment/runtime blocker first (collect server log and resolve CUDA/cuFile initialization state) before drawing model-quality conclusions.
 
 2. Convert and visually verify official PNG.
 
@@ -257,7 +282,7 @@ bash tools/run_q6p_canary_once.sh \
 ## 7) Current Plan Continuation Point
 
 - Focus next on restoring custom output quality (not just stream completion).
-- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicate the q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families). Runs 106-109 show this crash surface can be partially mitigated in both bounded and full-gate profiles by targeted connector+DIT content alignment, but output quality remains below official and did not improve with either contiguous or stratified DIT1024 selection at fixed coverage size; remaining blockers likely require different feature-space targeting or upstream conversion semantics fixes beyond these row-copy slices.
+- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicate the q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families). Runs 106-109 show this crash surface can be partially mitigated in both bounded and full-gate profiles by targeted connector+DIT content alignment, but output quality remains below official and did not improve with either contiguous or stratified DIT1024 selection at fixed coverage size. Run 110 expanded to semantic CoreAV targeting and achieved selected-row content alignment, but runtime quality remained unassessable because official control crashed repeatedly in-session (including no-flash and CPU-offload variants). Run 110R then confirmed a hard environment gate (no visible `/dev/nvidia*` in-container), so current A/B execution is blocked until GPU runtime visibility is restored.
 - Priority order:
   1. establish one coherent raw-key custom output,
   2. then reintroduce alias fields one at a time,
