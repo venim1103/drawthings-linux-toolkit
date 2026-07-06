@@ -4349,3 +4349,168 @@ bash tools/run_q6p_canary_once.sh \
   - `output/q6p_canary_run107_patched_connector_ditslice_finalgate_20260706_055513/server.log`
   - `output/q6p_canary_run107_official_q6p_finalgate_control_20260706_055513/client.log`
   - `output/q6p_canary_run107_official_q6p_finalgate_control_20260706_055513/server.log`
+
+## Run 108 (2026-07-06): DIT Coverage Expansion (Connector + DIT1024) Full-Gate Recheck
+
+- Goal:
+  - Move directly toward coherent custom output by expanding aligned DIT coverage from `256` to `1024` while keeping connector/text-feature families fully aligned.
+
+- Method:
+  - Fresh candidate copy:
+    - `dt-models/10_e_v1_bf16_regen_0_q6p_run108_connector_dit1024.ckpt`
+  - Patch list built from Run 105 mismatch names:
+    - connector/text-feature families: `261`
+    - first `1024` DIT names
+    - union selected: `1285`
+  - Applied `tools/dt_align_ckpt_content_subset.py` with both dim+data names set to the 1285-name list.
+  - Validation and runtime sequence:
+    1. targeted content probe before patch
+    2. dry-run + apply
+    3. targeted content probe after patch
+    4. matched full-gate A/B (`1800s`, `max-responses=0`, `require-complete-stream`, `require-final-output`, `256x256`, `steps=8`, `seed=4242`) vs official q6p control
+    5. media conversion + PNG quality metrics
+
+- Key outcomes:
+  - Pre-patch targeted probe (`1285` selected):
+    - `metadata_mismatch_type=1285`
+    - `data_small_sha256_compared=458`
+    - `data_small_sha256_mismatch=426`
+  - Apply:
+    - `rows_updated=1285`, `dim_rows_updated=1285`, `data_rows_updated=1285`
+    - `post_dim_head_mismatch=0`, `post_data_head_mismatch=0`
+    - `rows_skipped_dataerror=0`
+  - Post-patch targeted probe (`1285` selected):
+    - `metadata_mismatch_type=1285` (unchanged)
+    - `data_small_sha256_compared=913`
+    - `data_small_sha256_mismatch=0`
+  - Full-gate A/B runtime:
+    - patched custom: `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - official control: `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+  - Full-gate output shape remained unchanged from Run 107:
+    - patched custom: `responses=14`, `images=1`, `audio=0`, `preview frames=5`
+    - official control: `responses=23`, `images=9`, `audio=1`, `preview frames=5`
+  - PNG metrics (patched vs official):
+    - patched: `gray_mean=0.470583`, `gray_std=0.128570`, `entropy=7.074494`
+    - official: `gray_mean=0.461745`, `gray_std=0.330333`, `entropy=7.483953`
+  - Run107->Run108 patched delta:
+    - `gray_mean=-0.005664`
+    - `gray_std=-0.001976`
+    - `entropy=-0.022280`
+
+- Interpretation:
+  - Increasing DIT alignment coverage to 1024 preserved runtime stability but did not improve final output richness and slightly worsened patched image entropy/contrast metrics.
+  - This indicates the remaining quality gap is not solved by this contiguous DIT-prefix expansion strategy alone.
+
+- Artifacts:
+  - `output/run108_connector_dit1024_20260706_061243/summary.txt`
+  - `output/run108_connector_dit1024_20260706_061243/connector_names.txt`
+  - `output/run108_connector_dit1024_20260706_061243/dit_slice_1024.txt`
+  - `output/run108_connector_dit1024_20260706_061243/patch_names_connector_plus_dit1024.txt`
+  - `output/run108_connector_dit1024_20260706_061243/targeted_before.log`
+  - `output/run108_connector_dit1024_20260706_061243/targeted_before.json`
+  - `output/run108_connector_dit1024_20260706_061243/targeted_before.md`
+  - `output/run108_connector_dit1024_20260706_061243/content_align_dryrun.log`
+  - `output/run108_connector_dit1024_20260706_061243/content_align_apply.log`
+  - `output/run108_connector_dit1024_20260706_061243/targeted_after.log`
+  - `output/run108_connector_dit1024_20260706_061243/targeted_after.json`
+  - `output/run108_connector_dit1024_20260706_061243/targeted_after.md`
+  - `output/run108_connector_dit1024_20260706_061243/patched_finalgate.log`
+  - `output/run108_connector_dit1024_20260706_061243/official_finalgate.log`
+  - `output/run108_connector_dit1024_20260706_061243/patched_playable.log`
+  - `output/run108_connector_dit1024_20260706_061243/official_playable.log`
+  - `output/run108_connector_dit1024_20260706_061243/png_metrics_run108.txt`
+  - `output/run108_connector_dit1024_20260706_061243/png_metrics_run108.json`
+  - `output/run108_connector_dit1024_20260706_061243/media/patched/patched_run108.png`
+  - `output/run108_connector_dit1024_20260706_061243/media/patched/patched_run108.gif`
+  - `output/run108_connector_dit1024_20260706_061243/media/patched/patched_run108.mp4`
+  - `output/run108_connector_dit1024_20260706_061243/media/official/official_run108.png`
+  - `output/run108_connector_dit1024_20260706_061243/media/official/official_run108.gif`
+  - `output/run108_connector_dit1024_20260706_061243/media/official/official_run108.mp4`
+  - `output/run108_connector_dit1024_20260706_061243/media/official/official_run108.wav`
+  - `output/q6p_canary_run108_patched_connector_dit1024_finalgate_20260706_062654/client.log`
+  - `output/q6p_canary_run108_patched_connector_dit1024_finalgate_20260706_062654/server.log`
+  - `output/q6p_canary_run108_official_q6p_finalgate_control_20260706_062654/client.log`
+  - `output/q6p_canary_run108_official_q6p_finalgate_control_20260706_062654/server.log`
+
+## Run 109 (2026-07-06): Stratified DIT1024 Coverage (Non-Prefix) Full-Gate Recheck
+
+- Goal:
+  - Test whether DIT row *selection strategy* (distributed across full DIT mismatch space) improves custom output quality, keeping row count fixed at `1024` DIT names plus full connector/text-feature set.
+
+- Method:
+  - Fresh candidate copy:
+    - `dt-models/10_e_v1_bf16_regen_0_q6p_run109_connector_dit1024_stratified.ckpt`
+  - Selection list:
+    - connector/text-feature families: `261`
+    - DIT names: `1024` chosen by deterministic stratified spacing across all DIT mismatch names (not first-prefix slicing)
+    - union selected: `1285`
+  - Applied `tools/dt_align_ckpt_content_subset.py` with both dim+data names set to the stratified 1285-name list.
+  - Validation and runtime sequence:
+    1. targeted content probe before patch
+    2. dry-run + apply
+    3. targeted content probe after patch
+    4. matched full-gate A/B (`1800s`, `max-responses=0`, `require-complete-stream`, `require-final-output`, `256x256`, `steps=8`, `seed=4242`) vs official q6p control
+    5. media conversion + PNG quality metrics (including Run108->Run109 delta)
+
+- Key outcomes:
+  - Pre-patch targeted probe (`1285` selected):
+    - `metadata_mismatch_type=1285`
+    - `data_small_sha256_compared=349`
+    - `data_small_sha256_mismatch=317`
+  - Apply:
+    - `rows_updated=1285`, `dim_rows_updated=1285`, `data_rows_updated=1285`
+    - `post_dim_head_mismatch=0`, `post_data_head_mismatch=0`
+    - `rows_skipped_dataerror=0`
+  - Post-patch targeted probe (`1285` selected):
+    - `metadata_mismatch_type=1285` (unchanged)
+    - `data_small_sha256_compared=777`
+    - `data_small_sha256_mismatch=0`
+  - Full-gate A/B runtime:
+    - patched custom: `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - official control: `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+  - Full-gate output shape remained unchanged vs Runs 107/108:
+    - patched custom: `responses=14`, `images=1`, `audio=0`, `preview frames=5`
+    - official control: `responses=23`, `images=9`, `audio=1`, `preview frames=5`
+  - PNG metrics (patched vs official):
+    - patched: `gray_mean=0.464466`, `gray_std=0.125271`, `entropy=7.035664`
+    - official: `gray_mean=0.461745`, `gray_std=0.330333`, `entropy=7.483953`
+  - Run108->Run109 patched delta:
+    - `gray_mean=-0.006117`
+    - `gray_std=-0.003299`
+    - `entropy=-0.038830`
+
+- Interpretation:
+  - Changing DIT selection from contiguous-prefix to stratified-coverage did not improve custom first-frame quality and again slightly worsened contrast/entropy metrics.
+  - At fixed row count (`1285` union), DIT selection strategy change alone was insufficient to move toward coherent custom output.
+
+- Artifacts:
+  - `output/run109_connector_dit1024_stratified_20260706_063708/summary.txt`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/connector_names.txt`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/dit_all_names.txt`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/dit_stratified_1024.txt`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/patch_names_connector_plus_dit1024_stratified.txt`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/targeted_before.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/targeted_before.json`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/targeted_before.md`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/content_align_dryrun.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/content_align_apply.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/targeted_after.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/targeted_after.json`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/targeted_after.md`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/patched_finalgate.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/official_finalgate.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/patched_playable.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/official_playable.log`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/png_metrics_run109.txt`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/png_metrics_run109.json`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/patched/patched_run109.png`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/patched/patched_run109.gif`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/patched/patched_run109.mp4`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/official/official_run109.png`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/official/official_run109.gif`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/official/official_run109.mp4`
+  - `output/run109_connector_dit1024_stratified_20260706_063708/media/official/official_run109.wav`
+  - `output/q6p_canary_run109_patched_connector_dit1024_stratified_finalgate_20260706_064651/client.log`
+  - `output/q6p_canary_run109_patched_connector_dit1024_stratified_finalgate_20260706_064651/server.log`
+  - `output/q6p_canary_run109_official_q6p_finalgate_control_20260706_064651/client.log`
+  - `output/q6p_canary_run109_official_q6p_finalgate_control_20260706_064651/server.log`

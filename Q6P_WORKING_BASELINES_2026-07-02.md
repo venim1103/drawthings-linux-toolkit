@@ -182,6 +182,24 @@ Tensor conversion command:
       - patched: `gray_std=0.130545`, `entropy=7.096774`
       - official: `gray_std=0.330333`, `entropy=7.483953`
    - interpretation: surgical patch lifted crash/stability behavior into PASS for this profile but did not recover official-like richness/coherence.
+- DIT expansion follow-up (Run 108, connector + DIT1024) did not improve quality despite larger aligned subset:
+   - run root: `output/run108_connector_dit1024_20260706_061243/`
+   - selected rows increased from `517` (Run 106/107) to `1285` (`261` connector/text-feature + `1024` DIT)
+   - targeted selected-row payload mismatch still reached zero post-patch (`small_sha256_mismatch=0/913 compared`), with runtime PASS maintained in matched full-gate
+   - full-gate output shape remained the same as Run 107 for patched custom (`responses=14`, `images=1`, `audio=0`)
+   - patched PNG metrics did not improve and were slightly worse than Run 107:
+      - Run 107 patched: `gray_std=0.130545`, `entropy=7.096774`
+      - Run 108 patched: `gray_std=0.128570`, `entropy=7.074494`
+   - interpretation: contiguous early-DIT expansion alone is not sufficient to close the quality gap to official.
+- Non-prefix DIT strategy follow-up (Run 109, connector + stratified DIT1024) also did not improve quality:
+   - run root: `output/run109_connector_dit1024_stratified_20260706_063708/`
+   - same selected row count as Run 108 (`1285` union), but DIT names were distributed across full DIT mismatch list instead of first-prefix slicing
+   - selected-row payload mismatch again reached zero post-patch (`small_sha256_mismatch=0/777 compared`), with matched full-gate runtime PASS on both patched custom and official control
+   - patched output shape remained unchanged (`responses=14`, `images=1`, `audio=0`)
+   - patched PNG metrics again moved slightly worse:
+      - Run 108 patched: `gray_std=0.128570`, `entropy=7.074494`
+      - Run 109 patched: `gray_std=0.125271`, `entropy=7.035664`
+   - interpretation: at fixed coverage size, switching DIT selection from contiguous to stratified does not recover quality.
 - Alias `10_e_v1` under `version=ltx2.3` schema produced deterministic `Illegal instruction` in `TextEncoder.encodeLTX2`:
   - artifact: `output/q6p_canary_alias_10_e_v1_stagegate_20260701`
 - Experimental alias `10_e_v1_main_official_clip_test` timed out in one stage-gate and segfaulted in long final-gate:
@@ -239,7 +257,7 @@ bash tools/run_q6p_canary_once.sh \
 ## 7) Current Plan Continuation Point
 
 - Focus next on restoring custom output quality (not just stream completion).
-- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicate the q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families). Runs 106-107 show this crash surface can be partially mitigated in both bounded and full-gate profiles by targeted connector+DIT content alignment, strengthening the content-divergence causal link while leaving full equivalence and output quality unresolved.
+- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicate the q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families). Runs 106-109 show this crash surface can be partially mitigated in both bounded and full-gate profiles by targeted connector+DIT content alignment, but output quality remains below official and did not improve with either contiguous or stratified DIT1024 selection at fixed coverage size; remaining blockers likely require different feature-space targeting or upstream conversion semantics fixes beyond these row-copy slices.
 - Priority order:
   1. establish one coherent raw-key custom output,
   2. then reintroduce alias fields one at a time,
