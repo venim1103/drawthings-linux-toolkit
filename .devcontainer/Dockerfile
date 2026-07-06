@@ -92,5 +92,19 @@ RUN set -eux; \
     'exec gRPCServerCLI "$@"' \
     > /usr/local/bin/drawthings-grpc; \
     chmod +x /usr/local/bin/drawthings-grpc; \
+    printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    '' \
+    'for p in /usr/lib/wsl/lib/nvidia-smi /usr/lib/wsl/drivers/*/nvidia-smi /usr/bin/nvidia-smi; do' \
+    '  if [ -x "$p" ]; then' \
+    '    exec "$p" "$@"' \
+    '  fi' \
+    'done' \
+    '' \
+    'echo "nvidia-smi is not available in this container. Check GPU passthrough (/dev/nvidia* or /dev/dxg)." >&2' \
+    'exit 127' \
+    > /usr/local/bin/nvidia-smi; \
+    chmod +x /usr/local/bin/nvidia-smi; \
     echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > "/etc/sudoers.d/${USERNAME}"; \
     chmod 0440 "/etc/sudoers.d/${USERNAME}"

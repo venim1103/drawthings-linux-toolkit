@@ -200,8 +200,23 @@ if ! command -v drawthings-grpc >/dev/null 2>&1; then
 fi
 
 echo "==> Checking in-container GPU visibility..."
+if [[ -e /dev/nvidia0 || -e /dev/dxg ]]; then
+    echo "==> GPU device node visible in container."
+else
+    echo "WARNING: No GPU device nodes found (/dev/nvidia* or /dev/dxg)."
+fi
+
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
     echo "==> GPU check passed (nvidia-smi works inside devcontainer)."
+elif [[ -x /usr/lib/wsl/lib/nvidia-smi ]] && /usr/lib/wsl/lib/nvidia-smi >/dev/null 2>&1; then
+    echo "==> GPU check passed (WSL nvidia-smi works inside devcontainer)."
+elif compgen -G "/usr/lib/wsl/drivers/*/nvidia-smi" >/dev/null 2>&1; then
+    wsl_smi="$(ls -1 /usr/lib/wsl/drivers/*/nvidia-smi 2>/dev/null | head -n 1)"
+    if [[ -n "$wsl_smi" ]] && "$wsl_smi" >/dev/null 2>&1; then
+        echo "==> GPU check passed (WSL driver-store nvidia-smi works inside devcontainer)."
+    else
+        echo "WARNING: Found WSL driver-store nvidia-smi but invocation failed."
+    fi
 else
     echo "WARNING: nvidia-smi check failed in this devcontainer session."
     echo "WARNING: Rebuild/reopen may be needed so the runtime GPU device mapping is applied."
