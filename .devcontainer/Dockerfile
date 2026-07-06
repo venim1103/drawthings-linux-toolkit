@@ -29,6 +29,7 @@ RUN set -eux; \
         pkg-config \
         zlib1g-dev \
         libsqlite3-dev \
+        sqlite3 \
         libopenblas-dev \
         ripgrep; \
     rm -rf /var/lib/apt/lists/*; \
@@ -75,13 +76,20 @@ RUN set -eux; \
     'ADDRESS="${DRAWTHINGS_ADDRESS:-127.0.0.1}"' \
     'PORT="${DRAWTHINGS_PORT:-7861}"' \
     'GPU="${DRAWTHINGS_GPU:-0}"' \
-    'SWIFT_LIB="/usr/local/swift/usr/lib/swift/linux"' \
+    'EXTRA_LIB_DIRS=(' \
+    '  "/usr/local/swift/usr/lib/swift/linux"' \
+    '  "/usr/lib/wsl/lib"' \
+    '  "/usr/local/cuda/targets/x86_64-linux/lib"' \
+    '  "/usr/local/cuda/lib64"' \
+    ')' \
     '' \
     'mkdir -p "$MODEL_DIR"' \
     '' \
-    'if [ -d "$SWIFT_LIB" ]; then' \
-    '    export LD_LIBRARY_PATH="$SWIFT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
-    'fi' \
+    'for lib_dir in "${EXTRA_LIB_DIRS[@]}"; do' \
+    '    if [ -d "$lib_dir" ]; then' \
+    '        export LD_LIBRARY_PATH="$lib_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+    '    fi' \
+    'done' \
     '' \
     'if [ "$#" -eq 0 ]; then' \
     '    exec gRPCServerCLI \' \

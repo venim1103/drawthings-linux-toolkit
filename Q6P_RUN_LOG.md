@@ -4647,3 +4647,131 @@ bash tools/run_q6p_canary_once.sh \
   - `output/q6p_canary_sanity_custom_q8p_20260706_093248/server.log`
   - `output/q6p_canary_altbin_official_q6p_20260706_093325/client.log`
   - `output/q6p_canary_altbin_official_q6p_20260706_093325/server.log`
+
+## Run 110S (2026-07-06): Post-GPUfix Full-Gate Revalidation (Matched Official vs Run110 Patched)
+
+- Goal:
+  - Re-establish a valid official strict full-gate baseline in the repaired container session, then execute a matched Run 110 patched A/B comparison for quality evidence.
+
+- Method:
+  - Used strict full-gate profile for both runs:
+    - `--timeout-sec 600 --max-responses 0 --require-complete-stream --require-final-output`
+    - `256x256`, `steps=8`, `seed=4242`
+  - Used explicit runtime library path in command env:
+    - `LD_LIBRARY_PATH=/usr/local/swift/usr/lib/swift/linux:/usr/lib/wsl/lib:/usr/local/cuda/targets/x86_64-linux/lib`
+  - Models:
+    - official control: `ltx_2.3_22b_distilled_1.1_q6p.ckpt`
+    - patched candidate: `10_e_v1_bf16_regen_0_q6p_run110_semantic_coreav.ckpt`
+  - Converted tensor outputs with `tools/dt_tensor_to_playable.py`.
+  - Computed grayscale/entropy PNG metrics for matched first-frame comparison.
+
+- Key outcomes:
+  - Official strict full-gate recovered and PASSed:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=23`, `images written=9`, `audio written=1`, `preview frames seen=5`
+  - Run110 patched strict full-gate also PASSed:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=14`, `images written=1`, `audio written=0`, `preview frames seen=5`
+  - PNG metrics (matched representative frame):
+    - patched: `gray_mean=0.464376`, `gray_std=0.124541`, `entropy=7.030824`
+    - official: `gray_mean=0.458680`, `gray_std=0.330278`, `entropy=7.488716`
+
+- Interpretation:
+  - The immediate environment blocker from Run 110R is no longer active for this profile when the runtime library path includes Swift + WSL + CUDA target libs.
+  - Run 110 patched candidate now has a valid same-session official control comparison and remains substantially below official in output richness/contrast despite runtime PASS.
+  - This keeps Run 110 in the "runtime stabilized, quality deficit persists" class rather than "runtime inconclusive".
+
+- Artifacts:
+  - `output/q6p_canary_official_q6p_ldpath_retest_20260706_111406/client.log`
+  - `output/q6p_canary_official_q6p_ldpath_retest_20260706_111406/server.log`
+  - `output/q6p_canary_run110_patched_semantic_coreav_after_gpufix_20260706_121422/client.log`
+  - `output/q6p_canary_run110_patched_semantic_coreav_after_gpufix_20260706_121422/server.log`
+  - `output/run110_fullgate_patched_vs_official_after_gpufix_20260706_121602/summary.txt`
+  - `output/run110_fullgate_patched_vs_official_after_gpufix_20260706_121602/png_metrics_run110_after_gpufix.txt`
+  - `output/run110_fullgate_patched_vs_official_after_gpufix_20260706_121602/png_metrics_run110_after_gpufix.json`
+  - `output/run110_fullgate_patched_vs_official_after_gpufix_20260706_121602/media/patched/patched_run110_after_gpufix.png`
+  - `output/run110_fullgate_patched_vs_official_after_gpufix_20260706_121602/media/official/official_run110_after_gpufix.png`
+
+## Run 110T (2026-07-06): Post-GPUfix Seed Sweep On Run110 Patched Candidate
+
+- Goal:
+  - Test whether the Run110 patched first-frame corruption/noise is seed-dependent or persistent under the now-recovered strict runtime profile.
+
+- Method:
+  - Model: `10_e_v1_bf16_regen_0_q6p_run110_semantic_coreav.ckpt`
+  - Strict profile per seed:
+    - `--timeout-sec 600 --max-responses 0 --require-complete-stream --require-final-output`
+    - `256x256`, `steps=8`
+  - Seeds: `4242`, `4243`, `4244`
+  - Runtime env: `LD_LIBRARY_PATH=/usr/local/swift/usr/lib/swift/linux:/usr/lib/wsl/lib:/usr/local/cuda/targets/x86_64-linux/lib`
+  - Converted first-frame tensor to PNG and computed grayscale/entropy stats.
+
+- Key outcomes:
+  - All three seeds runtime PASSed with identical stream shape:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=14`, `images written=1`, `audio written=0`
+  - Visual result remained RGB-noise/garbled for all seeds (no coherent scene recovered).
+  - PNG metrics by seed:
+    - seed `4242`: `gray_std=0.131004`, `entropy=7.103863`
+    - seed `4243`: `gray_std=0.121784`, `entropy=6.988064`
+    - seed `4244`: `gray_std=0.106963`, `entropy=6.812831`
+
+- Interpretation:
+  - The current Run110 patched corruption class is not resolved by seed variation in this range.
+  - This reinforces that remaining divergence is structural/content-level, not a one-off sampling-seed artifact.
+
+- Artifacts:
+  - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/summary.tsv`
+  - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/png_metrics.tsv`
+  - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/media/seed_4242/patched_run110_seed_4242.png`
+  - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/media/seed_4243/patched_run110_seed_4243.png`
+  - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/media/seed_4244/patched_run110_seed_4244.png`
+
+## Run 117 (2026-07-06): High-Limit Repair Of Final Unreadable Tensor Row
+
+- Goal:
+  - Repair the final unreadable shared tensor row (`__text_feature_extractor__[t-video_aggregate_embed-0-0]`) using high-limit sqlite and retest strict full-gate quality.
+
+- Method:
+  - Built high-limit sqlite binary at:
+    - `output/sqlite_highlimit_build/sqlite-autoconf-3530200/sqlite3`
+  - Applied one-row high-limit patch with:
+    - `tools/run_q6p_highlimit_row_patch_canary.sh --skip-canary`
+  - Re-probed mismatch sets:
+    - single-row probe on missing tensor name
+    - full probe on `5746` names (`meta_len_mismatch_names + missing row`)
+  - Ran strict canary profile (`256x256`, `steps=8`, `seed=4242`, full completion gates).
+
+- Key outcomes:
+  - High-limit row patch succeeded:
+    - `pre_quick_check=ok`
+    - `row_patch_changes=1`
+    - `post_quick_check=ok`
+  - Single-row unreadable issue cleared:
+    - `unreadable_only_file=0`
+    - `full_match=1` (for that row)
+  - Full selected-set parity reached:
+    - `selected_tensors=5746`
+    - `metadata_mismatch_type=0`
+    - `metadata_mismatch_format=0`
+    - `metadata_mismatch_datatype=0`
+    - `dim_head_mismatch=0`
+    - `data_head_mismatch=0`
+    - `data_small_sha256_mismatch=0`
+    - `full_match=5746`
+  - Runtime strict canary still retained patched stream shape:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=14`, `images written=1`, `audio written=0`, `preview frames seen=5`
+  - Visual outcome remained RGB-noise/garbled despite full selected-set parity.
+
+- Interpretation:
+  - The final known unreadable tensor and known row-wise metadata/dim/data mismatches have now been eliminated for the tracked `5746` shared names.
+  - Persistent garbled output after this repair indicates the dominant quality blocker is likely outside this currently instrumented mismatch set (for example, generation semantics/config path rather than the previously identified row-level payload defects).
+
+- Artifacts:
+  - `output/run117_highlimit_single_row_retry_20260706_131612/summary.txt`
+  - `output/run117_highlimit_single_row_retry_20260706_131612/highlimit_patch.log`
+  - `output/run117_highlimit_single_row_retry_20260706_131612/missing_probe_after_highlimit.log`
+  - `output/run117_highlimit_single_row_retry_20260706_131612/postprobe_full5746.log`
+  - `output/run117_highlimit_single_row_retry_20260706_131612/patched_finalgate.log`
+  - `output/run117_highlimit_single_row_retry_20260706_131612/media/patched/patched_run117_highlimit_single_row_retry.png`

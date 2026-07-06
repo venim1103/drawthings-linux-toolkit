@@ -214,6 +214,30 @@ Tensor conversion command:
    - source-built alternate server binary also failed (assert path), so wrapper-vs-source switch did not restore generation
    - container preflight showed missing GPU devices (`/dev/nvidia*` absent; `nvidia-smi` unavailable with NVML init failure)
    - interpretation: current session is environment-blocked; do not use these failed gates to infer model-quality regressions.
+- Post-GPUfix strict revalidation (Run 110S) restored matched A/B execution in-session:
+   - run root: `output/run110_fullgate_patched_vs_official_after_gpufix_20260706_121602/`
+   - official q6p control PASSed under strict profile with explicit runtime library path:
+      - `LD_LIBRARY_PATH=/usr/local/swift/usr/lib/swift/linux:/usr/lib/wsl/lib:/usr/local/cuda/targets/x86_64-linux/lib`
+      - `responses=23`, `images=9`, `audio=1`
+   - Run110 patched candidate PASSed under the same strict profile:
+      - `responses=14`, `images=1`, `audio=0`
+   - PNG metrics remain strongly separated (patched lower contrast/entropy):
+      - patched: `gray_std=0.124541`, `entropy=7.030824`
+      - official: `gray_std=0.330278`, `entropy=7.488716`
+   - interpretation: environment gate is currently recovered for this profile, but Run110 patched quality deficit vs official is still unresolved.
+- Run 110T seed sweep on the same patched candidate confirmed corruption persistence across seeds:
+   - run root: `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/`
+   - seeds `4242/4243/4244` all PASSed runtime with the same stream shape (`responses=14`, `images=1`, `audio=0`)
+   - decoded PNGs remained visually garbled/noise-like for all three seeds
+   - entropy/contrast stayed in low-information band (gray_std `0.131004 -> 0.106963`, entropy `7.103863 -> 6.812831`)
+   - interpretation: this failure mode is not seed-specific in tested range and likely reflects remaining structural content divergence.
+- Run 117 high-limit final-row repair eliminated the last known unreadable shared tensor and reached full tracked row parity without fixing visual quality:
+   - run root: `output/run117_highlimit_single_row_retry_20260706_131612/`
+   - repaired row: `__text_feature_extractor__[t-video_aggregate_embed-0-0]` (`row_patch_changes=1`, quick_check pre/post `ok`)
+   - post-probe over `5746` tracked shared names reached full parity (`full_match=5746`, all metadata/dim/data mismatch counters zero)
+   - strict runtime still PASSed but with unchanged patched shape (`responses=14`, `images=1`, `audio=0`)
+   - output PNG remained RGB-noise/garbled
+   - interpretation: known row-level mismatch/unreadable defects are no longer sufficient to explain the quality gap.
 - Alias `10_e_v1` under `version=ltx2.3` schema produced deterministic `Illegal instruction` in `TextEncoder.encodeLTX2`:
   - artifact: `output/q6p_canary_alias_10_e_v1_stagegate_20260701`
 - Experimental alias `10_e_v1_main_official_clip_test` timed out in one stage-gate and segfaulted in long final-gate:
@@ -258,6 +282,7 @@ nvidia-smi
 1. Reconfirm official baseline first (must pass before custom debugging):
 
 ```bash
+env LD_LIBRARY_PATH=/usr/local/swift/usr/lib/swift/linux:/usr/lib/wsl/lib:/usr/local/cuda/targets/x86_64-linux/lib \
 bash tools/run_q6p_canary_once.sh \
   --model ltx_2.3_22b_distilled_1.1_q6p.ckpt \
   --width 256 --height 256 --steps 8 \
@@ -282,7 +307,7 @@ bash tools/run_q6p_canary_once.sh \
 ## 7) Current Plan Continuation Point
 
 - Focus next on restoring custom output quality (not just stream completion).
-- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicate the q6p-main crash class is not explained by wait duration and is consistent with broad metadata/payload divergence (especially `__dit__` + connector families). Runs 106-109 show this crash surface can be partially mitigated in both bounded and full-gate profiles by targeted connector+DIT content alignment, but output quality remains below official and did not improve with either contiguous or stratified DIT1024 selection at fixed coverage size. Run 110 expanded to semantic CoreAV targeting and achieved selected-row content alignment, but runtime quality remained unassessable because official control crashed repeatedly in-session (including no-flash and CPU-offload variants). Run 110R then confirmed a hard environment gate (no visible `/dev/nvidia*` in-container), so current A/B execution is blocked until GPU runtime visibility is restored.
+- Current strongest hypothesis: custom conversion/model semantics are broken upstream of q6p quantization, with three observed custom failure surfaces: (a) noisy/low-information PNGs despite runtime completion (custom f16/q8p raw-key branches, including q8p 3-seed sweep visual fail 3/3 while matched official q6p control visual-pass 3/3), (b) immediate text-path hard crash for trace021 q6p (`Illegal instruction` at `TextEncoder.encodeLTX2`), and (c) cuDNN/`ccv_nnc_tensor_read` bad-pointer crash for unpatched custom q6p main. Long-wait matched controls and Run 105 converter probes indicated broad metadata/payload divergence (especially `__dit__` + connector families), and Runs 106-113 removed those tracked mismatches progressively while preserving runtime PASS. Run 117 then repaired the final known unreadable shared row via high-limit sqlite and achieved full parity across the tracked 5746 shared names, but output remained visually garbled. This raises confidence that the remaining blocker is outside currently tracked row-level parity defects (for example config/semantic path mismatch not represented by these probes).
 - Priority order:
   1. establish one coherent raw-key custom output,
   2. then reintroduce alias fields one at a time,
