@@ -4727,6 +4727,174 @@ bash tools/run_q6p_canary_once.sh \
   - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/media/seed_4243/patched_run110_seed_4243.png`
   - `output/run110_patched_seed_sweep_after_gpufix_20260706_123216/media/seed_4244/patched_run110_seed_4244.png`
 
+## Run 111A (2026-07-06): Full-Copy All-Names Branch Attempt (Aborted)
+
+- Goal:
+  - Build a fresh candidate copy and apply the full mismatch-name set in one branch.
+
+- Method:
+  - Started full copy of `10_e_v1_bf16_regen_0_q6p.ckpt` into a new run111 candidate before patching.
+
+- Key outcomes:
+  - Branch did not reach patch/apply stage in acceptable time due heavy checkpoint copy overhead in-session.
+  - Attempt was intentionally aborted and replaced with a faster in-place branch strategy.
+
+- Artifacts:
+  - `output/run111_all5746_20260706_123418/summary.txt`
+
+## Run 111 (2026-07-06): Remaining-Set In-Place Patch On Run110 Candidate
+
+- Goal:
+  - Avoid full-copy delay by applying only remaining names (from all-set minus Run110 semantic set) directly onto the existing Run110 candidate.
+
+- Method:
+  - Built set difference:
+    - all set (`2728`) from `tools/patch_sets/10_e_v1_q6p_post_metachunkfix_mismatch_meta_len_all5746_20260608.txt`
+    - minus Run110 semantic set (`2573`)
+    - resulting remaining names (`1216`)
+  - First invocation failed due stale CLI arg (`--target`); retried with correct arg (`--file`).
+
+- Key outcomes:
+  - Retry branch (`run111_remaining_on_run110_retry_20260706_124412`) succeeded:
+    - `union_selected=1216`
+    - `rows_updated=1216`
+    - `post_dim_head_mismatch=0`
+    - `post_data_head_mismatch=0`
+    - `RESULT=PASS`
+  - Strict canary remained PASS but unchanged output shape:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=14`, `images written=1`, `audio written=0`
+  - Visual output still RGB-noise/garbled.
+
+- Artifacts:
+  - failed-first-attempt root: `output/run111_remaining_on_run110_20260706_124330/`
+  - retry root: `output/run111_remaining_on_run110_retry_20260706_124412/summary.txt`
+  - `output/run111_remaining_on_run110_retry_20260706_124412/content_align_apply.log`
+  - `output/run111_remaining_on_run110_retry_20260706_124412/patched_finalgate.log`
+  - `output/run111_remaining_on_run110_retry_20260706_124412/media/patched/patched_run111_remaining_retry.png`
+
+## Run 112 (2026-07-06): Full Run105 Meta/Len Remaining-Set Patch
+
+- Goal:
+  - Expand beyond the previous family set to the full Run105 row-wise mismatch universe.
+
+- Method:
+  - Full row-wise mismatch set size: `5745`.
+  - Already done at branch start: `3789`.
+  - Remaining applied in this run: `1956`.
+
+- Key outcomes:
+  - Apply PASS:
+    - `union_selected=1956`
+    - `rows_updated=1956`
+    - `post_dim_head_mismatch=0`
+    - `post_data_head_mismatch=0`
+    - `RESULT=PASS`
+  - Strict canary still unchanged:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=14`, `images written=1`, `audio written=0`
+  - Visual output remained RGB-noise/garbled.
+
+- Artifacts:
+  - `output/run112_meta_len_full_on_run110_20260706_125740/summary.txt`
+  - `output/run112_meta_len_full_on_run110_20260706_125740/content_align_apply.log`
+  - `output/run112_meta_len_full_on_run110_20260706_125740/patched_finalgate.log`
+  - `output/run112_meta_len_full_on_run110_20260706_125740/media/patched/patched_run112_meta_len_full.png`
+
+## Run 113 (2026-07-06): Metadata Alignment Over Full 5745 Row Set
+
+- Goal:
+  - Eliminate remaining metadata (`type/format/datatype`) mismatches after dim/data parity work.
+
+- Method:
+  - Applied `tools/dt_patch_ckpt_metadata_subset.py` on the `5745`-name row-wise mismatch set.
+  - Re-probed with `tools/dt_probe_ckpt_targeted_content.py`.
+
+- Key outcomes:
+  - Metadata patch PASS:
+    - `metadata_rows_updated=5745`
+    - `metadata_rows_skipped_dataerror=0`
+  - Post-probe reached full parity on tracked `5745` names:
+    - `metadata_mismatch_type=0`
+    - `metadata_mismatch_format=0`
+    - `metadata_mismatch_datatype=0`
+    - `dim_head_mismatch=0`
+    - `data_head_mismatch=0`
+    - `data_small_sha256_mismatch=0`
+    - `full_match=5745`
+  - Strict canary remained unchanged:
+    - `canary_rc=0`, `post_echo_rc=0`, `RESULT=PASS`
+    - `responses=14`, `images written=1`, `audio written=0`
+  - Visual output remained RGB-noise/garbled.
+
+- Artifacts:
+  - `output/run113_metadata_align_on_run110_20260706_125955/summary.txt`
+  - `output/run113_metadata_align_on_run110_20260706_125955/metadata_patch.log`
+  - `output/run113_metadata_align_on_run110_20260706_125955/postprobe_after_metadata.log`
+  - `output/run113_metadata_align_on_run110_20260706_125955/patched_finalgate.log`
+  - `output/run113_metadata_align_on_run110_20260706_125955/media/patched/patched_run113_metadata_align.png`
+
+## Run 114 (2026-07-06): Single Missing-Row Content Patch Attempt
+
+- Goal:
+  - Patch the single shared tensor not covered by the original `5745` mismatch list:
+    - `__text_feature_extractor__[t-video_aggregate_embed-0-0]`
+
+- Method:
+  - Attempted one-row content patch with `tools/dt_align_ckpt_content_subset.py`.
+
+- Key outcomes:
+  - Apply failed for that row:
+    - `rows_updated=0`
+    - `rows_skipped_dataerror=1`
+    - `RESULT=FAIL rows_skipped_dataerror > 0`
+  - Probe showed unreadable row persisted only in target:
+    - `unreadable_only_file=1`
+  - Branch halted before canary due data-read failure.
+
+- Artifacts:
+  - `output/run114_single_missing_tensor_patch_20260706_130153/content_patch_missing.log`
+  - `output/run114_single_missing_tensor_patch_20260706_130153/missing_probe.log`
+
+## Run 115 (2026-07-06): Direct SQLite Row-Replace Attempt (Schema Mismatch)
+
+- Goal:
+  - Force replace the missing row directly via SQL from baseline into target.
+
+- Method:
+  - Attempted update against non-existent column `dimensions`.
+
+- Key outcomes:
+  - SQL failed immediately:
+    - `sqlite3.OperationalError: no such column: b.dimensions`
+  - Follow-up probe still showed unreadable row in target (`unreadable_only_file=1`).
+  - Full set remained at `full_match=5745`.
+  - Strict canary remained PASS with unchanged `14/1/0` stream shape.
+
+- Artifacts:
+  - `output/run115_direct_row_replace_20260706_130351/summary.txt`
+  - `output/run115_direct_row_replace_20260706_130351/direct_row_replace.log`
+  - `output/run115_direct_row_replace_20260706_130351/missing_probe_after_replace.log`
+  - `output/run115_direct_row_replace_20260706_130351/postprobe_full5746.log`
+  - `output/run115_direct_row_replace_20260706_130351/patched_finalgate.log`
+
+## Run 116 (2026-07-06): Direct SQLite Row-Replace Attempt (Blob Limit)
+
+- Goal:
+  - Retry direct SQL row replace with corrected schema (`dim` instead of `dimensions`).
+
+- Method:
+  - Executed direct `UPDATE tensors SET ... dim=(SELECT b.dim ...), data=(SELECT b.data ...)`.
+
+- Key outcomes:
+  - Still failed at write stage due blob size limit:
+    - `sqlite3.DataError: string or blob too big`
+  - Unreadable row remained unresolved in this branch.
+
+- Artifacts:
+  - `output/run116_direct_row_replace_fixed_20260706_130546/summary.txt`
+  - `output/run116_direct_row_replace_fixed_20260706_130546/direct_row_replace.log`
+
 ## Run 117 (2026-07-06): High-Limit Repair Of Final Unreadable Tensor Row
 
 - Goal:
