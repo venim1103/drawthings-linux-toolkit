@@ -13,8 +13,16 @@ Linux-first toolkit for Draw Things workflows: reproducible devcontainer setup, 
 
 ## Start here
 
+Canonical root document (share this first):
+
+- REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md
+
 - WORKSPACE_MANUAL.md
 - REPO_MIGRATION_GUIDE.md
+- REPO_HANDOVER_MASTER_2026-07-07.md
+- REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md
+- Q6P_CONVERT_QUANTIZE_INFERENCE_MASTER_PLAYBOOK_2026-07-06.md
+- Q6P_RUN_INDEX_2026-07-07.md
 - DRAW_THINGS_PATCH/README.md
 
 ## Main directories
@@ -84,8 +92,11 @@ If official q6p baseline is unavailable, clipfix2 can be used as fallback baseli
 
 Handoff docs for continuation:
 
+- `REPO_HANDOVER_MASTER_2026-07-07.md`
+- `REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md`
 - `Q6P_HANDOFF_FINDINGS_2026-06-08.md`
 - `Q6P_CONTINUATION_RUNBOOK_2026-06-08.md`
+- `Q6P_RUN_INDEX_2026-07-07.md`
 - `Q6P_RUN_LOG.md` (append-only iteration record)
 
 ## Latest runtime findings (2026-06-05 post-replay A/B)

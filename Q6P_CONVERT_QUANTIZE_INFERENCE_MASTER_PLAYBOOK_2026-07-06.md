@@ -4,6 +4,12 @@
 
 This is the exact reproducibility and forensics playbook for this repository.
 
+Companion master hand-over (full repository and testing narrative from beginning):
+- `REPO_HANDOVER_MASTER_2026-07-07.md`
+
+Canonical single-share root document:
+- `REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md`
+
 Goals:
 - Re-run all critical environment, conversion, quantization, and inference checks exactly.
 - Preserve the full chain of what we tried and what each branch proved.
