@@ -187,14 +187,18 @@ fi
 INFER_FILE="$(basename "$F16")"
 if [[ -n "$QUANTIZE" ]]; then
   QOUT="$MODELS_DIR/${NAME}_${QUANTIZE}.ckpt"
-  echo "==> [3/6] Quantize f16 -> $QUANTIZE"
-  bash "$ROOT/tools/dt_quantize_model.sh" \
-    -i "$F16" \
-    -m ltx2.3 \
-    -o "$QOUT" \
-    --target-codec "$QUANTIZE"
-  if [[ ! -f "$QOUT" ]]; then
-    echo "error: quantizer output not found: $QOUT" >&2; exit 1
+  if [[ -f "$QOUT" && "$FORCE_CONVERT" != "1" ]]; then
+    echo "==> [3/6] Quantize SKIPPED (already exists: $QOUT)"
+  else
+    echo "==> [3/6] Quantize f16 -> $QUANTIZE"
+    bash "$ROOT/tools/dt_quantize_model.sh" \
+      -i "$F16" \
+      -m ltx2.3 \
+      -o "$QOUT" \
+      --target-codec "$QUANTIZE"
+    if [[ ! -f "$QOUT" ]]; then
+      echo "error: quantizer output not found: $QOUT" >&2; exit 1
+    fi
   fi
   INFER_FILE="$(basename "$QOUT")"
 else
