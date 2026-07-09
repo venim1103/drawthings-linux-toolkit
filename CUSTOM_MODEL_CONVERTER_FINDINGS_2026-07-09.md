@@ -265,14 +265,15 @@ Proven:
 Fix status:
 - Converter patched (`isBF16: true` on the 4 aggregate_embed entries) and captured
   into `DRAW_THINGS_PATCH`. `model-converter` rebuilt successfully.
-- **Verification in progress**: reconvert with the fixed converter → post-process
-  (norms/dims) → first-frame inference. Pending final coherent-frame confirmation.
+- **VERIFIED**: reconverted control now stores the 4 embeds as bfloat16 (524288);
+  post-process fixed norms/dims. Inference **no longer crashes at load** — it now
+  reaches `textEncoded` and `imageEncoded` (previously an instant SIGSEGV). The
+  `isBF16` fix is confirmed end-to-end for model loading.
 
-Still open:
-- Confirm the reconverted + post-processed control loads and renders a coherent
-  first frame.
-- Decide whether `type`/`format` (still CPU/NCHW) matter; test only if a crash
-  persists after the BF16 + norm + dim fixes.
+Still open (now a *different*, downstream problem — see §12/§13):
+- The 42G f16 cannot stream through the 12GB GPU → a cuDNN weight-eviction crash.
+  Resolution is to **quantize to q6p** (the working official format), not another
+  checkpoint edit.
 - Port the norm-F32 + dim-rank fixes into the converter so no post-process is
   needed, then apply the whole proven pipeline to `10_e_v1_bf16.safetensors`.
 
@@ -299,3 +300,68 @@ The converter downcast four `aggregate_embed` tensors from bfloat16 to float16
 (plus wrong dim ranks and F16 norms); the runtime expects bfloat16 there, so it
 crashed in `ccv_nnc_tensor_read` — fixed with `isBF16: true` in the converter
 (persisted to `DRAW_THINGS_PATCH`), and the custom finetune was never the problem.
+
+---
+
+## 12) BF16 Fix Verification (2026-07-09, later)
+
+After rebuilding the converter and reconverting the control:
+
+- The 4 aggregate_embed tensors are now **bfloat16 (524288)**; full datatype
+  distribution `131072=5742, 524288=4` — matching the official policy.
+- Inference progressed from an **instant load SIGSEGV** to producing
+  `response #1: textEncoded` and `response #2: imageEncoded`, with **zero crash
+  lines** in the loader. The model now loads and runs.
+
+Conclusion: the `isBF16` converter fix is **confirmed working**. The historical
+`ccv_nnc_tensor_read -> ccv_cnnp_model_read` load crash is eliminated.
+
+---
+
+## 13) Downstream Discovery: f16 Too Large For The 12GB GPU → Quantize
+
+After the load crash was fixed, a **different** crash appeared, later in the
+pipeline (during DiT weight streaming):
+
+```
+ccv_nnc_tensor_read + 4622
+_ccv_nnc_device_local_drain + 71
+libcudnn_graph.so.9.8.0        (cuDNN)
+```
+
+This is a GPU **weight-streaming / eviction** crash, not a checkpoint bug:
+
+- Our control is **f16 = 42G** (`-tensordata`); the working official model is
+  **q6p = 20G**. The GPU is a 12GB RTX A3000.
+- A 44G-class f16 cannot stream through 12GB, so ccv's device-local drain path
+  crashes inside cuDNN. `ccv_nnc_tensor.c` normalizes stored `type` to CPU on read
+  (lines 96–98), so `type`/`format` metadata is **not** the cause.
+- Control experiment: `--cpu-offload --no-flash-attention` **did not crash**
+  (`post_echo_rc=0`) but **timed out at 1200s with no output** — pure-CPU execution
+  is too slow (this is also why single generations take 15+ min and GPU shows
+  ~0 MiB).
+
+The resolution is the missing third step of the original goal: **quantize the
+fixed f16 to q6p**, matching the streamable official model. The official q6p keeps
+the identical datatype policy (4 BF16 embeds, 1542 F32 norms, 4200 F16), so the
+quantized output must preserve BF16 on the 4 embeds too (verify after quantizing;
+the quantizer may re-downcast — if so, apply the same fix pattern).
+
+### 13.1 Updated Pipeline (control-proven target)
+
+1. Convert safetensors → f16 with the **fixed** converter (BF16 embeds correct).
+2. `tools/dt_fix_ltx23_serialization.py` (norm F16→F32 + dim ranks).
+3. **Quantize f16 → q6p** (`tools/dt_quantize_model.sh -m ltx2.3 --target-codec q6p`).
+4. Verify q6p datatypes vs official q6p (BF16 embeds, F32 norms).
+5. Inference on the **GPU** (no `--cpu-offload`) — q6p (~20G) streams within 12GB.
+6. Accept only a **coherent frame**; then repeat for `10_e_v1_bf16.safetensors`.
+
+### 13.2 GPU Utilization Note (open follow-up)
+
+The user correctly flagged that generations are not using the GPU. That is a
+*consequence* of the two states above: the GPU path (fast) crashed on the 42G f16,
+so we fell back to CPU offload (0 GPU). Once the model is q6p and streams on the
+GPU, utilization returns. If a q6p GPU run still hits memory pressure, tune
+`--weights-cache <gib>` rather than reverting to `--cpu-offload`. Verify real
+usage with `nvidia-smi dmon` during a run (WSL2 single-snapshot memory reporting
+is unreliable).
