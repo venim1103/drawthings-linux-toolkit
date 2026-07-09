@@ -894,7 +894,7 @@ index 6f266704..c0ec3826 100644
        var maskedImage: DynamicGraph.Tensor<FloatType>? = nil
        var mask: DynamicGraph.Tensor<FloatType>? = nil
 diff --git a/Libraries/ModelOp/Sources/ModelImporter.swift b/Libraries/ModelOp/Sources/ModelImporter.swift
-index 8435d2f1..5db6f222 100644
+index 8435d2f1..9a4cfef8 100644
 --- a/Libraries/ModelOp/Sources/ModelImporter.swift
 +++ b/Libraries/ModelOp/Sources/ModelImporter.swift
 @@ -13,6 +13,7 @@ public final class ModelImporter {
@@ -1288,18 +1288,18 @@ index 8435d2f1..5db6f222 100644
 +        ltx23EmbedderAliases["audio_patchify_proj.bias"] = ["t-a_embedder-0-1"]
 +        additionalMappings.append((prefix: "dit", mapping: ltx23EmbedderAliases))
 +        var ltx23TextFeatureAliases = ModelWeightMapping()
-+        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.weight"] = [
-+          "t-video_aggregate_embed-0-0"
-+        ]
-+        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.bias"] = [
-+          "t-video_aggregate_embed-0-1"
-+        ]
-+        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.weight"] = [
-+          "t-audio_aggregate_embed-0-0"
-+        ]
-+        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.bias"] = [
-+          "t-audio_aggregate_embed-0-1"
-+        ]
++        // These aggregate-embed tensors are kept in bfloat16 by the official
++        // Draw Things converter (datatype 0x80000). Writing them as Float16
++        // (the converter's default FloatType) makes the runtime loader crash in
++        // ccv_nnc_tensor_read at model load. isBF16: true preserves bfloat16.
++        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.weight"] =
++          ModelWeightElement(["t-video_aggregate_embed-0-0"], isBF16: true)
++        ltx23TextFeatureAliases["text_embedding_projection.video_aggregate_embed.bias"] =
++          ModelWeightElement(["t-video_aggregate_embed-0-1"], isBF16: true)
++        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.weight"] =
++          ModelWeightElement(["t-audio_aggregate_embed-0-0"], isBF16: true)
++        ltx23TextFeatureAliases["text_embedding_projection.audio_aggregate_embed.bias"] =
++          ModelWeightElement(["t-audio_aggregate_embed-0-1"], isBF16: true)
 +        additionalMappings.append((prefix: "text_feature_extractor", mapping: ltx23TextFeatureAliases))
 +      case .seedvr2_3b, .seedvr2_7b:
          fatalError()
