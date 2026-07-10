@@ -365,3 +365,87 @@ GPU, utilization returns. If a q6p GPU run still hits memory pressure, tune
 `--weights-cache <gib>` rather than reverting to `--cpu-offload`. Verify real
 usage with `nvidia-smi dmon` during a run (WSL2 single-snapshot memory reporting
 is unreliable).
+
+---
+
+## 14) Quantization Results + The Sampling Milestone (2026-07-10)
+
+### 14.1 Quantized q6p — a second precision bug (in the quantizer)
+
+Quantized the fixed f16 → q6p (20G, ~1h53m; the quantizer is slow, likely
+single-threaded on palettization). Results vs official q6p:
+
+- **BF16 embeds preserved** (4 × `524288`) — the converter fix survives quantization.
+- **But the quantizer PALETTIZED the 1542 norm/ada_ln tensors to 6-bit**
+  (`datatype 131072`, `datalen≈2954`) instead of keeping them **F32** like the
+  official q6p (`16384`, `datalen 8192`). This is the quantizer's analog of the
+  converter's BF16 bug: it does not apply the LTX2.3 keep-F32 precision policy to
+  our model. 6-bit layernorm/ada_ln weights are numerically unstable.
+
+Our f16 norms are correct F32 (identical to official f16), so the defect is purely
+in the quantizer's per-tensor keep-F32 decision.
+
+### 14.2 Workaround + the milestone
+
+New tool `tools/dt_q6p_restore_f32_norms.py` restores the 1542 norms to F32 by
+copying **our own f16's** F32 values into the q6p (uses the official q6p only as a
+template for *which* names are F32 and their dim encoding — **copies zero official
+weights**). After this, the datatype distribution exactly matches official
+(`131072=4200, 16384=1542, 524288=4`).
+
+Result of GPU inference on the norm-restored q6p (no `--cpu-offload`):
+
+- **No stall, no crash.** GPU utilized (~12G).
+- Pipeline advanced through `textEncoded → imageEncoded → sampling` and **wrote 5
+  preview frames**.
+
+This is the first time in the entire investigation (117+ runs) that a
+custom-converted model **ran the full sampling loop and produced frames**. The
+`isBF16` + norm-F32 fixes together clear every crash/stall.
+
+### 14.3 The remaining gap: gray output (weights, not norms)
+
+Despite sampling successfully, the output is **gray / low-variance**, and the final
+decoded payload fails (`Image processed failed`; only previews arrive). Side-by-side
+with the official q6p (same 1.1 model, same settings, GPU):
+
+| | official q6p | our q6p |
+|---|---|---|
+| samples w/o stall | ✓ | ✓ (after norm fix) |
+| preview | colorful/structured | uniform gray |
+| final image | coherent (red car, matches prompt) | fails (gray latents) |
+
+**Ruled out as the cause of gray output:**
+- Norm datatype (now F32) **and** norm *values*: our F16-widened norms are within
+  ~1% max / ~0.001% mean of the official true F32 — negligible for layernorm.
+- Keyset, BF16 embeds, dim ranks, load crash, GPU streaming.
+
+**Remaining suspect: DiT weight values.** Either the converter's hand-written
+LTX2.3 mapping (`makeLTX23ConnectorMapping` / `ltx23EmbedderAliases`) produces some
+semantically-wrong weights, or our quantizer's 6-bit palettization degrades them.
+Distinguishing requires weight-level work (each quantize iteration is ~2h).
+
+### 14.4 Status Summary
+
+Journey: `instant crash (117 runs)` → `loads` → `streams on GPU` → `samples full
+frames` → **output not yet coherent (gray)**. The pipeline is fundamentally working;
+the last mile is weight-value fidelity.
+
+Proposed next steps (pick per cost/appetite):
+1. **Isolate converter vs quantizer**: quantize the *official* f16 with *our*
+   quantizer → if gray, the quantizer is the culprit; if coherent, the converter
+   mapping is. (~2h)
+2. **Audit the converter mapping** (cheap, read-only): diff our LTX2.3 mapping vs
+   the upstream LTX2 model's expected weight layout for wrong/missing entries.
+3. **Also fix the quantizer** to keep norms F32 natively (analog of the converter
+   `isBF16` fix), so no post-process is needed.
+
+Acceptance rule unchanged: only a **coherent frame** counts. Then apply the whole
+proven pipeline to `10_e_v1_bf16.safetensors`.
+
+### 14.5 Tools Added This Phase
+
+- `tools/dt_q6p_restore_f32_norms.py` — restore F32 norms into a q6p from our own
+  f16 (q6p-safe; does not touch palettized weights). Needed because
+  `dt_fix_ltx23_serialization.py` is f16-only (q6p palettized data breaks its
+  length math).
