@@ -528,4 +528,69 @@ The mapping structure is sound, so suspicion is on the **quantizer**. Two moves:
 2. **Fix the quantizer sidecar output** (`Quantizer.swift` L126: give the output
    store an `externalStore`), regenerate the patch, rebuild, re-quantize, re-test.
 
+---
+
+## 16) DECISIVE ISOLATION RESULT (2026-07-10) — The Converter Is The Bug
+
+The isolation test (option 1 above) was run and is **conclusive**.
+
+Procedure:
+- Quantized the **official** f16 (`ltx_2.3_22b_distilled_f16.ckpt`, Draw Things'
+  known-good weights) with **our** quantizer → `official_via_ourquant_q6p.ckpt`.
+- Restored F32 norms (from the official f16's own norms), aliased `ltx23_isolation`.
+- Ran GPU inference (384x384, 8 steps, no cpu-offload).
+
+Result: **`RESULT=PASS`, 23 responses, 9 images + 1 audio, `imageDecoded`,
+"Image processed successfully".** The rendered image is a **coherent sports car at
+sunset** — same quality as the official q6p control.
+
+### 16.1 What this proves
+
+| stage | verdict |
+|---|---|
+| our **quantizer** | ✅ correct — turns known-good weights into a working, coherent q6p |
+| inline vs sidecar storage | ✅ irrelevant — the isolation q6p is also inline and works |
+| our **converter — structure** (names/keyset/dims/norms) | ✅ correct |
+| our **converter — weight values** (transforms) | ❌ **THE BUG** |
+
+Truth table:
+
+| f16 source → our quantizer → q6p | output |
+|---|---|
+| **official** f16 (good weights) | ✅ coherent |
+| **our** converter's f16 | ❌ gray |
+
+Same quantizer, same pipeline — the only variable is the f16 weight **values**.
+Therefore our converter mis-transforms the DiT/attention weights while writing them
+(the mapping *names* are correct; the *values* are scrambled). This also means the
+gray output on the custom `10_e_v1` has the **same** cause — fixing the converter
+fixes both.
+
+### 16.2 Prime suspects (converter weight transforms)
+
+In `ModelImporter.swift` (LTX2.3 mapping) via
+`SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift`:
+
+- `interleaved: true` rotary handling on Q/K
+  (`TensorDescriptor.swift` L66-82 reshapes `[numHeads, 2, headDim/2, -1]` then
+  `.transposed(1,2)`) — a wrong rotary de-interleave scrambles attention.
+- transpose / orientation (`[out,in]` vs `[in,out]`).
+- `format` (`.O`/`.I`) and QKV split/`offsets`.
+- `numberOfHeads` / `headDimension` mismatch vs the source `[4096,4096]` Q layout.
+
+### 16.3 Side benefit
+
+`official_via_ourquant_q6p.ckpt` is a **working** model (official weights, our
+quantize) — proof the convert-agnostic part of the pipeline (quantize → q6p → GPU
+inference) is fully functional on this hardware.
+
+### 16.4 Plan to the fix
+
+1. Pinpoint the exact wrong transform by comparing a Q/K weight **value-for-value**
+   between our f16 and the official f16 (same tensor, same 1.1 model).
+2. Fix the converter mapping/transform in `ModelImporter.swift`.
+3. Regenerate `DRAW_THINGS_PATCH`, rebuild `model-converter`.
+4. Reconvert (~11 min) → requantize (~2h) → restore norms → GPU test.
+5. Accept only a coherent frame; then apply to `10_e_v1_bf16.safetensors`.
+
 Recommended: option 2 (a concrete, identified divergence from the official path).
