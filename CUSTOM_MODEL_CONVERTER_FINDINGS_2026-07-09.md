@@ -774,3 +774,132 @@ per-tensor allocations/copies, not the arithmetic). The element-wise inner copy 
 replaced with a per-row bulk copy (`UnsafeMutablePointer.update(from:count:)`) and the
 `Tensor(from:)` source copy can be dropped once the input is known-contiguous. Not on
 the critical path to correctness; revisit before large custom-model runs.
+
+## 18) SECOND INTERLEAVE BUG — QK-norms Not De-interleaved (2026-07-10, end-to-end render)
+
+The Q/K interleave fix (§17) was necessary and produced a **huge** jump: gray → richly
+structured output. But it is **not sufficient** on its own. Full requantize + norm
+restore + GPU render revealed a **second, sibling bug**: the QK-normalization weights
+need the same de-interleave and our converter isn't applying it.
+
+### 18.1 End-to-end render result (corrected q6p)
+
+- Requantized the corrected f16 → q6p (2h10m, 20 GB, 4 BF16 embeds preserved).
+- Restored 1540 F32 norms (official f16 as value source; norm values are identical to
+  ours, verified). Datatype dist matches the proven-coherent isolation q6p (4202/1540/4
+  vs 4200/1542/4).
+- GPU render (`ltx23_control`, 384×384, 8 steps, seed 4242): **`RESULT=PASS`,
+  RENDER_EXIT=0, 23 responses, 9 images, 1 audio, "Image processed successfully"**, ~5.5 min.
+- Decoded images (`.bin` = 68-byte tensor header + 384×384×3 F16): **all 9 frames have
+  `std ≈ 0.48`** — richly structured, **definitively NOT gray** (a gray frame is
+  `std ≈ 0`). Saved PNGs in `output/q6p_canary_ltx23_control_fixed_*/image_r00XX_01.png`.
+
+### 18.2 But not yet coherent — vs the isolation control
+
+Side-by-side, same seed/steps/pipeline:
+
+- **Isolation (official weights):** a clean, coherent **sports car at sunset**.
+- **Ours (corrected converter):** structured, warm-colored, reflective — but
+  **abstract**, no coherent scene (vertical banding / panel seams).
+
+So a residual converter error remains, beyond the §17 Q/K interleave.
+
+### 18.3 Diagnostic — attention *projections* are now perfect
+
+Compared our f16 vs official f16 (both store these inline, directly readable):
+
+| weight | match |
+|---|---|
+| `__dit__[t-x_q-0-0]` self-attn Q | **100.0%** |
+| `__dit__[t-x_k-0-0]` self-attn K | **100.0%** |
+| `__dit__[t-x_v-0-0]` self-attn V | **100.0%** |
+| `__dit__[t-xa_q-0-0]` cross-attn Q | **100.0%** |
+| `__dit__[t-xa_k-0-0]` cross-attn K | **100.0%** |
+| `__text_video_connector__[t-to_q/to_k-0-0]` | **100.0%** |
+
+The §17 fix fully corrected the Q/K/V **weights** (not just the biases). Attention
+projections are done.
+
+### 18.4 The remaining bug — QK-norm tensors are permuted
+
+A type-level sweep (one instance of every tensor kind, layer 0, our f16 vs official)
+found **138 types match, 1 skipped (oversize), and exactly 17 mismatched — every one a
+`q_norm`/`k_norm`**:
+
+```
+  6.2%  __dit__[t-x_norm_q-0-0]        (self-attn query-norm)
+  6.4%  __dit__[t-x_norm_k-0-0]
+  7.4%  __dit__[t-xa_norm_q-0-0]       (cross-attn)
+  4.9%  __dit__[t-ca_norm_q/k-0-0]
+ 24.9%  __dit__[t-cv_norm_q/k-0-0]
+  7.9%  __dit__[t-a_norm_q/k-0-0]      (audio)
+  7.9%  __dit__[t-ax_norm_q/k-0-0]
+ 10.9%  __text_video_connector__[t-norm_q/k-0-0]
+  8.2%  __text_audio_connector__[t-norm_q/k-0-0]
+```
+
+These are the **QK-normalization** weights — `RMSNorm(axis:[2], name:"norm_q"/"norm_k")`
+applied to the query/key vectors before attention (LTX2.swift L123-127, L250-254, etc.).
+
+Applying the **same de-interleave permutation** as Q/K makes them match official:
+
+| norm | raw match | de-interleaved match | headDim |
+|---|---|---|---|
+| `__dit__[t-x_norm_q-0-0]` | 6.2% | **99.3%** | 128 |
+| `__dit__[t-x_norm_k-0-0]` | 6.4% | **99.3%** | 128 |
+| `__dit__[t-xa_norm_q-0-0]` | 7.4% | **99.9%** | 64 |
+| `__text_video_connector__[t-norm_q-0-0]` | 10.9% | **100.0%** | 128 |
+
+Note **headDim varies by attention type** (self-attn 128, cross-attn 64) — the same
+`(numberOfHeads, headDimension)` as that block's `to_q`/`to_k`.
+
+### 18.5 Root cause
+
+The Q/K **projections** carry `interleaved: true` in the mapping, so they hit the §17
+de-interleave. The **QK-norms do not** — they're plain name arrays:
+
+- `Libraries/SwiftDiffusion/Sources/Models/LTX2.swift`: e.g. L177-178
+  `mapping["\(prefix).attn1.k_norm.weight"] = [normK.weight.name]` (and the mirror
+  `q_norm`), repeated for cross-attn / block / DiT-single / audio variants
+  (L312-313, L428-431, L1328-1329, L1472-1473, …).
+- `Libraries/ModelOp/Sources/ModelImporter.swift` `makeLTX23ConnectorMapping` L1225-1226
+  `mapping["\(base).attn1.k_norm.weight"] = ["t-norm_k-\(i)-0"]` (and `q_norm`).
+
+At runtime the norm is applied to the **already de-interleaved** q/k (because `to_q`/
+`to_k` are stored de-interleaved), so the norm weight **must also be de-interleaved**.
+Draw Things' official f16 has them de-interleaved; ours are left in raw (interleaved)
+order → the QK-norm scales the wrong channels → attention is subtly scrambled →
+structured-but-incoherent output.
+
+### 18.6 The fix (final piece)
+
+Flag every `q_norm.weight` / `k_norm.weight` mapping as `interleaved: true` with the
+**same `numberOfHeads` / `headDimension` as the adjacent `to_q`/`to_k`** (all in scope
+at each site), so they flow through the §17 manual row-permutation in
+`TensorDescriptor.swift`. That permutation already handles a 1-D `[numHeads*headDim]`
+tensor (`cols = 1`).
+
+Sites:
+- `LTX2.swift`: all `q_norm.weight` / `k_norm.weight` mapping lines (self-attn, cross-
+  attn, block, DiT-single, audio) — use the block's local `h` / `k`.
+- `ModelImporter.swift` `makeLTX23ConnectorMapping` L1225-1226 — use `numberOfHeads` /
+  headDimension already used by the connector `to_q`/`to_k` just above (L1208-1217).
+
+Both files are captured via `DRAW_THINGS_PATCH` (LTX2.swift will need adding to the
+patch-target list, like TensorDescriptor.swift was). Then: rebuild → reconvert →
+verify all 17 norm types now match official (cheap gate) → requantize → restore norms →
+render → expect a **coherent** frame.
+
+### 18.7 Why this should be the last piece
+
+The type-level sweep found **only** the QK-norms mismatched; every other tensor kind
+(projections, FF/MLP, ada_ln, embedders, scale_shift, out-proj) already matches official
+100%. Fixing the QK-norm de-interleave closes the last identified gap between our
+converter output and Draw Things' known-good weights.
+
+### 18.8 One-line summary (§18)
+
+The §17 fix corrected the Q/K/V *projections* (gray → structured), but the sibling
+**QK-norm** weights (`q_norm`/`k_norm`) were left interleaved because their mappings lack
+`interleaved: true`; flagging them (same head config as `to_q`/`to_k`) routes them through
+the same de-interleave and should yield a coherent frame.
