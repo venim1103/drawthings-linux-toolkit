@@ -46,6 +46,10 @@ cp \
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" \
   "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift"
+mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Extensions"
+cp \
+  "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift" \
+  "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift"
 mkdir -p "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources"
 cp \
   "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" \
@@ -96,6 +100,7 @@ PATCH_TARGETS=(
   Libraries/SwiftDiffusion/Sources/TextEncoder.swift
   Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
   Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
+  Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift
   Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
   Libraries/LocalImageGenerator/Sources/ImageConverter.swift
   Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift

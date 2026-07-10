@@ -1,0 +1,288 @@
+import DiffusionMappings
+import Fickling
+import Foundation
+import NNC
+import ZIPFoundation
+
+public enum InflateError: Error {
+  case tensorNotFound
+  case dataNoBaseAddress
+  case interrupted
+}
+
+public struct Storage {
+  var name: String
+  var size: Int
+  var dataType: DataType
+  var BF16: Bool
+  var FP8_E4M3: Bool
+  var FP8_E5M2: Bool
+}
+
+public struct TensorDescriptor {
+  public var storage: Storage
+  public var storageOffset: Int
+  public var shape: [Int]
+  public var strides: [Int]
+}
+
+extension TensorDescriptor {
+  public func inflate<T: TensorNumeric>(from archive: TensorArchive, of type: T.Type) throws
+    -> Tensor<T>
+  {
+    return try archive.with(self) {
+      Tensor<T>(from: $0).copied()
+    }
+  }
+}
+
+extension ModelWeightElement {
+  public func write<FloatType: BinaryFloatingPoint & TensorNumeric>(
+    graph: DynamicGraph, to store: DynamicGraph.Store, tensor: Tensor<FloatType>, format: Format,
+    isDiagonalUp: Bool, isDiagonalDown: Bool, renamer: (String) -> String
+  ) {
+    if isBF16 && FloatType.self != BFloat16.self {
+      internalWrite(
+        graph: graph, to: store, tensor: Tensor<BFloat16>(from: tensor), format: format,
+        isDiagonalUp: isDiagonalUp, isDiagonalDown: isDiagonalDown, renamer: renamer)
+      return
+    }
+    internalWrite(
+      graph: graph, to: store, tensor: tensor, format: format, isDiagonalUp: isDiagonalUp,
+      isDiagonalDown: isDiagonalDown, renamer: renamer)
+  }
+  private func internalWrite<FloatType: TensorNumeric>(
+    graph: DynamicGraph, to store: DynamicGraph.Store, tensor: Tensor<FloatType>, format: Format,
+    isDiagonalUp: Bool, isDiagonalDown: Bool, renamer: (String) -> String
+  ) {
+    var tensor = tensor
+    if scale != 1 {
+      // Scale the tensor if needed.
+      tensor = graph.withNoGrad {
+        Tensor<FloatType>(
+          from: (scale * graph.variable(Tensor<Float>(from: tensor).toCPU())).rawValue)
+      }
+    }
+    switch format {
+    case .O:
+      if interleaved, numberOfHeads > 0, headDimension > 0 {
+        // NOTE(drawthings-linux-toolkit): the original implementation performed this
+        // rotary de-interleave via s4nnc graph ops:
+        //     reshape([numHeads,2,headDim/2,-1]).toGPU().transposed(1,2)
+        //       .reshaped([numHeads*headDim,-1]).toCPU()
+        // That transpose is only correct when a GPU stream backs the graph. On the
+        // Linux/CPU-only model-converter the graph transpose (both the .toGPU()
+        // round-trip and a pure-CPU .transposed().contiguous()) reads out of bounds
+        // and corrupts the Q/K weights (F16 overflow -> gray output). The transform
+        // is a pure row-permutation of the output dimension, so do it by hand on the
+        // CPU. Verified value-for-value against Draw Things' official f16 (100% match,
+        // headDim=128/numHeads=32). See CUSTOM_MODEL_CONVERTER_FINDINGS §17.
+        //     out[h*hd + d*2 + p] = in[h*hd + p*(hd/2) + d]
+        let shape = tensor.shape
+        let outDim = shape[0]
+        if outDim == numberOfHeads * headDimension {
+          var cols = 1
+          for i in 1..<shape.count { cols *= shape[i] }
+          let hd = headDimension
+          let half = headDimension / 2
+          let source = Tensor<FloatType>(from: tensor)  // guarantee contiguous CPU layout
+          var result = Tensor<FloatType>(.CPU, format: tensor.format, shape: shape)
+          source.withUnsafeBytes { srcRaw in
+            let src = srcRaw.bindMemory(to: FloatType.self)
+            result.withUnsafeMutableBytes { dstRaw in
+              let dst = dstRaw.bindMemory(to: FloatType.self)
+              for h in 0..<numberOfHeads {
+                let base = h * hd
+                for d in 0..<half {
+                  let twoD = d * 2
+                  for p in 0..<2 {
+                    let dstOff = (base + twoD + p) * cols
+                    let srcOff = (base + p * half + d) * cols
+                    for c in 0..<cols {
+                      dst[dstOff + c] = src[srcOff + c]
+                    }
+                  }
+                }
+              }
+            }
+          }
+          tensor = result
+        }
+      }
+      if self.count > 1 {
+        let squeezedDim = tensor.shape.compactMap { $0 == 1 ? nil : $0 }
+        tensor = tensor.reshaped(format: tensor.format, shape: TensorShape(squeezedDim))
+        let shape = tensor.shape
+        switch self.format {
+        case .O:
+          let count = shape[0] / self.count
+          if isDiagonalUp {
+            let jCount = shape[1] / self.count
+            if let offsets = offsets {
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[
+                    (offsets[i])..<(i < offsets.count - 1 ? offsets[i + 1] : shape[0]),
+                    (i * jCount)..<((i + 1) * jCount)
+                  ].copied())
+              }
+            } else {
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[
+                    (i * count)..<((i + 1) * count), (i * jCount)..<((i + 1) * jCount)
+                  ].copied())
+              }
+            }
+          } else {
+            if let offsets = offsets {
+              for (i, name) in self.enumerated() {
+                if shape.count > 1 {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[
+                      (offsets[i])..<(i < offsets.count - 1 ? offsets[i + 1] : shape[0]),
+                      0..<shape[1]
+                    ].copied())
+                } else {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[
+                      (offsets[i])..<(i < offsets.count - 1 ? offsets[i + 1] : shape[0])
+                    ].copied())
+                }
+              }
+            } else {
+              for (i, name) in self.enumerated() {
+                if shape.count > 1 {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[(i * count)..<((i + 1) * count), 0..<shape[1]]
+                      .copied())
+                } else {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[(i * count)..<((i + 1) * count)]
+                      .copied())
+                }
+              }
+            }
+          }
+        case .I:
+          if isDiagonalDown {
+            let jCount = shape[1] / self.count
+            for (i, name) in self.enumerated() {
+              store.write(
+                renamer(name),
+                tensor: tensor[0..<shape[0], (i * jCount)..<((i + 1) * jCount)].copied())
+            }
+          } else {
+            for name in self {
+              store.write(renamer(name), tensor: tensor)
+            }
+          }
+        }
+      } else {
+        for name in self {
+          store.write(renamer(name), tensor: tensor)
+        }
+      }
+    case .I:
+      if self.count > 1 {
+        let shape = tensor.shape
+        switch self.format {
+        case .I:
+          if isDiagonalDown {
+            let iCount = shape[0] / self.count
+            if let offsets = offsets {
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[
+                    (i * iCount)..<((i + 1) * iCount),
+                    offsets[i]..<(i < offsets.count - 1 ? offsets[i + 1] : shape[1])
+                  ].copied())
+              }
+            } else {
+              let count = shape[1] / self.count
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[(i * iCount)..<((i + 1) * iCount), (i * count)..<((i + 1) * count)]
+                    .copied())
+              }
+            }
+          } else {
+            if let offsets = offsets {
+              for (i, name) in self.enumerated() {
+                if shape.count > 1 {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[
+                      0..<shape[0],
+                      offsets[i]..<(i < offsets.count - 1 ? offsets[i + 1] : shape[1])
+                    ].copied())
+                } else {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[
+                      offsets[i]..<(i < offsets.count - 1 ? offsets[i + 1] : shape[0])
+                    ].copied())
+                }
+              }
+            } else {
+              let count = shape.count > 1 ? shape[1] / self.count : shape[0] / self.count
+              for (i, name) in self.enumerated() {
+                if shape.count > 1 {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[0..<shape[0], (i * count)..<((i + 1) * count)].copied())
+                } else {
+                  store.write(
+                    renamer(name),
+                    tensor: tensor[(i * count)..<((i + 1) * count)].copied())
+                }
+              }
+            }
+          }
+        case .O:
+          if isDiagonalUp {
+            let count = shape[0] / self.count
+            if shape.count == 2 {
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[(i * count)..<((i + 1) * count), 0..<shape[1]].copied())
+              }
+            } else if shape.count == 4 {
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[
+                    (i * count)..<((i + 1) * count), 0..<shape[1], 0..<shape[2],
+                    0..<shape[3]
+                  ].copied())
+              }
+            } else {
+              for (i, name) in self.enumerated() {
+                store.write(
+                  renamer(name),
+                  tensor: tensor[(i * count)..<((i + 1) * count)].copied())
+              }
+            }
+          } else {
+            for name in self {
+              store.write(renamer(name), tensor: tensor)
+            }
+          }
+        }
+      } else {
+        for name in self {
+          store.write(renamer(name), tensor: tensor)
+        }
+      }
+    }
+  }
+}

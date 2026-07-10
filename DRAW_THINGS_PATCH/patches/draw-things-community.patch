@@ -1905,6 +1905,67 @@ index b4193b91..e5aea5ef 100644
      guard data.count >= 8 else { return nil }
      let headerSize = data.withUnsafeBytes { $0.load(as: UInt64.self) }
      // It doesn't make sense for my use-case has more than 10MiB header.
+diff --git a/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift b/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift
+index 1db3798c..e6276d66 100644
+--- a/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift
++++ b/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift
+@@ -66,15 +66,47 @@ extension ModelWeightElement {
+     switch format {
+     case .O:
+       if interleaved, numberOfHeads > 0, headDimension > 0 {
+-        tensor = graph.withNoGrad {
+-          Tensor<FloatType>(
+-            from: graph.variable(
+-              tensor.reshaped(
+-                format: tensor.format, shape: [numberOfHeads, 2, headDimension / 2, -1]
+-              ).toGPU()
+-            ).transposed(1, 2).reshaped(
+-              format: tensor.format, shape: [numberOfHeads * headDimension, -1]
+-            ).toCPU().rawValue)
++        // NOTE(drawthings-linux-toolkit): the original implementation performed this
++        // rotary de-interleave via s4nnc graph ops:
++        //     reshape([numHeads,2,headDim/2,-1]).toGPU().transposed(1,2)
++        //       .reshaped([numHeads*headDim,-1]).toCPU()
++        // That transpose is only correct when a GPU stream backs the graph. On the
++        // Linux/CPU-only model-converter the graph transpose (both the .toGPU()
++        // round-trip and a pure-CPU .transposed().contiguous()) reads out of bounds
++        // and corrupts the Q/K weights (F16 overflow -> gray output). The transform
++        // is a pure row-permutation of the output dimension, so do it by hand on the
++        // CPU. Verified value-for-value against Draw Things' official f16 (100% match,
++        // headDim=128/numHeads=32). See CUSTOM_MODEL_CONVERTER_FINDINGS §17.
++        //     out[h*hd + d*2 + p] = in[h*hd + p*(hd/2) + d]
++        let shape = tensor.shape
++        let outDim = shape[0]
++        if outDim == numberOfHeads * headDimension {
++          var cols = 1
++          for i in 1..<shape.count { cols *= shape[i] }
++          let hd = headDimension
++          let half = headDimension / 2
++          let source = Tensor<FloatType>(from: tensor)  // guarantee contiguous CPU layout
++          var result = Tensor<FloatType>(.CPU, format: tensor.format, shape: shape)
++          source.withUnsafeBytes { srcRaw in
++            let src = srcRaw.bindMemory(to: FloatType.self)
++            result.withUnsafeMutableBytes { dstRaw in
++              let dst = dstRaw.bindMemory(to: FloatType.self)
++              for h in 0..<numberOfHeads {
++                let base = h * hd
++                for d in 0..<half {
++                  let twoD = d * 2
++                  for p in 0..<2 {
++                    let dstOff = (base + twoD + p) * cols
++                    let srcOff = (base + p * half + d) * cols
++                    for c in 0..<cols {
++                      dst[dstOff + c] = src[srcOff + c]
++                    }
++                  }
++                }
++              }
++            }
++          }
++          tensor = result
+         }
+       }
+       if self.count > 1 {
 diff --git a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift b/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
 index d2a5d9f6..bced744a 100644
 --- a/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift

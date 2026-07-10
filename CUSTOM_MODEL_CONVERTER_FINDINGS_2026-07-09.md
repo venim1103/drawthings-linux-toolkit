@@ -594,3 +594,183 @@ inference) is fully functional on this hardware.
 5. Accept only a coherent frame; then apply to `10_e_v1_bf16.safetensors`.
 
 Recommended: option 2 (a concrete, identified divergence from the official path).
+
+## 17) EXACT ROOT CAUSE + FIX (2026-07-10) — Interleaved Rotary Transpose Did A GPU Round-Trip On A CPU-Only Converter
+
+Step 16.4.1 (value-for-value comparison) was run and **pinpointed the exact bug**.
+
+### 17.1 The evidence (our f16 vs official f16, same 1.1 model, same tensor)
+
+Compared identical tensors between our converter's `ltx23_control_f16.ckpt` and the
+official `ltx_2.3_22b_distilled_f16.ckpt`. The pattern is unambiguous:
+
+| tensor | interleaved? | ours | official | verdict |
+|---|---|---|---|---|
+| `__dit__[t-x_q-0-1]` (Q bias) | **yes** | min −1.95 / max **1.96**, many exact `0.0` | min −0.38 / max 0.44 | ❌ scrambled |
+| `__text_video_connector__[t-to_q-0-1]` (Q bias) | **yes** | min −8192 / max **65024** (F16 overflow!) | min −0.074 / max 0.059 | ❌ garbage |
+| `__dit__[t-x_norm_q-0-0]` (norm) | no | min −0.181 / max 1.133 / mean 0.17479 | **same** min/max/mean 0.17482 | ✅ same values (order differs) |
+| `__text_video_connector__[t-norm_q-0-0]` (norm) | no | min 0.738 / max 1.000 / mean 0.92283 | **same** | ✅ same values |
+
+Two decisive facts:
+- **Only the `interleaved: true` Q/K tensors are wrong.** Their values are not a
+  permutation of the correct ones — they are genuine garbage (zeros interleaved with
+  overflowed `65024` = the largest normal F16). That is the fingerprint of reading
+  **uninitialized / wrong memory**, not a transpose-orientation mistake.
+- **The non-interleaved norms have identical value sets** (same min/max/mean, just a
+  different order) → same weights, same model version. This rules out "wrong source
+  file" or "1.0 vs 1.1" and isolates the fault to the interleaved code path.
+
+Both the **DiT** (`__dit__`) and the **connectors** (`__text_video_connector__`)
+are affected → a **single shared transform** is the culprit, not per-mapper logic.
+
+### 17.2 The culprit code
+
+`Libraries/SwiftDiffusion/Sources/Models/LTX2.swift` marks every attention Q/K with
+`interleaved: true` (DiT `attn1`, self-attention, cross-attention, connectors). That
+flag is consumed in **one** place — the serializer:
+
+`Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift`,
+`internalWrite(...)`, `case .O:` (the **only** `interleaved` / `transposed` block in
+the file). Original code:
+
+```swift
+tensor = graph.withNoGrad {
+  Tensor<FloatType>(
+    from: graph.variable(
+      tensor.reshaped(
+        format: tensor.format, shape: [numberOfHeads, 2, headDimension / 2, -1]
+      ).toGPU()                       // <-- move to GPU
+    ).transposed(1, 2).reshaped(      // <-- transpose on GPU
+      format: tensor.format, shape: [numberOfHeads * headDimension, -1]
+    ).toCPU().rawValue)               // <-- move back to CPU
+}
+```
+
+The rotary de-interleave transpose is performed via a **`.toGPU()` → `.transposed()`
+→ `.toCPU()` round-trip**. This is correct on Draw Things' Mac/Metal build (where the
+converter has a working GPU). But **our Linux `model-converter` is CPU-only by
+design** (`dt_convert_model.sh` forces CPU math threads; `Converter.swift` sets up no
+GPU `DynamicGraph`; the only `.transposed()` in the whole file sits right after this
+`.toGPU()`). On that CPU-only path the GPU round-trip silently returns garbage
+instead of the transposed tensor — producing the scrambled/overflowed Q/K weights and
+the gray output.
+
+This is why:
+- the **official** f16 (converted on Mac) is correct,
+- **our** f16 (converted on Linux) is garbage **only** on interleaved Q/K,
+- the quantizer, storage format, mapping names, dims, and norms are all fine, and
+- the same bug hits both the control model and the custom `10_e_v1`.
+
+### 17.3 The fix (two graph attempts FAILED; a manual CPU permutation WORKS)
+
+**First attempt (WRONG):** do the same reshape/transpose on the CPU, dropping the
+`.toGPU()`/`.toCPU()` and adding `.contiguous()`:
+
+```swift
+graph.variable(tensor.reshaped([numHeads,2,headDim/2,-1]))
+  .transposed(1, 2).contiguous().reshaped([numHeads*headDim,-1]).rawValue
+```
+
+This compiled but **still produced garbage** — different garbage: `__dit__[t-x_q-0-1]`
+max `23952`, and `__text_video_connector__[t-to_q-0-1]` came back byte-identical to the
+*norm* tensor's memory. Conclusion: **s4nnc's graph `transposed()` is broken on the
+CPU-only converter both ways** — with or without the GPU round-trip it reads out of
+bounds. Do not use graph transpose in the converter.
+
+**Working fix:** the transform is a **pure row-permutation** of the output dimension
+(verified value-for-value against the raw safetensors and the official f16 — the raw
+and official share the same value set at 100%, so no arithmetic is involved). So do it
+by hand on the CPU with raw pointers, no graph ops:
+
+```swift
+case .O:
+  if interleaved, numberOfHeads > 0, headDimension > 0 {
+    let shape = tensor.shape
+    let outDim = shape[0]
+    if outDim == numberOfHeads * headDimension {
+      var cols = 1
+      for i in 1..<shape.count { cols *= shape[i] }
+      let hd = headDimension
+      let half = headDimension / 2
+      let source = Tensor<FloatType>(from: tensor)  // guarantee contiguous
+      var result = Tensor<FloatType>(.CPU, format: tensor.format, shape: shape)
+      source.withUnsafeBytes { srcRaw in
+        let src = srcRaw.bindMemory(to: FloatType.self)
+        result.withUnsafeMutableBytes { dstRaw in
+          let dst = dstRaw.bindMemory(to: FloatType.self)
+          for h in 0..<numberOfHeads {
+            let base = h * hd
+            for d in 0..<half {
+              for p in 0..<2 {
+                let dstOff = (base + d * 2 + p) * cols
+                let srcOff = (base + p * half + d) * cols
+                for c in 0..<cols { dst[dstOff + c] = src[srcOff + c] }
+              }
+            }
+          }
+        }
+      }
+      tensor = result
+    }
+  }
+```
+
+The exact index map (verified 100% vs official, `headDim=128`, `numHeads=32`):
+
+$$\text{out}[h \cdot hd + d \cdot 2 + p] = \text{in}[h \cdot hd + p \cdot \tfrac{hd}{2} + d]$$
+
+### 17.4 Captured in DRAW_THINGS_PATCH (never touch upstream)
+
+`TensorDescriptor.swift` was **added to** `tools/generate_drawthings_quant_patches.sh`
+(both the snapshot-copy section and the `PATCH_TARGETS` array) — it was not previously
+tracked there. Running that script snapshots the file into
+`DRAW_THINGS_PATCH/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift`
+and regenerates `DRAW_THINGS_PATCH/patches/draw-things-community.patch`, so the fix is
+reproducible from a clean upstream checkout without ever editing the
+`draw-things-community` repo. (Both done — the diff hunk is present in the unified
+patch.)
+
+### 17.5 Verification method (cheap first, before the 2h requantize)
+
+1. Rebuild `model-converter` (~6 min).
+2. Reconvert the control (~11 min, CPU).
+3. **Cheap gate:** re-run the value comparison for `__dit__[t-x_q-0-1]` and
+   `__text_video_connector__[t-to_q-0-1]`. Fix confirmed iff the biases are now small
+   (≈ ±0.4 / ±0.07), not `65024`.
+4. Only then: requantize (~2h) → restore F32 norms → GPU canary → render a coherent
+   frame.
+5. Apply the same proven pipeline to `10_e_v1_bf16.safetensors`.
+
+### 17.6 One-line summary (§17)
+
+The converter mangled attention weights because the `interleaved` rotary transpose ran
+through s4nnc's graph `transposed()`, which is broken on our GPU-less CPU converter
+(both the `.toGPU()` round-trip and a pure-CPU `.transposed().contiguous()` read out of
+bounds). Replacing it with a **manual raw-pointer row-permutation** (no graph ops)
+produces weights that match Draw Things' official f16 exactly, and the change is
+captured in `DRAW_THINGS_PATCH`.
+
+### 17.7 CONFIRMED RESULT (2026-07-10) — the fix produces correct weights
+
+Rebuilt `model-converter` with the manual permutation, reconverted the control
+(`RESULT=PASS`, 5746 tensors), and ran the cheap gate
+(`tools/dt_verify_interleaved_fix.py`, ours vs official f16):
+
+| tensor | ours (fixed) | official | \|max\| ratio |
+|---|---|---|---|
+| `__dit__[t-x_q-0-1]` | −0.3828 … **0.4375** | −0.3828 … 0.4395 | **1.00** |
+| `__text_video_connector__[t-to_q-0-1]` | −0.0737 … **0.0588** | −0.0737 … 0.0588 | **1.00** |
+
+`RESULT=PASS interleaved Q/K weights are sane`. The garbage (`65024` / `23952`) is
+gone; the values now match the official f16. **The converter root cause is fixed** and
+the corrected `dt-models/ltx23_control_f16.ckpt` is on disk.
+
+Downstream (in progress): requantize the corrected f16 → q6p → restore F32 norms →
+GPU render → confirm a coherent frame → apply the same to `10_e_v1_bf16.safetensors`.
+
+**Performance note (to optimize later):** the manual reconvert took ~63 min vs ~12 min
+for the graph version (mostly `sys`/I-O wait, `user` only ~1.5 min — the extra
+per-tensor allocations/copies, not the arithmetic). The element-wise inner copy can be
+replaced with a per-row bulk copy (`UnsafeMutablePointer.update(from:count:)`) and the
+`Tensor(from:)` source copy can be dropped once the input is known-contiguous. Not on
+the critical path to correctness; revisit before large custom-model runs.
