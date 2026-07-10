@@ -449,3 +449,83 @@ proven pipeline to `10_e_v1_bf16.safetensors`.
   f16 (q6p-safe; does not touch palettized weights). Needed because
   `dt_fix_ltx23_serialization.py` is f16-only (q6p palettized data breaks its
   length math).
+
+---
+
+## 15) Gray-Output Root-Cause Audit (2026-07-10, later) — It's The Quantizer
+
+### 15.1 The converter mapping is SOUND (ruled out)
+
+A read-only audit of the hand-written LTX2.3 import mapping (initially suspected as
+the source of wrong weights) concluded the **structure is correct**:
+
+- The mapping is `source_key → [DrawThings target name]` (e.g.
+  `video_embeddings_connector.transformer_1d_blocks.0.attn1.to_q.weight →
+  t-to_q-0-0`), resolved through `reverseMapping`. The `t-to_q-i-0` strings are
+  **target** store-keys, not phantom source keys.
+- The importer handles the `model.diffusion_model.` source prefix
+  (`ModelImporter.swift` L317-327), and the keyset matches official 5746/5746.
+
+So the gray output is **not** a broken converter mapping. (An automated agent
+initially mis-reported "phantom keys"; that was a misread and is refuted here.)
+
+### 15.2 Direct weight-data comparison: our q6p vs official q6p
+
+Comparing data length of all shared tensors (via high-limit sqlite):
+`datalen_mismatch = 2933` (~half). Per-block dump (block 0) shows a stark pattern:
+
+- **Every weight matrix** (`-0-0`) is **16-24 bytes** in the official q6p but the
+  **full palettized blob** in ours (e.g. `x_q-0-0`: official 24B vs ours 13MB;
+  `x_out_proj-0-0`: official 24B vs ours 52MB).
+- Biases/norms (`-0-1`) have real data in both.
+
+### 15.3 Root difference: sidecar vs inline storage
+
+| checkpoint | storage | `x_q-0-0` `data` |
+|---|---|---|
+| official f16 | inline | 33MB |
+| **official q6p** | **`-tensordata` sidecar** | 24-byte reference (offset+len) |
+| our f16 | sidecar (42G tensordata) | — |
+| **our q6p** | **inline** (single 20G `.ckpt`) | full 13MB palettized blob |
+
+The official q6p keeps weights in a `-tensordata` sidecar (the DB row is a 24-byte
+pointer). **Our quantizer wrote every weight inline.** Cause in
+`Apps/ModelQuantizer/Quantizer.swift`:
+
+- L123 opens the **input** store *with*
+  `externalStore: TensorData.externalStore(filePath: inputFile)`,
+- L126 opens the **output** store as `graph.openStore(outputFile)` **without** any
+  external store → all writes land inline.
+
+Our f16 (converter output) *does* use a sidecar; the quantizer collapses it inline.
+
+### 15.4 Quantizer LTX2.3 precision policy (for reference)
+
+`Quantizer.swift` L150-215 (forced-codec path), per tensor:
+
+- `text_feature_extractor` / `text_video_connector` / `text_audio_connector`
+  → **preserve original** (write as-is)
+- `embedder` / `pos_embed` / `-linear-` / `scale_shift_table` /
+  `caption_projection` / `patchify_proj` / `proj_out` → **fp16**
+- `squeezedDims>1` and (`ada_ln`|`adaln`|4D) → **[q8p, ezm7]**
+- other 2D → **[q6p, ezm7]**
+- 1D scalar → **ezm7**
+
+Note the policy quantizes `ada_ln` to q8p, but the official q6p keeps norms F32 —
+another mismatch (already worked around by `dt_q6p_restore_f32_norms.py`).
+
+### 15.5 Conclusion + decisive next step
+
+After the F32-norm restore, the model samples but stays gray, so the gray comes
+from the **q6p-palettized attention/MLP weight values**, produced by either:
+- our converter emitting subtly different weight *values* than Draw Things', or
+- our quantizer's inline/palettization path.
+
+The mapping structure is sound, so suspicion is on the **quantizer**. Two moves:
+
+1. **Isolate (definitive, ~2h):** quantize the *official* f16 with *our* quantizer
+   → gray ⇒ quantizer; coherent ⇒ our converter weight values.
+2. **Fix the quantizer sidecar output** (`Quantizer.swift` L126: give the output
+   store an `externalStore`), regenerate the patch, rebuild, re-quantize, re-test.
+
+Recommended: option 2 (a concrete, identified divergence from the official path).
