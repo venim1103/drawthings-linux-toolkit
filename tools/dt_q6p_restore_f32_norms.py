@@ -20,7 +20,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import numpy as np
+
 DT_F32 = 16384
+DT_F16 = 131072
 
 # use the high-limit sqlite python? No - these norm rows are small; default is fine.
 
@@ -96,7 +99,12 @@ def main() -> int:
             skipped_missing += 1
             continue
         s_dt, s_dim, s_data = s
-        # our f16 norm should already be F32 (datatype 16384) after post-process
+        # Widen an F16 source norm to F32. Custom (fine-tuned) models keep their
+        # norms at F16 while the official base stores them F32; after widening the
+        # byte length matches ref_dlen so the value is restored (with correct,
+        # model-specific values -- do NOT borrow official norms for a fine-tune).
+        if s_dt == DT_F16 and len(s_data) * 2 == ref_dlen:
+            s_data = np.frombuffer(s_data, dtype=np.float16).astype("<f4").tobytes()
         if len(s_data) != ref_dlen:
             skipped_len += 1
             continue
