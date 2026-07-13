@@ -46,6 +46,9 @@ cp \
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" \
   "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift"
+cp \
+  "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift" \
+  "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift"
 mkdir -p "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Extensions"
 cp \
   "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift" \
@@ -69,6 +72,8 @@ cp \
   "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" \
   "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift"
 cp "$REPO_ROOT/.build/checkouts/s4nnc/Package.swift" "$PATCH_ROOT/checkouts/s4nnc/Package.swift"
+mkdir -p "$PATCH_ROOT/checkouts/s4nnc/nnc"
+cp "$REPO_ROOT/.build/checkouts/s4nnc/nnc/Store.swift" "$PATCH_ROOT/checkouts/s4nnc/nnc/Store.swift"
 cp "$REPO_ROOT/.build/checkouts/ccv/Package.swift" "$PATCH_ROOT/checkouts/ccv/Package.swift"
 mkdir -p "$PATCH_ROOT/checkouts/ccv/lib/nnc"
 cp \
@@ -100,6 +105,7 @@ PATCH_TARGETS=(
   Libraries/SwiftDiffusion/Sources/TextEncoder.swift
   Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift
   Libraries/SwiftDiffusion/Sources/Models/HiDream.swift
+  Libraries/SwiftDiffusion/Sources/Models/LTX2.swift
   Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift
   Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift
   Libraries/LocalImageGenerator/Sources/ImageConverter.swift
@@ -123,7 +129,7 @@ for rel_path in "${PATCH_TARGETS[@]}"; do
   fi
 done
 
-git -C "$REPO_ROOT/.build/checkouts/s4nnc" diff -- Package.swift > "$PATCHES_DIR/s4nnc.patch"
+git -C "$REPO_ROOT/.build/checkouts/s4nnc" diff -- Package.swift nnc/Store.swift > "$PATCHES_DIR/s4nnc.patch"
 git -C "$REPO_ROOT/.build/checkouts/ccv" diff -- \
   Package.swift \
   lib/nnc/ccv_cnnp_model.c \

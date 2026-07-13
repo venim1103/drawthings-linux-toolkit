@@ -1222,8 +1222,14 @@ public final class ModelImporter {
           mapping["\(base).attn1.to_gate_logits.bias"] = ["t-to_gate-\(i)-1"]
           mapping["\(base).attn1.to_out.0.weight"] = ["t-to_o-\(i)-0"]
           mapping["\(base).attn1.to_out.0.bias"] = ["t-to_o-\(i)-1"]
-          mapping["\(base).attn1.k_norm.weight"] = ["t-norm_k-\(i)-0"]
-          mapping["\(base).attn1.q_norm.weight"] = ["t-norm_q-\(i)-0"]
+          // QK-norms multiply the de-interleaved q/k, so de-interleave them too
+          // (drawthings-linux-toolkit; same head config as to_q/to_k above).
+          mapping["\(base).attn1.k_norm.weight"] = ModelWeightElement(
+            ["t-norm_k-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
+            headDimension: headDimension)
+          mapping["\(base).attn1.q_norm.weight"] = ModelWeightElement(
+            ["t-norm_q-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
+            headDimension: headDimension)
           mapping["\(base).ff.net.0.proj.weight"] = ["t-up_proj-\(i)-0"]
           mapping["\(base).ff.net.0.proj.bias"] = ["t-up_proj-\(i)-1"]
           mapping["\(base).ff.net.2.weight"] = ["t-down_proj-\(i)-0"]

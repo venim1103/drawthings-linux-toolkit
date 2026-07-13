@@ -903,3 +903,105 @@ The §17 fix corrected the Q/K/V *projections* (gray → structured), but the si
 **QK-norm** weights (`q_norm`/`k_norm`) were left interleaved because their mappings lack
 `interleaved: true`; flagging them (same head config as `to_q`/`to_k`) routes them through
 the same de-interleave and should yield a coherent frame.
+
+## 19) COHERENT FRAME ACHIEVED + QK-norm fix applied (2026-07-13)
+
+### 19.1 Fast validation (no requantize) — CONFIRMED coherent
+
+The QK-norms are palettized in the q6p and are **not** in the official q6p's F32 set, so
+`dt_q6p_restore_f32_norms.py` skips them. That means we can overwrite them **directly in
+the q6p** with the correct (de-interleaved) values as F32 — validating the fix WITHOUT a
+2h requantize:
+
+- `tools/dt_q6p_restore_qk_norms.py --q6p ltx23_control_q6p.ckpt --f16-source <official f16>`
+  copied all **608** QK-norm tensors (every layer) as F32 (dim `[1,1,N]` from the source
+  dim blob). Verified 100% match to official for spot-checked tensors.
+- GPU render (`ltx23_control`, 384×384, 8 steps, seed 4242): **`RESULT=PASS`**, `std` rose
+  0.47 → **0.62** (matching the coherent isolation control), and the image is a **clean,
+  coherent red sports car on a road at sunset** — mountains, sky, road markings, headlights.
+  `output/q6p_canary_ltx23_control_qknorm_*/image_r0022_01.png`.
+
+**This proves the full fix**: §17 (projections) + §18 (QK-norms) → a coherent frame from
+OUR converted model, matching the official-weights control.
+
+### 19.2 Head rule
+
+Every LTX2.3 QK-norm has `numberOfHeads = 32`; `headDimension = N/32` (self-attn N=4096→128,
+cross-attn N=2048→64). The converter fix uses each block's own `h`/`k`, so it is exact
+without relying on this rule; a post-process would use `headDim = N/32`.
+
+### 19.3 Permanent converter fix (applied, in DRAW_THINGS_PATCH)
+
+The importer uses the non-LoRA `LTX2` / `LTX2Fixed` (verified: `ModelImporter.swift`
+L1490/1496/1516/1522) and the hand-written `makeLTX23ConnectorMapping`. So the QK-norm
+mappings were flagged `interleaved: true` (same head config as the sibling `to_q`/`to_k`)
+at exactly the **used** sites:
+
+- `LTX2.swift` `LTX2SelfAttention` (`k_norm`/`q_norm`, `h`/`k`) — video+audio self-attn.
+- `LTX2.swift` `LTX2CrossAttention` (`k_norm` optional/`q_norm`, `h`/`k.1`) — cross / a2v / v2a.
+- `LTX2.swift` `LTX2CrossAttentionFixed` (`k_norm`, `h`/`k.1`) — the KV-fixed cross path.
+- `ModelImporter.swift` `makeLTX23ConnectorMapping` L1225-26 (`k_norm`/`q_norm`,
+  `numberOfHeads`/`headDimension`).
+
+The LoRA twins (`LoRALTX2*`) and `BasicTransformerBlock1D`/`Embedding1DConnector` were left
+unchanged — the importer does not use them for the raw-mapping conversion (harmless). Both
+`LTX2.swift` and `TensorDescriptor.swift` are now in
+`tools/generate_drawthings_quant_patches.sh` (snapshot + `PATCH_TARGETS`); the upstream
+`draw-things-community` repo is never edited directly.
+
+### 19.4 Remaining to reach a fully converter-native coherent frame
+
+Rebuild `model-converter` → reconvert control → cheap-verify the 17 norm types now match
+official (they should, like the projections did) → requantize → restore F32 norms → render.
+Then run the same pipeline on `10_e_v1_bf16.safetensors` (the actual custom target).
+
+### 19.5 Converter-native fix VERIFIED (2026-07-13)
+
+Rebuilt + reconverted the control. Compared all 16 QK-norm types to official:
+
+- 14 types at **99-100%**; `ca_norm_q`/`ca_norm_k` at 96.2%/96.8% @ `atol=3e-3`, but
+  **maxdiff is only 0.0078** and they hit **100% @ `atol=1e-2`** — pure F16 rounding, not a
+  wrong transform (`deint(hd=64)`=96% while every other headDim scores 24-49%, so hd=64 is
+  provably correct; `ca` is a 2048-dim / headDim-64 attention).
+- Projection weights still **100%**.
+
+So the converter now emits correctly de-interleaved Q/K/V projections **and** QK-norms
+natively — no post-processing needed. The importer uses the non-LoRA `LTX2`/`LTX2Fixed`
+paths, so only `LTX2SelfAttention`, `LTX2CrossAttention`, `LTX2CrossAttentionFixed` and the
+connector mapping needed flags; the LoRA twins were left untouched (unused, harmless).
+
+## 20) CONVERSION SPEEDUP — `PRAGMA synchronous=OFF` (2026-07-13)
+
+### 20.1 The bottleneck
+
+Conversion was **disk-I/O-bound, not CPU-bound**. A 44 GB convert took ~56-63 min but
+used only ~1.5 min of `user` CPU; the rest was `sys` + I/O wait. Evidence while running:
+process in `D` (uninterruptible I/O wait), a **22 GB SQLite rollback journal**, and only
+~12-15 MB/s throughput. s4nnc opens the checkpoint store with SQLite's defaults
+(`journal_mode=DELETE`, `synchronous=FULL`), so every commit `fsync`s and the journal is
+flushed synchronously — pathological on the WSL2 virtual disk.
+
+### 20.2 The fix
+
+Add `PRAGMA synchronous=OFF` on the **write** path of s4nnc's `openStore`
+(`checkouts/s4nnc/nnc/Store.swift`, right after the write-path `auto_vacuum`). Model
+conversion/quantization outputs are one-shot and fully regenerable, so per-commit fsync
+durability is pointless. Journaling stays on (so `VACUUM`/rollback still work); only the
+fsync/synchronous flush is skipped, letting writes stream through the page cache.
+
+### 20.3 Measured result (custom `10_e_v1` convert)
+
+| metric | before (`synchronous=FULL`) | after (`synchronous=OFF`) |
+|---|---|---|
+| read rate | ~15 MB/s | **~110 MB/s** |
+| write rate | ~12 MB/s | **~42 MB/s** |
+| SQLite journal | **22 GB** | **~4.6 KB** |
+| process state | `D` (I/O wait) | `R` (running) |
+| wall-clock (44 GB) | ~56 min | **~7 min (≈8×)** |
+
+### 20.4 Captured in DRAW_THINGS_PATCH
+
+`checkouts/s4nnc/nnc/Store.swift` was added to `tools/generate_drawthings_quant_patches.sh`
+(snapshot copy + the `s4nnc.patch` git-diff now covers `Package.swift nnc/Store.swift`).
+The s4nnc checkout files are read-only, so applying edits there requires `chmod +w` first.
+The upstream repos are never edited directly.

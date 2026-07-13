@@ -894,7 +894,7 @@ index 6f266704..c0ec3826 100644
        var maskedImage: DynamicGraph.Tensor<FloatType>? = nil
        var mask: DynamicGraph.Tensor<FloatType>? = nil
 diff --git a/Libraries/ModelOp/Sources/ModelImporter.swift b/Libraries/ModelOp/Sources/ModelImporter.swift
-index 8435d2f1..9a4cfef8 100644
+index 8435d2f1..ab53e911 100644
 --- a/Libraries/ModelOp/Sources/ModelImporter.swift
 +++ b/Libraries/ModelOp/Sources/ModelImporter.swift
 @@ -13,6 +13,7 @@ public final class ModelImporter {
@@ -1186,7 +1186,7 @@ index 8435d2f1..9a4cfef8 100644
          fatalError()
        case .kandinsky21, .v1, .v2:
          break
-@@ -1022,6 +1198,39 @@ public final class ModelImporter {
+@@ -1022,6 +1198,45 @@ public final class ModelImporter {
        let unetFixed: Model?
        let unetFixedMapper: ModelWeightMapper?
        var additionalMappings = [(prefix: String, mapping: ModelWeightMapping)]()
@@ -1214,8 +1214,14 @@ index 8435d2f1..9a4cfef8 100644
 +          mapping["\(base).attn1.to_gate_logits.bias"] = ["t-to_gate-\(i)-1"]
 +          mapping["\(base).attn1.to_out.0.weight"] = ["t-to_o-\(i)-0"]
 +          mapping["\(base).attn1.to_out.0.bias"] = ["t-to_o-\(i)-1"]
-+          mapping["\(base).attn1.k_norm.weight"] = ["t-norm_k-\(i)-0"]
-+          mapping["\(base).attn1.q_norm.weight"] = ["t-norm_q-\(i)-0"]
++          // QK-norms multiply the de-interleaved q/k, so de-interleave them too
++          // (drawthings-linux-toolkit; same head config as to_q/to_k above).
++          mapping["\(base).attn1.k_norm.weight"] = ModelWeightElement(
++            ["t-norm_k-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
++            headDimension: headDimension)
++          mapping["\(base).attn1.q_norm.weight"] = ModelWeightElement(
++            ["t-norm_q-\(i)-0"], interleaved: true, numberOfHeads: numberOfHeads,
++            headDimension: headDimension)
 +          mapping["\(base).ff.net.0.proj.weight"] = ["t-up_proj-\(i)-0"]
 +          mapping["\(base).ff.net.0.proj.bias"] = ["t-up_proj-\(i)-1"]
 +          mapping["\(base).ff.net.2.weight"] = ["t-down_proj-\(i)-0"]
@@ -1226,7 +1232,7 @@ index 8435d2f1..9a4cfef8 100644
        switch modelVersion {
        case .v1:
          (unet, unetReader) = UNet(
-@@ -1271,7 +1480,77 @@ public final class ModelImporter {
+@@ -1271,7 +1486,77 @@ public final class ModelImporter {
            timesteps: 1,
            channels: 3072, layers: (5, 20), numberOfReferenceImages: 0, guidanceEmbed: true,
            usesFlashAttention: .scale1, kvCache: false)
@@ -1305,7 +1311,7 @@ index 8435d2f1..9a4cfef8 100644
          fatalError()
        case .kandinsky21, .wurstchenStageB:
          fatalError()
-@@ -1422,7 +1701,19 @@ public final class ModelImporter {
+@@ -1422,7 +1707,19 @@ public final class ModelImporter {
            graph.variable(.CPU, .WC(1, 256), of: FloatType.self),
          ]
          tEmb = nil
@@ -1326,7 +1332,7 @@ index 8435d2f1..9a4cfef8 100644
          fatalError()
        case .v1, .v2, .kandinsky21, .wurstchenStageB:
          crossattn = []
-@@ -1558,6 +1849,17 @@ public final class ModelImporter {
+@@ -1558,6 +1855,17 @@ public final class ModelImporter {
              stateDict[String(key.dropFirst(4))] = value
            }
          }
@@ -1344,7 +1350,7 @@ index 8435d2f1..9a4cfef8 100644
        }
        // In case it is not on high performance device and it is SDXL model, read the parameters directly from the mapping.
        if let unetReader = unetReader {
-@@ -1661,14 +1963,18 @@ public final class ModelImporter {
+@@ -1661,14 +1969,18 @@ public final class ModelImporter {
            }
            let reverseUNetMapping = reverseMapping(original: UNetMapping)
            let reverseUNetMappingFixed = reverseMapping(original: UNetMappingFixed)
@@ -1364,7 +1370,7 @@ index 8435d2f1..9a4cfef8 100644
                try archive.with(encoderHidProjBiasDescriptor) { tensor in
                  let tensor = Tensor<FloatType>(from: tensor)
                  store.write("__encoder_hid_proj__[t-0-1]", tensor: tensor)
-@@ -1677,81 +1983,99 @@ public final class ModelImporter {
+@@ -1677,81 +1989,99 @@ public final class ModelImporter {
              if modelVersion == .zImage, let xPadTokenDescriptor = stateDict["x_pad_token"],
                let capPadTokenDescriptor = stateDict["cap_pad_token"]
              {
@@ -1519,7 +1525,7 @@ index 8435d2f1..9a4cfef8 100644
                      value.write(
                        graph: graph,
                        to: store, tensor: tensor, format: value.format, isDiagonalUp: false,
-@@ -1760,85 +2084,55 @@ public final class ModelImporter {
+@@ -1760,85 +2090,55 @@ public final class ModelImporter {
                        let _ = interrupt()
                        return "__\(modelPrefix)__[\($0)]"
                      }
@@ -1643,7 +1649,7 @@ index 8435d2f1..9a4cfef8 100644
                  try archive.with(tensorDescriptors) { tensors in
                    guard !tensors.isEmpty else { return }
                    let tensor: Tensor<FloatType>
-@@ -1870,18 +2164,109 @@ public final class ModelImporter {
+@@ -1870,18 +2170,109 @@ public final class ModelImporter {
                      }
                      tensor = combined
                    }
@@ -1760,7 +1766,7 @@ index 8435d2f1..9a4cfef8 100644
            }
          }
        }
-@@ -1986,7 +2371,15 @@ public final class ModelImporter {
+@@ -1986,7 +2377,15 @@ public final class ModelImporter {
            if $0.keys.count != 292 && $0.keys.count != 294 {
              throw Error.tensorWritesFailed
            }
@@ -1777,7 +1783,7 @@ index 8435d2f1..9a4cfef8 100644
            fatalError()
          case .kandinsky21, .wurstchenStageB:
            fatalError()
-@@ -2020,7 +2413,9 @@ public final class ModelImporter {
+@@ -2020,7 +2419,9 @@ public final class ModelImporter {
                  (rootObject["state_dict"] as? Interpreter.Dictionary ?? rootObject["module"]
                    as? Interpreter.Dictionary)
              else {
@@ -1788,7 +1794,7 @@ index 8435d2f1..9a4cfef8 100644
              }
              originalStateDict.forEach { key, value in
                guard let value = value as? TensorDescriptor else { return }
-@@ -2032,7 +2427,9 @@ public final class ModelImporter {
+@@ -2032,7 +2433,9 @@ public final class ModelImporter {
                }
              }
            } else {
@@ -1799,7 +1805,7 @@ index 8435d2f1..9a4cfef8 100644
            }
          }
          try graph.withNoGrad {
-@@ -2565,7 +2962,31 @@ extension ModelImporter {
+@@ -2565,7 +2968,31 @@ extension ModelImporter {
        }
        // For FLUX.2, the hires fix trigger scale is 2 of the finetune scale.
        specification.hiresFixScale = finetuneScale * 2
@@ -1994,6 +2000,54 @@ index d2a5d9f6..bced744a 100644
    }
    return (w1, w2, w3, Model([x], [out]))
  }
+diff --git a/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift b/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift
+index fc7ac5ff..16886018 100644
+--- a/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift
++++ b/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift
+@@ -309,8 +309,12 @@ private func LTX2SelfAttention(
+     }
+     mapping["\(prefix).to_out.0.weight"] = [unifyheads.weight.name]
+     mapping["\(prefix).to_out.0.bias"] = [unifyheads.bias.name]
+-    mapping["\(prefix).k_norm.weight"] = [normK.weight.name]
+-    mapping["\(prefix).q_norm.weight"] = [normQ.weight.name]
++    // QK-norms multiply the de-interleaved q/k -> de-interleave them too
++    // (drawthings-linux-toolkit; same head config as to_q/to_k).
++    mapping["\(prefix).k_norm.weight"] = ModelWeightElement(
++      [normK.weight.name], interleaved: true, numberOfHeads: h, headDimension: k)
++    mapping["\(prefix).q_norm.weight"] = ModelWeightElement(
++      [normQ.weight.name], interleaved: true, numberOfHeads: h, headDimension: k)
+     return mapping
+   }
+   return (mapper, Model([x, rot], [out]))
+@@ -425,10 +429,14 @@ private func LTX2CrossAttention(
+     }
+     mapping["\(prefix).to_out.0.weight"] = [unifyheads.weight.name]
+     mapping["\(prefix).to_out.0.bias"] = [unifyheads.bias.name]
++    // QK-norms multiply the de-interleaved q/k -> de-interleave them too
++    // (drawthings-linux-toolkit; same head config as to_q/to_k).
+     if let normK = normK {
+-      mapping["\(prefix).k_norm.weight"] = [normK.weight.name]
++      mapping["\(prefix).k_norm.weight"] = ModelWeightElement(
++        [normK.weight.name], interleaved: true, numberOfHeads: h, headDimension: k.1)
+     }
+-    mapping["\(prefix).q_norm.weight"] = [normQ.weight.name]
++    mapping["\(prefix).q_norm.weight"] = ModelWeightElement(
++      [normQ.weight.name], interleaved: true, numberOfHeads: h, headDimension: k.1)
+     return mapping
+   }
+   return (
+@@ -817,7 +825,10 @@ private func LTX2CrossAttentionFixed(
+       [toKeys.bias.name], interleaved: true, numberOfHeads: h, headDimension: k.1)
+     mapping["\(prefix).to_v.weight"] = [toValues.weight.name]
+     mapping["\(prefix).to_v.bias"] = [toValues.bias.name]
+-    mapping["\(prefix).k_norm.weight"] = [normK.weight.name]
++    // QK-norm multiplies the de-interleaved k -> de-interleave it too
++    // (drawthings-linux-toolkit; same head config as to_k).
++    mapping["\(prefix).k_norm.weight"] = ModelWeightElement(
++      [normK.weight.name], interleaved: true, numberOfHeads: h, headDimension: k.1)
+     return mapping
+   }
+   return (mapper, Model([context], [keys, values]))
 diff --git a/Libraries/SwiftDiffusion/Sources/TextEncoder.swift b/Libraries/SwiftDiffusion/Sources/TextEncoder.swift
 index 62b23002..73af4aa6 100644
 --- a/Libraries/SwiftDiffusion/Sources/TextEncoder.swift

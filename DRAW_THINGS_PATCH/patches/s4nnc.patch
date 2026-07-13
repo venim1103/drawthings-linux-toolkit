@@ -75,3 +75,20 @@ index d1bdb8db..27e10d70 100644
        path: "nnc",
        exclude: [
          "C_ccv",
+diff --git a/nnc/Store.swift b/nnc/Store.swift
+index d5a91462..6b8cebc2 100644
+--- a/nnc/Store.swift
++++ b/nnc/Store.swift
+@@ -6033,6 +6033,12 @@ extension DynamicGraph {
+     } else {
+       // Set auto_vacuum to incremental so we can truncate the database when doing conversion.
+       sqlite3_exec(_sqlite, "PRAGMA auto_vacuum=incremental", nil, nil, nil)
++      // drawthings-linux-toolkit: conversion/quantization writes are one-shot and
++      // regenerable; the per-commit fsync + synchronous journal flush dominate
++      // wall-clock on the Linux/WSL virtual disk (a 44GB convert spent ~46 min in
++      // I/O wait). Disabling synchronous keeps journaling (VACUUM/rollback still
++      // work) while letting writes stream through the page cache. Big speedup.
++      sqlite3_exec(_sqlite, "PRAGMA synchronous=OFF", nil, nil, nil)
+     }
+     let store = Store(
+       _Store(sqlite: sqlite, flags: flags, externalStore: externalStore, chunkSize: chunkSize),
