@@ -1005,3 +1005,76 @@ fsync/synchronous flush is skipped, letting writes stream through the page cache
 (snapshot copy + the `s4nnc.patch` git-diff now covers `Package.swift nnc/Store.swift`).
 The s4nnc checkout files are read-only, so applying edits there requires `chmod +w` first.
 The upstream repos are never edited directly.
+
+## 21) CUSTOM 10_e_v1 END-TO-END — sampled but DIVERGED (2026-07-13, OPEN)
+
+First full run of the actual target `10_e_v1` through the fixed pipeline. It got a lot
+further than ever before but did **not** yield a frame — the DiT **diverges** during
+sampling.
+
+### 21.1 Pipeline run (all succeeded up to render)
+
+- Convert `10_e_v1_bf16.safetensors` → f16 with the fixed converter: **RESULT=PASS**,
+  15m15s (~3.7× faster thanks to §20), Q/K biases sane, no garbage.
+- Requantize → `10_e_v1_q6p.ckpt` (20 GB), 1h41m (CPU-bound palettization).
+- Restore norms from `10_e_v1`'s **own** values (widened F16→F32): 1540 ada_ln + 608
+  QK-norms → q6p now has 2148 F32 + 4 BF16 embeds (matches the coherent control's shape).
+- Alias `10_e_v1` → q6p (mirrors `ltx23_control`).
+
+### 21.2 The failure
+
+GPU render (384×384, 8 steps, seed 4242): the model loads and **samples** (5 preview
+frames emitted) but the **final decode produced no images** — `RESULT=FAIL, no final
+generated output payloads`, "Image processed failed", 0 images.
+
+Decoding the latent previews shows the DiT is **numerically diverging**:
+
+| preview | NaN | Inf | min / max | std |
+|---|---|---|---|---|
+| 0004 | 62 | 4 | −64512 / 65024 | 4447 |
+| 0010 | 364 | 5 | −64512 / 65024 | 6031 |
+
+Latents blow up to F16 overflow (±65024) and NaN count **grows** over steps → classic
+divergence, so the decode has nothing valid to render.
+
+### 21.3 What's ruled out — the custom weights are fine
+
+Scanned the custom f16: **no tensor has |max|>50, and none contain NaN/Inf.** Compared
+every tensor type to the control f16: differences are tiny (maxdiff 0.01–0.098) and every
+magnitude matches the control exactly — `10_e_v1` is a **light fine-tune of the same base**
+and its converted weights are sane. So divergence is **not** an anomalous/garbage weight.
+
+### 21.4 Prime suspect — the converter-native path was never validated end-to-end
+
+The coherent control frame (§19.1) used the **q6p-surgery** path: quantize the *old*
+control f16 + overwrite norms with the **official** f16's F32 values. The
+**converter-native** path (reconvert with the §18 QK-norm fix → requantize → restore the
+model's **own** F16→F32-widened norms → render) was first exercised here, on the custom
+model, and it failed. So the bug is most likely in that path, not in `10_e_v1`:
+
+- **H1 — F16→F32 widened norms.** Control restored *official F32-native* norms; custom
+  restored *F16→F32-widened* norms. If norm precision/values matter, this differs.
+- **H2 — QK-norm F32 restore may be wrong or unnecessary here.** After quantizing an
+  already-de-interleaved f16, the q6p's palettized QK-norms are already correct (like the
+  coherent *isolation* run, which never restored them). Overwriting them with F32 (via
+  `dt_q6p_restore_qk_norms.py`, using the custom f16's dim blob) may have introduced a
+  dim/precision problem. Worth testing WITHOUT the QK-norm restore.
+- **H3 — the 1540-norm restore for a converter-native f16.** Same tool, but the source
+  norms are the model's own (fine-tune) values; a wrong dim/widen could destabilize.
+
+### 21.5 Next steps (for the continuation)
+
+1. **Isolate the path, not the model:** requantize the on-disk **converter-native control
+   f16** (`ltx23_control_f16.ckpt`, already has de-interleaved norms) → restore norms →
+   render. If it also diverges, the bug is in the converter-native quantize/restore path
+   (not `10_e_v1`). If it's coherent, the issue is specific to the custom norms.
+2. **Ablate the QK-norm restore:** re-quantize the custom f16 and render WITHOUT running
+   `dt_q6p_restore_qk_norms.py` (leave the palettized de-interleaved QK-norms, as in the
+   coherent isolation run). If that renders, the QK-norm F32 restore is the culprit.
+3. **Compare norm values** custom-vs-official for the 1540 F32 set and the QK-norms — did
+   the fine-tune change norms enough to matter, or is a restored dim/value off?
+4. Consider whether F16→F32 widening needs the exact F32 dim encoding the runtime expects.
+
+Nothing here is captured in DRAW_THINGS_PATCH (no source change) — this is a pipeline /
+q6p-post-process investigation. The converter fixes (§17–20) stand; the open item is the
+q6p norm-restore path for a converter-native model.
