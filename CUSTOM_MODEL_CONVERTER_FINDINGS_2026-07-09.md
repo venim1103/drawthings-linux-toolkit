@@ -1078,3 +1078,58 @@ model, and it failed. So the bug is most likely in that path, not in `10_e_v1`:
 Nothing here is captured in DRAW_THINGS_PATCH (no source change) — this is a pipeline /
 q6p-post-process investigation. The converter fixes (§17–20) stand; the open item is the
 q6p norm-restore path for a converter-native model.
+
+## 22) RESOLVED — QK-norm tensor RANK ([N] vs [1,1,N]) (2026-07-14) — CUSTOM MODEL COHERENT
+
+The §21 divergence was the QK-norm **`dim` (tensor rank), not the values**. Comparing dim
+blobs:
+
+| tensor source | `x_norm_q` dim |
+|---|---|
+| Draw Things **official** f16 | `[1, 1, 4096]` (rank-3) ✓ |
+| **our converter** f16 (custom AND control) | `[4096]` (rank-1) ✗ |
+| control q6p (coherent) | `[1,1,4096]` — the surgery sourced dim from the *official* f16 |
+| custom q6p (diverged) | `[4096]` — `dt_q6p_restore_qk_norms.py` copied *our* f16's dim |
+
+So the coherent control frame worked **by accident**: its QK-norm surgery copied the dim
+from the official f16 (rank-3). The custom model, restored from our own f16, inherited the
+rank-1 `[4096]` dim. The runtime's RMSNorm expects `[1,1,N]`; given `[N]` it mis-applies
+the norm, the DiT latents overflow F16, and sampling diverges (§21.2).
+
+### 22.1 The fix
+
+`tools/dt_q6p_restore_qk_norms.py` now rebuilds the dim as `[1,1,N]` (rank-3) regardless
+of the source, using the same blob width:
+
+```python
+ndim = len(s_dim) // 4
+n_elem = len(f32_bytes) // 4
+dim_blob = struct.pack("<%di" % ndim, *([1, 1, n_elem] + [0] * (ndim - 3)))
+```
+
+Re-ran it on the existing custom q6p (no requantize) → all 608 QK-norms now `[1,1,4096]` /
+`[1,1,2048]`, matching the coherent control exactly.
+
+### 22.2 Result — coherent custom frame
+
+Re-render (384×384, 8 steps, seed 4242): **`RESULT=PASS`, 9 images, no NaN, no F16
+overflow, `std ≈ 0.53`** (coherent range). The image is a **clean red car on a mountain
+road at sunset** — the first coherent frame from the custom `10_e_v1` model. **Original
+objective achieved.**
+
+### 22.3 The full working recipe (converter-native, any LTX2.3 fine-tune)
+
+1. Convert safetensors → f16 with the fixed converter (§17 + §18). Fast (§20).
+2. Requantize f16 → q6p (~1h40m, CPU-bound).
+3. `dt_q6p_restore_f32_norms.py --q6p <q6p> --f16-source <our f16> --ref-q6p <official q6p>`
+   (1540 ada_ln norms; ref-q6p supplies the correct dim).
+4. `dt_q6p_restore_qk_norms.py --q6p <q6p> --f16-source <our f16>` (608 QK-norms, now with
+   the `[1,1,N]` dim fix).
+5. Alias → q6p; render.
+
+### 22.4 Follow-up (optional cleanup)
+
+Our converter writes ALL norms rank-1 `[N]`; the restores paper over it (ada_ln via the
+ref-q6p dim, QK via the new `[1,1,N]` reconstruction). A cleaner long-term fix would make
+the converter emit `[1,1,N]` norms directly (TensorDescriptor/norm write path), removing
+the need for the dim reconstruction — but the current pipeline works end-to-end.
