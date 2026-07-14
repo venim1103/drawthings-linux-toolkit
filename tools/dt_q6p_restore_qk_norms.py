@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import re
 import sqlite3
+import struct
 import sys
 
 import numpy as np
@@ -73,10 +74,17 @@ def main() -> int:
         if args.dry_run:
             restored += 1
             continue
-        # dim blob from the source (encodes shape, dtype-independent); datatype F32.
+        # The runtime expects the norm shaped [1,1,N] (rank-3), like Draw Things'
+        # official f16. Our converter writes QK-norms as rank-1 [N]; propagating that
+        # source dim makes the loader mis-apply the RMSNorm so the DiT diverges to F16
+        # overflow. Rebuild the dim as [1,1,N] with the same blob width.
+        s_dim = bytes(s_dim)
+        ndim = len(s_dim) // 4
+        n_elem = len(f32_bytes) // 4
+        dim_blob = struct.pack("<%di" % ndim, *([1, 1, n_elem] + [0] * (ndim - 3)))
         cur.execute(
             "UPDATE tensors SET datatype=?, dim=?, data=? WHERE name=?",
-            (DT_F32, sqlite3.Binary(bytes(s_dim)), sqlite3.Binary(f32_bytes), name),
+            (DT_F32, sqlite3.Binary(dim_blob), sqlite3.Binary(f32_bytes), name),
         )
         restored += 1
         pending += 1
