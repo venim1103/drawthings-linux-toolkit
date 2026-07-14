@@ -29,12 +29,12 @@ STEPS=4
 SAMPLER=17
 GUIDANCE=1.0
 SHIFT=3.0
-NUM_FRAMES=9
+NUM_FRAMES="${DT_TEST_NUM_FRAMES:-9}"
 FPS_ID=5
 SEED=4242
 
-PROMPT="a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic"
-NEG_PROMPT="blurry, distorted, low quality, artifacts"
+PROMPT="${DT_TEST_PROMPT:-a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic}"
+NEG_PROMPT="${DT_TEST_NEG_PROMPT:-blurry, distorted, low quality, artifacts}"
 
 usage() {
   cat <<'EOF'
