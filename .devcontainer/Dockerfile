@@ -111,6 +111,8 @@ RUN set -eux; \
     '' \
     'for p in /usr/lib/wsl/lib/nvidia-smi /usr/lib/wsl/drivers/*/nvidia-smi /usr/bin/nvidia-smi; do' \
     '  if [ -x "$p" ]; then' \
+    '    dir="$(dirname "$p")"' \
+    '    export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
     '    exec "$p" "$@"' \
     '  fi' \
     'done' \
