@@ -58,6 +58,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$NAME" ]]; then echo "error: <NAME> is required" >&2; usage; exit 1; fi
+# Accept either a bare name (10_e_v1_4) or a path to the f16 ckpt.
+NAME="$(basename "$NAME")"; NAME="${NAME%.ckpt}"; NAME="${NAME%_f16}"
 case "$CODEC" in q6p|q8p|q4p) ;; *) echo "error: --codec must be q6p, q8p, or q4p" >&2; exit 1 ;; esac
 
 F16="$MODELS_DIR/${NAME}_f16.ckpt"

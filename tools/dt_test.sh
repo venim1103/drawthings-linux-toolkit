@@ -50,6 +50,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$NAME" ]]; then echo "error: <NAME> is required" >&2; usage; exit 1; fi
+# Accept either a bare alias (10_e_v1_4) or a path to a ckpt.
+NAME="$(basename "$NAME")"; NAME="${NAME%.ckpt}"
+for sfx in _f16 _q6p _q8p _q4p; do NAME="${NAME%$sfx}"; done
 
 TAG="${NAME}_test_$(date +%Y%m%d_%H%M%S)"
 echo "== dt_test =="
