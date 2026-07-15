@@ -14,6 +14,9 @@ set -euo pipefail
 #   --codec CODEC         q6p (default, ~20GB), q8p (larger, higher quality),
 #                         or q4p (smallest, lowest precision).
 #   --force               Re-quantize even if <NAME>_<codec>.ckpt exists.
+#   --restore-only        Skip quantization; (re)run the norm restores + alias on an
+#                         existing <NAME>_<codec>.ckpt. Use this to supply --ref-q6p
+#                         after a quantize that finished but had no reference.
 #   --no-restore          Skip the F32 norm restores (debugging only; will diverge).
 #   --ref-q6p PATH        Official q6p used only as a template for which norms are
 #                         F32 and their dims. Default:
@@ -32,6 +35,7 @@ NAME=""
 CODEC="q6p"
 FORCE=0
 NO_RESTORE=0
+RESTORE_ONLY=0
 REF_Q6P="$MODELS_DIR/ltx_2.3_22b_distilled_1.1_q6p.ckpt"
 MODEL_VERSION="ltx2.3"
 
@@ -46,6 +50,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --codec) CODEC="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --restore-only) RESTORE_ONLY=1; shift ;;
     --no-restore) NO_RESTORE=1; shift ;;
     --ref-q6p) REF_Q6P="${2:-}"; shift 2 ;;
     --model-version) MODEL_VERSION="${2:-}"; shift 2 ;;
@@ -70,15 +75,57 @@ if [[ ! -f "$F16" ]]; then
   echo "error: f16 not found: $F16 (run dt_convert.sh first)" >&2; exit 1
 fi
 
+# Decide whether the ~1-2h quantization step will actually run.
+WILL_QUANTIZE=1
+if [[ "$RESTORE_ONLY" == "1" ]]; then
+  WILL_QUANTIZE=0
+elif [[ -f "$QOUT" && "$FORCE" != "1" ]]; then
+  WILL_QUANTIZE=0
+fi
+
+# --restore-only needs an existing quantized model to fix.
+if [[ "$RESTORE_ONLY" == "1" && ! -f "$QOUT" ]]; then
+  echo "error: --restore-only given but no quantized model exists: $QOUT" >&2
+  echo "       Run without --restore-only to quantize first." >&2
+  exit 1
+fi
+
+# Validate the reference UP FRONT (before quantizing) so a missing reference can
+# never waste a full quantization run, and a finished-but-unreferenced model can
+# be fixed with:  dt_quantize.sh <NAME> --restore-only --ref-q6p PATH
+if [[ "$NO_RESTORE" != "1" && ! -f "$REF_Q6P" ]]; then
+  echo "error: reference q6p not found: $REF_Q6P" >&2
+  echo "       The norm restore needs an official LTX2.3 q6p as a template" >&2
+  echo "       (norm names + dims only; the small ~31MB .ckpt is enough)." >&2
+  echo "       Provide it with:  --ref-q6p PATH" >&2
+  echo "       or skip restores with --no-restore (model will NOT render correctly)." >&2
+  cand_found=0
+  for c in "$MODELS_DIR"/*q6p*.ckpt; do
+    [[ -e "$c" ]] || continue
+    [[ "$c" == *-tensordata ]] && continue
+    [[ "$c" == "$QOUT" ]] && continue
+    if [[ "$cand_found" == "0" ]]; then echo "       Candidate references on disk:" >&2; cand_found=1; fi
+    echo "         --ref-q6p $c" >&2
+  done
+  exit 1
+fi
+
 echo "== dt_quantize =="
 echo "  name   : $NAME"
 echo "  input  : $F16"
 echo "  codec  : $CODEC"
 echo "  output : $QOUT"
+if [[ "$WILL_QUANTIZE" == "0" && "$NO_RESTORE" != "1" ]]; then
+  echo "  mode   : RESTORE-ONLY (model exists; skipping the ~1-2h quantize, just fixing norms)"
+fi
 
 # --- quantize ---
-if [[ -f "$QOUT" && "$FORCE" != "1" ]]; then
-  echo "==> [1/4] Quantize SKIPPED (exists; pass --force to rebuild)"
+if [[ "$WILL_QUANTIZE" == "0" ]]; then
+  if [[ "$RESTORE_ONLY" == "1" ]]; then
+    echo "==> [1/4] Quantize SKIPPED (--restore-only)"
+  else
+    echo "==> [1/4] Quantize SKIPPED (exists; pass --force to rebuild)"
+  fi
 else
   echo "==> [1/4] Quantize f16 -> $CODEC (CPU-bound; ~1-2h)"
   rm -f "$QOUT" "$QOUT-tensordata" "$QOUT-journal"
@@ -94,11 +141,6 @@ if [[ "$NO_RESTORE" == "1" ]]; then
   echo "==> [2/4] + [3/4] Norm restores SKIPPED (--no-restore)"
 else
   echo "==> [2/4] Restore F32 ada_ln/modulation norms (own values, widened)"
-  if [[ ! -f "$REF_Q6P" ]]; then
-    echo "error: --ref-q6p not found: $REF_Q6P" >&2
-    echo "       Provide the official LTX2.3 q6p (template for norm names/dims) via --ref-q6p." >&2
-    exit 1
-  fi
   "$PYTHON_BIN" "$ROOT/tools/dt_q6p_restore_f32_norms.py" \
     --q6p "$QOUT" --f16-source "$F16" --ref-q6p "$REF_Q6P" | tail -6
 
