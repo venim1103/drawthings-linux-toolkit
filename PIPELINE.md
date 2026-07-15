@@ -67,6 +67,9 @@ Then configure it on the device as an ltx2.3 model with those two companions and
 - **Convert and quantize are CPU-only** — safe to run on battery.
 - **`dt_test.sh` uses the GPU.** On a laptop, run it on AC power. GPU inference on
   battery has triggered a Windows/WSL `VIDEO_MEMORY_MANAGEMENT` BSOD.
-- `dt_quantize.sh` needs an official LTX2.3 q6p only as a template for which norms
-  are F32 (default `dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt`; override with
-  `--ref-q6p`).
+- The norm restore is **reference-free** — no official checkpoint needed. The
+  ada_ln F32 set is reconstructed from the model itself and reshaped to `[1,1,N]`.
+  Optionally pass `--ref-q6p PATH` to use an official q6p as the F32 template.
+- If a quantize finished but you want to re-run the norm restores (or supply a
+  reference), use `dt_quantize.sh <NAME> --restore-only` — it skips the ~1–2 h
+  quantize and just fixes the existing `.ckpt`.

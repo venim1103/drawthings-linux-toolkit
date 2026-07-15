@@ -6,17 +6,23 @@ precision (F32) instead of palettizing them to 6-bit. Our quantizer palettizes
 them, which corrupts the sensitive norm weights (6-bit) and stalls sampling.
 
 This tool restores those tensors to F32 by copying the F32 values from OUR OWN
-f16 source (not from any official weights) into the q6p, using the reference q6p
-only as a template for which tensors must be F32 and how their dim is encoded.
+f16 source (not from any official weights) into the q6p.
 
-Scope: only tensors that the reference q6p stores as F32 (datatype 16384). All
-palettized weights are left untouched.
+Two ways to decide which tensors are F32 and how their dim is encoded:
+  * reference-free (default): the ada_ln modulation set is reconstructed from the
+    source by name pattern and reshaped to [1,1,N] -- no reference checkpoint needed.
+  * --ref-q6p PATH: use an official q6p as the template for the F32 tensor set and
+    their dim blobs (restores whatever the reference marks F32).
+
+Scope: only the norm/ada_ln tensors; all palettized weights are left untouched.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
+import struct
 import sys
 from pathlib import Path
 
@@ -25,7 +31,24 @@ import numpy as np
 DT_F32 = 16384
 DT_F16 = 131072
 
+# The ada_ln modulation weights are the tensors Draw Things keeps at F32 in the
+# official q6p (1540 in LTX2.3). They are named "*_ada_ln_<n>" and stored [1,N];
+# the runtime needs them [1,1,N]. The literal "ada_ln" (with underscore) matches
+# these while EXCLUDING the "adaln_single" linear layers (2-D [N,N] matrices that
+# stay palettized). This lets us restore them WITHOUT any reference checkpoint.
+ADA_LN_RE = re.compile(r"ada_ln")
+
 # use the high-limit sqlite python? No - these norm rows are small; default is fine.
+
+
+def discover_ada_ln_from_source(src_f16: Path):
+    """Reference-free F32 set: ada_ln modulation tensor names from our f16 source."""
+    con = sqlite3.connect(str(src_f16))
+    cur = con.cursor()
+    cur.execute("SELECT name FROM tensors")
+    names = [r[0] for r in cur.fetchall() if ADA_LN_RE.search(r[0])]
+    con.close()
+    return names
 
 
 def load_f32_names_and_dims(ref_q6p: Path):
@@ -70,48 +93,71 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--q6p", required=True, help="q6p checkpoint to fix in place")
     ap.add_argument("--f16-source", required=True, help="our f16 with correct F32 norms")
-    ap.add_argument("--ref-q6p", required=True, help="official q6p (template for F32 tensor set + dim)")
+    ap.add_argument("--ref-q6p", default=None,
+                    help="optional official q6p template; omit for reference-free ada_ln restore")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     q6p = Path(args.q6p)
     src = Path(args.f16_source)
-    ref = Path(args.ref_q6p)
-    for p in (q6p, src, ref):
+    ref = Path(args.ref_q6p) if args.ref_q6p else None
+    must_exist = [q6p, src] + ([ref] if ref is not None else [])
+    for p in must_exist:
         if not p.is_file():
             print(f"error: not found: {p}", file=sys.stderr)
             return 2
 
-    f32_set = load_f32_names_and_dims(ref)
-    print(f"reference F32 tensors: {len(f32_set)}")
-    srcd = load_source_f32(src, list(f32_set.keys()))
+    if ref is not None:
+        # reference mode: F32 set + dims come from the official q6p template
+        ref_map = load_f32_names_and_dims(ref)
+        names = list(ref_map.keys())
+        print(f"reference F32 tensors: {len(names)}")
+    else:
+        # reference-free mode: F32 set = ada_ln modulation tensors from the source
+        ref_map = None
+        names = discover_ada_ln_from_source(src)
+        print(f"ada_ln F32 tensors (reference-free): {len(names)}")
+    srcd = load_source_f32(src, names)
     print(f"source tensors found: {len(srcd)}")
 
     con = sqlite3.connect(str(q6p))
     con.execute("PRAGMA journal_mode=DELETE")
     cur = con.cursor()
 
-    restored = skipped_len = skipped_missing = already = 0
+    restored = skipped_len = skipped_missing = skipped_badtype = already = 0
     pending = 0
-    for name, (ref_dim, ref_dlen) in f32_set.items():
+    for name in names:
         s = srcd.get(name)
         if s is None:
             skipped_missing += 1
             continue
         s_dt, s_dim, s_data = s
-        # Widen an F16 source norm to F32. Custom (fine-tuned) models keep their
-        # norms at F16 while the official base stores them F32; after widening the
-        # byte length matches ref_dlen so the value is restored (with correct,
-        # model-specific values -- do NOT borrow official norms for a fine-tune).
-        if s_dt == DT_F16 and len(s_data) * 2 == ref_dlen:
-            s_data = np.frombuffer(s_data, dtype=np.float16).astype("<f4").tobytes()
-        if len(s_data) != ref_dlen:
-            skipped_len += 1
+        # Widen the source norm to F32 (custom fine-tunes keep norms at F16; the
+        # official base stores them F32). Use the model's OWN values -- never borrow
+        # official norms for a fine-tune.
+        if s_dt == DT_F16:
+            f32_bytes = np.frombuffer(s_data, dtype=np.float16).astype("<f4").tobytes()
+        elif s_dt == DT_F32:
+            f32_bytes = np.frombuffer(s_data, dtype="<f4").tobytes()
+        else:
+            skipped_badtype += 1
             continue
-        # check current state
-        cur.execute("SELECT datatype FROM tensors WHERE name=?", (name,))
-        cur_dt = cur.fetchone()
-        if cur_dt and cur_dt[0] == DT_F32:
+        n_elem = len(f32_bytes) // 4
+        if ref_map is not None:
+            ref_dim, ref_dlen = ref_map[name]
+            if len(f32_bytes) != ref_dlen:
+                skipped_len += 1
+                continue
+            target_dim = ref_dim
+        else:
+            # ada_ln stored [1,N] -> the runtime needs [1,1,N]; rebuild the dim blob
+            # with the same width (identical to the QK-norm restore).
+            ndim = len(bytes(s_dim)) // 4
+            target_dim = struct.pack("<%di" % ndim, *([1, 1, n_elem] + [0] * (ndim - 3)))
+        # idempotent: skip if already F32 with the intended dim
+        cur.execute("SELECT datatype, dim FROM tensors WHERE name=?", (name,))
+        row = cur.fetchone()
+        if row and row[0] == DT_F32 and bytes(row[1]) == target_dim:
             already += 1
             continue
         if args.dry_run:
@@ -119,7 +165,7 @@ def main() -> int:
             continue
         cur.execute(
             "UPDATE tensors SET datatype=?, dim=?, data=? WHERE name=?",
-            (DT_F32, sqlite3.Binary(ref_dim), sqlite3.Binary(s_data), name),
+            (DT_F32, sqlite3.Binary(target_dim), sqlite3.Binary(f32_bytes), name),
         )
         restored += 1
         pending += 1
@@ -130,10 +176,11 @@ def main() -> int:
     con.close()
 
     print("\n== summary ==")
-    print(f"restored to F32   : {restored}")
-    print(f"already F32       : {already}")
-    print(f"skipped (len diff): {skipped_len}")
-    print(f"skipped (missing) : {skipped_missing}")
+    print(f"restored to F32    : {restored}")
+    print(f"already F32        : {already}")
+    print(f"skipped (len diff) : {skipped_len}")
+    print(f"skipped (bad type) : {skipped_badtype}")
+    print(f"skipped (missing)  : {skipped_missing}")
     print("done." + (" (dry-run)" if args.dry_run else ""))
     return 0
 

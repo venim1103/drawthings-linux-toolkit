@@ -18,8 +18,9 @@ set -euo pipefail
 #                         existing <NAME>_<codec>.ckpt. Use this to supply --ref-q6p
 #                         after a quantize that finished but had no reference.
 #   --no-restore          Skip the F32 norm restores (debugging only; will diverge).
-#   --ref-q6p PATH        Official q6p used only as a template for which norms are
-#                         F32 and their dims. Default:
+#   --ref-q6p PATH        OPTIONAL official q6p template for the F32 norm set/dims.
+#                         Omitted by default: the ada_ln norms are reconstructed
+#                         reference-free. Auto-used if this path exists:
 #                         dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt
 #   --model-version VER   Quantizer model version. Default: ltx2.3
 #   -h, --help            Show this help.
@@ -90,24 +91,18 @@ if [[ "$RESTORE_ONLY" == "1" && ! -f "$QOUT" ]]; then
   exit 1
 fi
 
-# Validate the reference UP FRONT (before quantizing) so a missing reference can
-# never waste a full quantization run, and a finished-but-unreferenced model can
-# be fixed with:  dt_quantize.sh <NAME> --restore-only --ref-q6p PATH
-if [[ "$NO_RESTORE" != "1" && ! -f "$REF_Q6P" ]]; then
-  echo "error: reference q6p not found: $REF_Q6P" >&2
-  echo "       The norm restore needs an official LTX2.3 q6p as a template" >&2
-  echo "       (norm names + dims only; the small ~31MB .ckpt is enough)." >&2
-  echo "       Provide it with:  --ref-q6p PATH" >&2
-  echo "       or skip restores with --no-restore (model will NOT render correctly)." >&2
-  cand_found=0
-  for c in "$MODELS_DIR"/*q6p*.ckpt; do
-    [[ -e "$c" ]] || continue
-    [[ "$c" == *-tensordata ]] && continue
-    [[ "$c" == "$QOUT" ]] && continue
-    if [[ "$cand_found" == "0" ]]; then echo "       Candidate references on disk:" >&2; cand_found=1; fi
-    echo "         --ref-q6p $c" >&2
-  done
-  exit 1
+# The norm restore is REFERENCE-FREE by default (it reconstructs the ada_ln F32
+# set from the source). An official q6p is only an optional higher-fidelity
+# template: use it if --ref-q6p was given, or if the default path is on disk.
+REF_ARGS=()
+REF_MODE=""
+if [[ "$NO_RESTORE" != "1" ]]; then
+  if [[ -f "$REF_Q6P" ]]; then
+    REF_ARGS=(--ref-q6p "$REF_Q6P")
+    REF_MODE="reference template ($REF_Q6P)"
+  else
+    REF_MODE="reference-free (ada_ln reconstruction)"
+  fi
 fi
 
 echo "== dt_quantize =="
@@ -117,6 +112,9 @@ echo "  codec  : $CODEC"
 echo "  output : $QOUT"
 if [[ "$WILL_QUANTIZE" == "0" && "$NO_RESTORE" != "1" ]]; then
   echo "  mode   : RESTORE-ONLY (model exists; skipping the ~1-2h quantize, just fixing norms)"
+fi
+if [[ "$NO_RESTORE" != "1" ]]; then
+  echo "  restore: $REF_MODE"
 fi
 
 # --- quantize ---
@@ -142,7 +140,7 @@ if [[ "$NO_RESTORE" == "1" ]]; then
 else
   echo "==> [2/4] Restore F32 ada_ln/modulation norms (own values, widened)"
   "$PYTHON_BIN" "$ROOT/tools/dt_q6p_restore_f32_norms.py" \
-    --q6p "$QOUT" --f16-source "$F16" --ref-q6p "$REF_Q6P" | tail -6
+    --q6p "$QOUT" --f16-source "$F16" "${REF_ARGS[@]}" | tail -6
 
   echo "==> [3/4] Restore F32 QK-norms with [1,1,N] dim fix (own values)"
   "$PYTHON_BIN" "$ROOT/tools/dt_q6p_restore_qk_norms.py" \
