@@ -30,8 +30,10 @@ def _load_generated_modules(bindings_dir: Path):
 
     sys.path.insert(0, str(bindings_dir))
     import GenerationConfiguration as GC  # type: ignore
+    import LoRA  # type: ignore
+    import LoRAMode  # type: ignore
 
-    return GC
+    return GC, LoRA, LoRAMode
 
 
 def _optional_string_offset(builder: flatbuffers.Builder, value: str):
@@ -77,8 +79,103 @@ def _resolve_model_name_to_file(model: str) -> tuple[str, str | None]:
     return model, None
 
 
+def _resolve_lora_name_to_file(lora: str) -> tuple[str, str | None]:
+    query = lora.strip()
+    if not query:
+        return lora, None
+
+    custom_lora_json = WORKSPACE_ROOT / "dt-models" / "custom_lora.json"
+    if not custom_lora_json.exists():
+        return lora, None
+
+    try:
+        payload = json.loads(custom_lora_json.read_text(encoding="utf-8"))
+    except Exception:
+        return lora, None
+
+    if not isinstance(payload, list):
+        return lora, None
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+
+        file_name = str(entry.get("file", "")).strip()
+        name = str(entry.get("name", "")).strip()
+        if query == name and file_name:
+            return file_name, "custom_lora.json:name"
+        if query == file_name:
+            return file_name, None
+
+    return lora, None
+
+
+def _parse_lora_mode(raw: str, fallback_mode: int) -> int:
+    txt = raw.strip().lower()
+    if not txt:
+        return fallback_mode
+
+    mode_by_name = {
+        "all": 0,
+        "base": 1,
+        "refiner": 2,
+    }
+    if txt in mode_by_name:
+        return mode_by_name[txt]
+
+    try:
+        mode = int(txt)
+    except ValueError as exc:
+        raise ValueError(f"Invalid LoRA mode: {raw}") from exc
+    if mode not in (0, 1, 2):
+        raise ValueError(f"LoRA mode must be one of 0,1,2 or all/base/refiner, got: {raw}")
+    return mode
+
+
+def _parse_lora_specs(args) -> list[dict]:
+    specs: list[dict] = []
+    default_mode = _parse_lora_mode(args.lora_mode, 0)
+
+    for raw in args.lora:
+        text = raw.strip()
+        if not text:
+            continue
+        parts = text.split(":")
+        if len(parts) > 3:
+            raise ValueError(
+                f"Invalid --lora value '{raw}'. Expected FILE[:WEIGHT[:MODE]]"
+            )
+
+        lora_name = parts[0].strip()
+        if not lora_name:
+            raise ValueError(f"Invalid --lora value '{raw}': missing file/name")
+
+        weight = 0.6
+        mode = default_mode
+        if len(parts) >= 2 and parts[1].strip():
+            try:
+                weight = float(parts[1].strip())
+            except ValueError as exc:
+                raise ValueError(f"Invalid LoRA weight in '{raw}'") from exc
+
+        if len(parts) >= 3 and parts[2].strip():
+            mode = _parse_lora_mode(parts[2], default_mode)
+
+        resolved_file, resolved_from = _resolve_lora_name_to_file(lora_name)
+        specs.append(
+            {
+                "input": lora_name,
+                "file": resolved_file,
+                "weight": weight,
+                "mode": mode,
+                "resolved_from": resolved_from,
+            }
+        )
+    return specs
+
+
 def build_config(args) -> bytes:
-    GC = _load_generated_modules(Path(args.bindings_dir))
+    GC, LoRA, _LoRAMode = _load_generated_modules(Path(args.bindings_dir))
 
     seed = args.seed if args.seed >= 0 else random.randint(0, 2**32 - 1)
     start_width = max(1, args.width // 64)
@@ -119,6 +216,23 @@ def build_config(args) -> bytes:
     open_clip_g_text = _optional_string_offset(builder, args.open_clip_g_text)
     t5_text = _optional_string_offset(builder, args.t5_text)
 
+    lora_offsets = []
+    lora_specs = _parse_lora_specs(args)
+    for lora in lora_specs:
+        lora_file = builder.CreateString(lora["file"])
+        LoRA.LoRAStart(builder)
+        LoRA.LoRAAddFile(builder, lora_file)
+        LoRA.LoRAAddWeight(builder, lora["weight"])
+        LoRA.LoRAAddMode(builder, lora["mode"])
+        lora_offsets.append(LoRA.LoRAEnd(builder))
+
+    loras_vector = None
+    if lora_offsets:
+        GC.GenerationConfigurationStartLorasVector(builder, len(lora_offsets))
+        for lora_offset in reversed(lora_offsets):
+            builder.PrependUOffsetTRelative(lora_offset)
+        loras_vector = builder.EndVector()
+
     GC.GenerationConfigurationStart(builder)
     GC.GenerationConfigurationAddId(builder, 0)
     GC.GenerationConfigurationAddStartWidth(builder, start_width)
@@ -139,6 +253,8 @@ def build_config(args) -> bytes:
         GC.GenerationConfigurationAddUpscaler(builder, upscaler)
     GC.GenerationConfigurationAddSeedMode(builder, args.seed_mode)
     GC.GenerationConfigurationAddClipSkip(builder, args.clip_skip)
+    if loras_vector is not None:
+        GC.GenerationConfigurationAddLoras(builder, loras_vector)
     GC.GenerationConfigurationAddMaskBlur(builder, args.mask_blur)
     if face_restoration is not None:
         GC.GenerationConfigurationAddFaceRestoration(builder, face_restoration)
@@ -189,6 +305,7 @@ def build_config(args) -> bytes:
         start_height,
         hires_fix_start_width,
         hires_fix_start_height,
+        lora_specs,
     )
 
 
@@ -250,6 +367,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--separate-t5", type=_parse_bool, default=False)
     p.add_argument("--t5-text", default="")
 
+    p.add_argument(
+        "--lora",
+        action="append",
+        default=[],
+        help="Repeatable LoRA spec: FILE[:WEIGHT[:MODE]] where MODE is all/base/refiner or 0/1/2",
+    )
+    p.add_argument(
+        "--lora-mode",
+        default="all",
+        help="Default mode for --lora entries without explicit mode (all/base/refiner or 0/1/2)",
+    )
+
     p.add_argument("--tea-cache", type=_parse_bool, default=False)
     p.add_argument("--tea-cache-threshold", type=float, default=0.2)
     p.add_argument("--tea-cache-start", type=int, default=5)
@@ -288,7 +417,9 @@ def main() -> int:
             f"--hires-fix-height must be a multiple of 64 when set, got: {args.hires_fix_height}"
         )
 
-    blob, seed, start_w, start_h, hires_fix_start_w, hires_fix_start_h = build_config(args)
+    blob, seed, start_w, start_h, hires_fix_start_w, hires_fix_start_h, lora_specs = build_config(
+        args
+    )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(blob)
@@ -299,6 +430,14 @@ def main() -> int:
     print(f"seed: {seed}")
     print(f"start_width/start_height (64x blocks): {start_w}/{start_h}")
     print(f"pixel size: {start_w * 64}x{start_h * 64}")
+    print(f"loras: {len(lora_specs)}")
+    for lora in lora_specs:
+        suffix = ""
+        if lora["resolved_from"]:
+            suffix = f" ({lora['input']} -> {lora['file']} via {lora['resolved_from']})"
+        print(
+            f"  - file={lora['file']} weight={lora['weight']} mode={lora['mode']}{suffix}"
+        )
     print(f"hires_fix: {args.hires_fix}")
     if args.hires_fix:
         print(

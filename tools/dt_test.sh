@@ -11,6 +11,8 @@ set -euo pipefail
 # Optional:
 #   --prompt TEXT         Text prompt. Default: a red sports car at sunset.
 #   --neg-prompt TEXT     Negative prompt.
+#   --lora SPEC           Repeatable LoRA spec: NAME_OR_FILE[:WEIGHT[:MODE]].
+#                         mode: all/base/refiner or 0/1/2.
 #   --steps N             Sampling steps. Default: 8.
 #   --width N             Default: 384.   --height N   Default: 384.
 #   --seed N              Default: 4242.
@@ -28,6 +30,7 @@ LD_PATH="${DRAWTHINGS_LD_LIBRARY_PATH:-/usr/local/swift/usr/lib/swift/linux:/usr
 NAME=""
 STEPS=8; WIDTH=384; HEIGHT=384; SEED=4242; FRAMES=9; TIMEOUT_SEC=1800
 PROMPT=""; NEG_PROMPT=""
+LORA_SPECS=()
 
 usage() { awk '/^#!/{next} /^#/{sub(/^# ?/,"");print;c=1;next} c{exit}' "$0"; }
 
@@ -35,6 +38,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --prompt) PROMPT="${2:-}"; shift 2 ;;
     --neg-prompt) NEG_PROMPT="${2:-}"; shift 2 ;;
+    --lora) LORA_SPECS+=("${2:-}"); shift 2 ;;
     --steps) STEPS="${2:-}"; shift 2 ;;
     --width) WIDTH="${2:-}"; shift 2 ;;
     --height) HEIGHT="${2:-}"; shift 2 ;;
@@ -57,6 +61,14 @@ for sfx in _f16 _q6p _q8p _q4p; do NAME="${NAME%$sfx}"; done
 TAG="${NAME}_test_$(date +%Y%m%d_%H%M%S)"
 echo "== dt_test =="
 echo "  model : $NAME   ${WIDTH}x${HEIGHT}  steps=$STEPS  seed=$SEED  frames=$FRAMES"
+if [[ "${#LORA_SPECS[@]}" -gt 0 ]]; then
+  echo "  loras : ${LORA_SPECS[*]}"
+fi
+
+LORA_ARGS=()
+for spec in "${LORA_SPECS[@]}"; do
+  LORA_ARGS+=(--lora "$spec")
+done
 
 echo "==> GPU render (tag=$TAG)"
 env LD_LIBRARY_PATH="$LD_PATH" \
@@ -68,6 +80,7 @@ env LD_LIBRARY_PATH="$LD_PATH" \
     --timeout-sec "$TIMEOUT_SEC" --max-responses 0 \
     --require-complete-stream --require-final-output \
     --width "$WIDTH" --height "$HEIGHT" --steps "$STEPS" --seed "$SEED" \
+    "${LORA_ARGS[@]}" \
     --allow-missing-model --soft-fail 2>&1 | tail -8 || true
 
 OUT="$ROOT/output/q6p_canary_${TAG}"

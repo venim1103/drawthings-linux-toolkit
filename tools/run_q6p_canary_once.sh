@@ -32,6 +32,7 @@ SHIFT=3.0
 NUM_FRAMES="${DT_TEST_NUM_FRAMES:-9}"
 FPS_ID=5
 SEED=4242
+LORA_SPECS=()
 
 PROMPT="${DT_TEST_PROMPT:-a cinematic shot of a red sports car driving on a mountain road at sunset, detailed, realistic}"
 NEG_PROMPT="${DT_TEST_NEG_PROMPT:-blurry, distorted, low quality, artifacts}"
@@ -56,6 +57,9 @@ Options:
   --height <n>              Pixel height for request config (default: 256).
   --steps <n>               Sampling steps for request config (default: 4).
   --seed <n>                Seed for request config (default: 4242).
+  --lora <file[:weight[:mode]]>
+                            Repeatable LoRA spec passed into config.
+                            mode: all/base/refiner or 0/1/2.
   --timeout-sec <n>         timeout(1) seconds for generate-raw (default: 90).
   --final-mode              Use longer final validation timeout (900s) unless
                             --timeout-sec was explicitly set.
@@ -124,6 +128,10 @@ if [[ $# -gt 0 ]]; then
         ;;
       --seed)
         SEED="${2:-}"
+        shift 2
+        ;;
+      --lora)
+        LORA_SPECS+=("${2:-}")
         shift 2
         ;;
       --timeout-sec)
@@ -240,6 +248,90 @@ if [[ "$ALLOW_MISSING_MODEL" != "1" ]]; then
   esac
 fi
 
+resolve_custom_lora_file() {
+  local lora_name="$1"
+  local custom_lora_json="$ROOT/dt-models/custom_lora.json"
+
+  if [[ -z "$lora_name" || ! -f "$custom_lora_json" ]]; then
+    echo "$lora_name"
+    return 0
+  fi
+
+  "$PYTHON_BIN" - "$lora_name" "$custom_lora_json" <<'PY'
+import json
+import os
+import sys
+
+query = sys.argv[1].strip()
+json_path = sys.argv[2]
+
+query = os.path.basename(query)
+
+try:
+    payload = json.load(open(json_path, "r", encoding="utf-8"))
+except Exception:
+    print(query)
+    sys.exit(0)
+
+if not isinstance(payload, list):
+    print(query)
+    sys.exit(0)
+
+for entry in payload:
+    if not isinstance(entry, dict):
+        continue
+    name = str(entry.get("name", "")).strip()
+    file_name = str(entry.get("file", "")).strip()
+    if query == name and file_name:
+        print(file_name)
+        sys.exit(0)
+    if query == file_name:
+        print(file_name)
+        sys.exit(0)
+
+print(query)
+PY
+}
+
+NORMALIZED_LORA_SPECS=()
+if [[ "${#LORA_SPECS[@]}" -gt 0 ]]; then
+  for raw_spec in "${LORA_SPECS[@]}"; do
+    spec="${raw_spec//[[:space:]]/}"
+    if [[ -z "$spec" ]]; then
+      echo "error: --lora value must not be empty" >&2
+      exit 1
+    fi
+
+    lora_token="${spec%%:*}"
+    lora_tail=""
+    if [[ "$spec" == *:* ]]; then
+      lora_tail="${spec#"$lora_token"}"
+    fi
+
+    lora_token="$(basename "$lora_token")"
+    lora_file="$(resolve_custom_lora_file "$lora_token")"
+    normalized_spec="${lora_file}${lora_tail}"
+    NORMALIZED_LORA_SPECS+=("$normalized_spec")
+
+    case "$lora_file" in
+      *.ckpt|*.safetensors)
+        lora_path="$ROOT/dt-models/$lora_file"
+        if [[ ! -f "$lora_path" ]]; then
+          echo "error: lora file not found: $lora_path" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+fi
+
+LORA_SPECS=("${NORMALIZED_LORA_SPECS[@]}")
+
+LORA_ARGS=()
+for spec in "${LORA_SPECS[@]}"; do
+  LORA_ARGS+=(--lora "$spec")
+done
+
 if ! [[ "$WIDTH" =~ ^[0-9]+$ ]] || [[ "$WIDTH" -lt 64 ]]; then
   echo "error: --width must be an integer >= 64" >&2
   exit 1
@@ -290,6 +382,11 @@ fi
 echo "max_responses=$MAX_RESPONSES"
 echo "require_complete_stream=$REQUIRE_COMPLETE_STREAM"
 echo "require_final_output=$REQUIRE_FINAL_OUTPUT"
+if [[ "${#LORA_SPECS[@]}" -gt 0 ]]; then
+  echo "loras=${LORA_SPECS[*]}"
+else
+  echo "loras=none"
+fi
 echo "work_dir=$WORK_DIR"
 
 pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
@@ -344,7 +441,8 @@ fi
   --hires-fix false \
   --num-frames "$NUM_FRAMES" \
   --fps-id "$FPS_ID" \
-  --seed "$SEED"
+  --seed "$SEED" \
+  "${LORA_ARGS[@]}"
 
 set +e
 if [[ "$NO_TIMEOUT" == "1" ]]; then

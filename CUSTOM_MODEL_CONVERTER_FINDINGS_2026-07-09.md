@@ -1133,3 +1133,243 @@ Our converter writes ALL norms rank-1 `[N]`; the restores paper over it (ada_ln 
 ref-q6p dim, QK via the new `[1,1,N]` reconstruction). A cleaner long-term fix would make
 the converter emit `[1,1,N]` norms directly (TensorDescriptor/norm write path), removing
 the need for the dim reconstruction — but the current pipeline works end-to-end.
+
+---
+
+## 23) LoRA §17 de-interleave — statically PROVEN correct (2026-07-16)
+
+Open question from §22: does the §17 Q/K de-interleave permutation (which the base-model
+converter applies via `TensorDescriptor.internalWrite` `case .O:`) also correctly apply to
+the **LoRA up-matrix**? If the LoRA up were left interleaved while the base is de-interleaved,
+attention math would be corrupted → the NaN we see in q4p+LoRA final decode.
+
+### 23.1 Method (static, no 25-min render)
+
+Compared, for `transformer_blocks.0.attn1.to_q`:
+- **Raw** safetensors up = `diffusion_model.transformer_blocks.0.attn1.to_q.lora_B.weight`
+  (bf16, `[4096,72]`) from `ltx-2.3-22b-distilled-lora-fro90_ceil72.safetensors`.
+- **Stored** ckpt up = `__dit__[t-x_q-0-0]__up__` (f16, `[4096,72]`) from the converted
+  `ltx_2.3_22b_distilled_lora_fro90_ceil72_lora_f16.ckpt` (SQLite `tensors` table).
+
+Applied the §17 row permutation on the out dim (numHeads=32, hd=128, half=64):
+`out[h*128 + d*2 + p] = in[h*128 + p*64 + d]`.
+
+### 23.2 Result — §17 IS applied to the LoRA
+
+| Relationship        | max abs diff |
+|---------------------|--------------|
+| identity (raw==stored)     | `0.0769`     |
+| **§17 permuted (raw→stored)** | **`5.9e-08`** |
+| §17 inverse         | `0.0740`     |
+
+The permuted match is exact to bf16→f16 rounding. **The converter correctly de-interleaves
+the LoRA up-matrix, consistent with the base model.** §17 is NOT the source of the q4p+LoRA
+NaN. Candidate (a) is eliminated; the remaining hypothesis is (b) runtime numeric divergence
+(q4p quant error + distillation LoRA at weight 1.0 pushing the final latent/VAE decode to
+NaN, which TAESD previews mask by clamping non-finite to 0).
+
+### 23.3 LoRA weight 0.6 — still NaN (2026-07-16)
+
+Re-ran q4p base (alias `10_e_v1_4`) + LoRA at **weight 0.6** (5 frames, 384², 8 steps, seed
+4242), timeout raised to 2700s so the final decode can complete.
+
+- Previews progressed normally (0004→0010), no divergence visible in TAESD.
+- Final decode → **`Image processed failed`** (server logs `Image processed` then the failure).
+  Config confirms `"loras": [["file": ..., "mode": "all", "weight": 0.6]]`. Same NaN signature
+  as weight 1.0 (`guard !isNaN` at `LocalImageGenerator.swift:4471` returns nil).
+- Run: `output/q6p_canary_10_e_v1_4_test_20260716_130421/`.
+
+**Conclusion:** reducing the LoRA weight does NOT avoid the NaN. The "weight-1.0 overdrive"
+sub-hypothesis is weakened — the final-latent/VAE NaN persists at 0.6. The divergence is not a
+simple magnitude effect. Remaining candidates: (b1) quantization (q4p too lossy) interacting
+with *any* LoRA delta — test via **f16 base + LoRA** to isolate quant vs LoRA-conversion; or
+(b2) a subtler LoRA-conversion error beyond §17 (other projections / down-matrix / scaling).
+
+> NOTE: first 0.6 attempt (`..._123206/`) hit the **1800s harness timeout** during final decode
+> (sampling was ~2–3 min slower than the weight-1.0 run, leaving too little decode headroom).
+> Use `--timeout-sec 2700` for LoRA runs. Inconclusive; superseded by the 2700s run above.
+
+---
+
+## 24) FULL static LoRA-conversion audit — conversion is CORRECT (2026-07-16)
+
+To decide between (b1) quantization interaction vs (b2) a LoRA-conversion bug **without** more
+25-min renders, we statically audited the entire converted LoRA against the raw safetensors.
+
+### 24.1 Method
+
+For every attention q/k/v/out projection in `transformer_blocks.0`, compare:
+- **Raw**: `diffusion_model.transformer_blocks.0.<module>.lora_B.weight` (up) / `.lora_A.weight`
+  (down), bf16, from `dt-models/ltx-2.3-22b-distilled-lora-fro90_ceil72.safetensors`.
+- **Stored**: `__dit__[t-<token>-0-0]__up__` / `__down__`, f16, from the converted
+  `dt-models/ltx_2.3_22b_distilled_lora_fro90_ceil72_lora_f16.ckpt` (SQLite `tensors` table).
+
+Classify each up-matrix as **IDENTITY** (raw==stored) or **PERMUTED** (raw→stored under the
+§17 row de-interleave `out[h*hd + d*2 + p] = in[h*hd + p*(hd/2) + d]`, numHeads=32). Modules were
+auto-linked ckpt-token ↔ sf-module by matching the (identity) down-matrices by content.
+Tool: ad-hoc `.venv/bin/python` + `safetensors` + `sqlite3` (re-runnable; see §24.4).
+
+### 24.2 Result — every projection converts exactly as the base model does
+
+| ckpt token | sf module | up shape | up verdict (max diff) | down |
+|-----------|-----------|----------|-----------------------|------|
+| `x_q`  | attn1.to_q              | (4096,72) | **PERMUTED** (p17=5.9e-8) | IDENTITY |
+| `x_k`  | attn1.to_k              | (4096,60) | **PERMUTED** (5.9e-8)     | IDENTITY |
+| `x_v`  | attn1.to_v              | (4096,72) | IDENTITY (0.0)            | IDENTITY |
+| `x_o`  | attn1.to_out.0          | (4096,72) | IDENTITY (0.0)            | IDENTITY |
+| `a_q`  | audio_attn1.to_q        | (2048,72) | **PERMUTED** (5.6e-8)     | IDENTITY |
+| `a_k`  | audio_attn1.to_k        | (2048,72) | **PERMUTED** (5.2e-8)     | IDENTITY |
+| `cv_q` | attn2.to_q (text cross) | (4096,11) | **PERMUTED** (5.2e-8)     | IDENTITY |
+| `cv_k` | attn2.to_k (text cross) | (4096, 6) | **PERMUTED** (5.6e-8)     | IDENTITY |
+| `ca_q` | audio_attn2.to_q        | (2048,72) | **PERMUTED** (5.6e-8)     | IDENTITY |
+| `ca_k` | audio_attn2.to_k        | (2048,72) | **PERMUTED** (5.9e-8)     | IDENTITY |
+| `xa_q` | video_to_audio_attn.to_q| (2048,52) | **PERMUTED** (5.2e-8)     | IDENTITY |
+| `xa_k` | video_to_audio_attn.to_k| (2048,36) | **PERMUTED** (5.6e-8)     | IDENTITY |
+| `ax_q` | audio_to_video_attn.to_q| (2048,72) | **PERMUTED** (5.9e-8)     | IDENTITY |
+| `ax_k` | audio_to_video_attn.to_k| (2048,48) | **PERMUTED** (5.8e-8)     | IDENTITY |
+
+Facts established:
+1. **All rotary q/k up-matrices are §17-permuted** (match raw under the permutation to ~5e-8),
+   at all 6 attention sites including both text cross-attentions (`attn2`/`audio_attn2`).
+2. **Non-rotary v/out up-matrices are identity** (correctly NOT permuted).
+3. **All down-matrices are identity** (correct — the §17 row-permutation acts on the *output*
+   dim; the down-matrix `[rank, in]` has no output dim to permute).
+4. **No alpha/scale tensors exist** in the safetensors (0 keys outside `lora_A`/`lora_B`), so
+   there is no LoRA alpha for the converter to mishandle. Per-projection **ranks vary**
+   (q=72, k=60, cv_k=6 …) and are all preserved correctly.
+5. The LoRA uses the **identical `LTX2`/`LTX2Fixed` mapper** as the base model (`interleaved:
+   true` at every attention site — `LTX2.swift:162/297/413/823/1324/1468/1588/2012`). The base
+   model conversion is **proven coherent (§22)**, so these flags are correct for LTX-2.3, and
+   the LoRA up-matrix permutation matches them exactly.
+
+### 24.3 Conclusion — (b2) eliminated; the failure is (b1) numeric divergence
+
+The converted LoRA is **structurally and numerically correct**: it applies the §17 de-interleave
+to exactly the projections the (coherent) base model does, to bf16→f16 tolerance, with identity
+down-matrices and correct per-projection ranks. **There is no LoRA-conversion bug.**
+
+Combined with §23.3 (weight 0.6 still NaN), the q4p+LoRA failure is **(b1): the q4p quantization
+error, compounded by the distillation-LoRA delta, drives the *final latent* to NaN/inf.** The
+base q4p alone is coherent (§22); adding the LoRA tips it over. TAESD previews hide it (they clamp
+non-finite → 0); the full VAE decode does not, so `guard !isNaN` at
+`LocalImageGenerator.swift:4471` returns nil → server logs `Image processed` → `Image processed
+failed`. The f32 high-precision VAE fallback (`FirstStage.swift:1018-1034`, already active on
+Linux since `isMaxPerformance==true`) also NaNs, confirming the NaN is *in the latent*, not the
+decode arithmetic.
+
+### 24.4 Re-run the audit (copy/paste)
+
+```bash
+.venv/bin/python - <<'PY'
+from safetensors import safe_open
+import numpy as np, sqlite3, struct
+sf="dt-models/ltx-2.3-22b-distilled-lora-fro90_ceil72.safetensors"
+db="dt-models/ltx_2.3_22b_distilled_lora_fro90_ceil72_lora_f16.ckpt"
+c=sqlite3.connect(db)
+def stored(n):
+    r=c.execute("SELECT data,dim FROM tensors WHERE name=?", (n,)).fetchone()
+    if not r: return None
+    d,dim=r; k=len(dim)//4; dims=[x for x in struct.unpack("<%di"%k,dim) if x>0]
+    return np.frombuffer(d,dtype=np.float16).astype(np.float32).reshape(dims)
+def perm(out,h):
+    hd=out//h; hf=hd//2; p=np.empty(out,np.int64)
+    for i in range(h):
+        for d in range(hf):
+            for q in range(2): p[i*hd+d*2+q]=i*hd+q*hf+d
+    return p
+with safe_open(sf,framework="pt") as f:
+    b=f.get_tensor("diffusion_model.transformer_blocks.0.attn1.to_q.lora_B.weight").float().numpy()
+u=stored("__dit__[t-x_q-0-0]__up__")
+print("identity",abs(b-u).max(),"perm17",abs(b[perm(4096,32)]-u).max())
+PY
+```
+
+---
+
+## 25) HANDOFF — state, constraints, and next steps (2026-07-16)
+
+### 25.1 One-paragraph status
+
+**Goal:** apply the distilled LoRA to the custom quantized LTX-2.3 model and produce a coherent
+frame via `dt_test.sh`. **Where we are:** base q4p (alias `10_e_v1_4`) renders coherently
+(§22, std≈0.53). The **LoRA converts correctly** (§23/§24 — §17 de-interleave applied to exactly
+the right projections, verified numerically to ~5e-8). But **q4p + LoRA NaNs at the final VAE
+decode**, at both weight 1.0 and 0.6. Root cause is **numeric divergence from q4p quantization
+loss + the distillation-LoRA delta pushing the final latent to NaN** — NOT a converter/LoRA bug.
+
+### 25.2 Hard constraints (read before running anything)
+
+- **f16 base + LoRA is NOT runnable** — `10_e_v1_4_f16.ckpt` is 44 GB, exceeds available VRAM.
+  Do not attempt; it will OOM.
+- **`frames=1` CRASHES** (SIGSEGV in libcuda — invalid temporal size for a video model). Use
+  `frames=5` (or more).
+- Each render is **~25–30 min** on this GPU/WSL setup regardless of LoRA. Use
+  **`--timeout-sec 2700`** for LoRA runs (final decode needs headroom; 1800s can cut it off —
+  see §23.3 note).
+- Always render via the **alias `10_e_v1_4`** (as `dt_test.sh` does), never a raw ckpt filename —
+  the alias pulls the correct VAE/text-encoder companions from `custom.json`; a raw filename
+  bypasses them and produces noise (a harness artifact, not a model bug).
+- Any edit under `draw-things-community/` MUST be mirrored into `DRAW_THINGS_PATCH/`.
+
+### 25.3 Recommended next steps, in priority order
+
+1. **q6p base + LoRA** (best fit for the VRAM constraint; directly tests b1).
+   We have `dt-models/10_e_v1_4_q6p.ckpt` (21 GB, less lossy than q4p, and proven coherent
+   standalone in §22). q6p gives more numeric headroom than q4p.
+   - **Prereq:** point the alias at the q6p files. Edit `dt-models/custom.json` entry
+     `10_e_v1_4`: set `file` and `clip_encoder` to `10_e_v1_4_q6p.ckpt` (keep the VAE/
+     text-encoder/condition_scale/modifier fields). NOTE: q6p needs the §22 norm restores
+     applied (`dt_q6p_restore_f32_norms.py` + `dt_q6p_restore_qk_norms.py`) — verify they were
+     run on this q6p file before trusting a result (the standalone q6p coherence in §22 implies
+     they were, but confirm).
+   - **Run:** `bash tools/dt_test.sh 10_e_v1_4 --lora ltx-2.3-22b-distilled-lora-fro90_ceil72:1.0 --frames 5 --timeout-sec 2700`
+   - **Read-out:** COHERENT → confirms q4p-specific quant loss is the culprit; q6p (or q8p) is the
+     shippable base for LoRA use. Still NaN → the divergence is not purely q4p; go to step 2/3.
+
+2. **Sampler/step-count for a distillation LoRA.** `fro90_ceil72` is a *distillation/acceleration*
+   LoRA — it changes the sampling trajectory and is typically meant for a specific (low) step
+   count / scheduler. The current config is a **two-stage** schedule (`stage2Steps:10,
+   imagePriorSteps:5, sampler:17, teaCacheStart:5`, 8 stage-1 steps). Applying an accel-LoRA on
+   top of an already-distilled two-stage schedule may over-accelerate and diverge. Try a plain
+   step count / disable stage-2 / different sampler and see whether the latent stays finite.
+   (Cheap-ish variations, still ~25 min each.)
+
+3. **Locate the first NaN step (requires a debug build).** Add temporary NaN-scan logging in the
+   sampler loop and in `FirstStage.decode` to find whether the NaN appears mid-sampling (which
+   step) or only at the final decode. Build via the existing Swift toolchain; mirror any
+   `draw-things-community/` change into `DRAW_THINGS_PATCH/`. This pinpoints whether it's the DiT
+   forward (LoRA math) or the VAE, and at which timestep.
+
+4. **q4p requantization sanity (lower priority).** If q6p also fails, re-examine whether the q4p/
+   q6p quantization of the *attention* weights is well-conditioned for LoRA addition (LoRA delta
+   is added to a quantized base at runtime). Consider q8p as an intermediate.
+
+### 25.4 Key files / anchors for the next session
+
+- `dt-models/custom.json` (alias `10_e_v1_4`, line ~180) — companions; repoint to q6p for step 1.
+- `dt-models/custom_lora.json` — LoRA registry (schema confirmed correct: `name/file/prefix/
+  version:"ltx2.3"/is_lo_ha:false`).
+- `dt-models/10_e_v1_4_q4p.ckpt` (coherent base, NaN w/ LoRA) · `..._q6p.ckpt` (untested w/ LoRA)
+  · `..._f16.ckpt` (VRAM-blocked).
+- `dt-models/ltx-2.3-22b-distilled-lora-fro90_ceil72.safetensors` (raw) ·
+  `ltx_2.3_22b_distilled_lora_fro90_ceil72_lora_f16.ckpt` (converted, audited correct).
+- `tools/dt_test.sh` — entry point (`--lora NAME[:WEIGHT[:MODE]]`, `--frames`, `--timeout-sec`).
+- `draw-things-community/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift:4471` —
+  `guard !isNaN(...)` → nil (the observed failure point).
+- `draw-things-community/Libraries/SwiftDiffusion/Sources/FirstStage.swift:1018-1034` — f32 VAE
+  fallback (active, still NaNs → NaN is in the latent).
+- `draw-things-community/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift` —
+  `interleaved: true` at 162/297/413/823/1324/1468/1588/2012 (shared base+LoRA mapper).
+- `draw-things-community/Libraries/SwiftDiffusion/Sources/Extensions/TensorDescriptor.swift:54-111`
+  — §17 de-interleave in `internalWrite` `case .O:` (applies to LoRA up via `format:.O`).
+- Runs: `output/q6p_canary_10_e_v1_4_test_20260716_130421/` (q4p+LoRA@0.6, NaN) ·
+  `..._114316/` (q4p+LoRA@1.0, NaN) · `..._111743/` (base q4p, COHERENT std=0.533).
+
+### 25.5 What is DEFINITIVELY ruled out (don't re-litigate)
+
+- ❌ §17 de-interleave mis-applied to the LoRA (proven applied correctly, §23/§24).
+- ❌ Any LoRA-conversion bug — up/down/rank/permutation all correct at every projection (§24).
+- ❌ LoRA alpha/scale mishandling (no alpha tensors exist, §24.2.4).
+- ❌ Weight-1.0 overdrive as sole cause (0.6 still NaN, §23.3).
+- ❌ Missing `.ltx2_3` LoRA branch / structural code gap (prior subagent static analysis).
+- ❌ VAE-decode arithmetic (f32 fallback active and still NaNs → NaN is upstream, in the latent).

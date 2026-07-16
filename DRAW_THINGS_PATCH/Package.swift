@@ -10,6 +10,7 @@ let package = Package(
     .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
     .executable(name: "model-quantizer", targets: ["ModelQuantizer"]),
     .executable(name: "model-converter", targets: ["ModelConverter"]),
+    .executable(name: "lora-converter", targets: ["LoRAConverter"]),
     .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
   ],
   dependencies: [
@@ -518,6 +519,18 @@ let package = Package(
         .product(name: "NNC", package: "s4nnc"),
       ],
       path: "Apps/ModelConverter",
+      sources: ["Converter.swift"]
+    ),
+    .executableTarget(
+      name: "LoRAConverter",
+      dependencies: [
+        "Diffusion",
+        "ModelOp",
+        "ModelZoo",
+        .product(name: "ArgumentParser", package: "swift-argument-parser"),
+        .product(name: "NNC", package: "s4nnc"),
+      ],
+      path: "Apps/LoRAConverter",
       sources: ["Converter.swift"]
     ),
     .target(

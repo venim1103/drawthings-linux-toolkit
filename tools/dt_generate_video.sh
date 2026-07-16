@@ -22,6 +22,7 @@ ONE_FRAME_SECONDS="${DT_ONE_FRAME_SECONDS:-1.0}"
 OUTPUT_ROOT="${DT_OUTPUT_ROOT:-${ROOT_DIR}/output}"
 TOOLS_REQ_FILE="${ROOT_DIR}/requirements-drawthings-tools.txt"
 ALLOW_PREVIEW_FALLBACK="${DT_ALLOW_PREVIEW_FALLBACK:-1}"
+LORA_ENV_RAW="${DT_LORA:-}"
 
 HAS_DT_SHIFT=0
 if [[ -n "${DT_SHIFT+x}" ]]; then
@@ -420,6 +421,22 @@ echo "Phase 1/3: building generation config..."
 echo "Config: model=${MODEL} sampler=${SAMPLER} steps=${STEPS} guidance=${GUIDANCE} shift=${SHIFT} hiresFix=${HIRES_FIX} frames=${NUM_FRAMES} size=${WIDTH}x${HEIGHT}"
 CONFIG_START="$(now_epoch)"
 
+LORA_ARGS=()
+if [[ -n "${LORA_ENV_RAW}" ]]; then
+  IFS=',' read -r -a LORA_TOKENS <<< "${LORA_ENV_RAW}"
+  for token in "${LORA_TOKENS[@]}"; do
+    spec="${token//[[:space:]]/}"
+    if [[ -z "${spec}" ]]; then
+      continue
+    fi
+    LORA_ARGS+=(--lora "${spec}")
+  done
+fi
+
+if [[ "${#LORA_ARGS[@]}" -gt 0 ]]; then
+  echo "LoRAs: ${LORA_ENV_RAW}"
+fi
+
 "${PYTHON_BIN}" "${ROOT_DIR}/tools/dt_make_config.py" \
   --out "${OUT_DIR}/config.bin" \
   --model "${MODEL}" \
@@ -434,7 +451,8 @@ CONFIG_START="$(now_epoch)"
   --hires-fix-height "${HIRES_FIX_HEIGHT}" \
   --num-frames "${NUM_FRAMES}" \
   --fps-id "${FPS_ID}" \
-  --seed "${SEED}"
+  --seed "${SEED}" \
+  "${LORA_ARGS[@]}"
 
 CONFIG_ELAPSED=$(( $(now_epoch) - CONFIG_START ))
 print_timer "config" "${CONFIG_ELAPSED}"
