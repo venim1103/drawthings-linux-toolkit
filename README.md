@@ -1,114 +1,37 @@
 # drawthings-linux-toolkit
 
-Linux-first toolkit for Draw Things workflows: reproducible devcontainer setup, resilient patch management, model utilities, and local quantization automation.
+Linux-first toolkit for Draw Things conversion, quantization, and inference workflows.
 
-## What is included
+## Current recommended flow (LTX2.3 custom models)
 
-- Devcontainer setup and bootstrap scripts.
-- Draw Things quantization patch system (unified patches + snapshot fallback).
-- Quantization wrapper with live progress and ETA (`tools/dt_quantize_model.sh`).
-- Model management and download/audit utilities.
-- gRPC generation helpers and tensor-to-playable converters.
-- Python utility scripts for Draw Things workflows.
+Use the streamlined 3-command pipeline:
 
-## Start here
+1. `bash tools/dt_convert.sh <model.safetensors>`
+2. `bash tools/dt_quantize.sh <name> [--codec q6p|q8p|q4p]`
+3. `bash tools/dt_test.sh <name>`
 
-Canonical root document (share this first):
+Details and examples are in `PIPELINE.md`.
 
-- REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md
+## Key docs to keep handy
 
-- WORKSPACE_MANUAL.md
-- REPO_MIGRATION_GUIDE.md
-- REPO_HANDOVER_MASTER_2026-07-07.md
-- REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md
-- Q6P_CONVERT_QUANTIZE_INFERENCE_MASTER_PLAYBOOK_2026-07-06.md
-- Q6P_RUN_INDEX_2026-07-07.md
-- DRAW_THINGS_PATCH/README.md
+- `PIPELINE.md` - quickstart and codec notes.
+- `CUSTOM_MODEL_CONVERTER_FINDINGS_2026-07-09.md` - validated root-cause/fix history.
+- `REPO_MIGRATION_GUIDE.md` - migration/sync guidance.
+- `DRAW_THINGS_PATCH/README.md` - patch workflow for Draw Things source updates.
 
-## Main directories
+## Repository layout
 
-- .devcontainer/
-- tools/
-- DRAW_THINGS_PATCH/
+- `.devcontainer/` - devcontainer build and runtime setup.
+- `tools/` - active scripts used by the current pipeline.
+- `tools/archive/` - legacy debug/runner scripts retained for reference.
+- `docs/archive/` - historical runbooks and handoff docs.
+- `DRAW_THINGS_PATCH/` - patch snapshots and generated patch files.
 
-## Recovery and replay helpers (2026-06-05)
+## Cleanup policy
 
-- `tools/run_q6p_restore_postpatch_highlimit.sh`
-	- One-command recovery flow for the repaired q6p path:
-		- restore target from backup/source
-		- run clipfix2 postpatch
-		- apply high-limit one-row fallback for oversized clip tensor
-		- run sqlite `PRAGMA quick_check`
-- `tools/run_clipfix2_postpatch_q6p.sh`
-	- Hardened to refuse apply-mode symlink targets by default.
-	- Refuses `target_real == baseline_real` in apply mode.
-- `tools/run_clipfix2_replay_q6p.sh`
-	- Hardened to prevent output path clobbering via source/baseline/symlink checks.
-	- Runs sqlite quick sanity checks by default:
-		- `PRAGMA quick_check`
-		- `SELECT COUNT(*) FROM tensors`
-	- New options:
-		- `--allow-symlink-output`
-		- `--skip-sqlite-check`
+- New production workflows should be added under `tools/`.
+- Experimental or one-off debug scripts should go under `tools/archive/legacy_debug/` after they are no longer actively used.
+- Historical session docs belong under `docs/archive/` to keep the repository root clean.
+- Generated runtime artifacts should live under `output/` and can be archived/pruned regularly.
 
-Quick usage:
-
-		cd /workspaces/drawthings-linux-toolkit
-
-		# Restore -> postpatch -> high-limit fallback -> quick_check
-		bash tools/run_q6p_restore_postpatch_highlimit.sh --tag repatch_from_restored
-
-		# Replay quantization with safety checks enabled by default
-		bash tools/run_clipfix2_replay_q6p.sh \
-			-i dt-models/10_e_v1_bf16_regen_0_f16.ckpt \
-			-o dt-models/10_e_v1_bf16_regen_0_q6p.ckpt \
-			--official-baseline dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt
-
-## In-place q6p dimfix helpers (2026-06-08)
-
-For low-space environments, these scripts patch `10_e_v1` q6p in place (no extra 20G+ copy):
-
-- `tools/run_q6p_inplace_dimfix_from_f16.sh`
-- `tools/run_q6p_canary_once.sh`
-- `tools/dt_build_q6p_dimfix_names.py`
-- `tools/dt_patch_ckpt_metadata_subset.py`
-- `tools/patch_sets/10_e_v1_q6p_dimfix770_20260608.txt`
-
-Quick usage (default precomputed names, bounded canary):
-
-		cd /workspaces/drawthings-linux-toolkit
-		bash tools/run_q6p_inplace_dimfix_from_f16.sh --canary-timeout-sec 120 --max-responses 10
-
-Optional name rebuild mode (requires baseline + reference q6p files present):
-
-		bash tools/run_q6p_inplace_dimfix_from_f16.sh --rebuild-names
-
-If official q6p baseline is unavailable, clipfix2 can be used as fallback baseline/reference for rebuild mode:
-
-		bash tools/run_q6p_inplace_dimfix_from_f16.sh \
-			--rebuild-names \
-			--baseline-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt \
-			--reference-q6p dt-models/ltx_2.3_22b_distilled_q6p_forcedfix_clipfix2_20260602.ckpt
-
-Handoff docs for continuation:
-
-- `REPO_HANDOVER_MASTER_2026-07-07.md`
-- `REPO_NAVIGATION_AND_TOOLS_CATALOG_2026-07-07.md`
-- `Q6P_HANDOFF_FINDINGS_2026-06-08.md`
-- `Q6P_CONTINUATION_RUNBOOK_2026-06-08.md`
-- `Q6P_RUN_INDEX_2026-07-07.md`
-- `Q6P_RUN_LOG.md` (append-only iteration record)
-
-## Latest runtime findings (2026-06-05 post-replay A/B)
-
-- Replay regeneration completed with structural checks passing (`PRAGMA quick_check=ok`, `tensors rows=5746`), but runtime stability for custom `10_e_v1` was not restored.
-- Official control alias `official_q6p_via_custom` completed end-to-end:
-	- `responses=15`, `images written=1`, `audio written=1`, `preview frames seen=5`
-	- output directory: `/workspaces/drawthings-linux-toolkit/output/dt_video_20260605_121549`
-- Custom alias `10_e_v1` failed at generation start:
-	- client error: `gRPC error: UNAVAILABLE: Socket closed`
-	- server crash: `SIGSEGV` in loader path `ccv_nnc_tensor_read -> ccv_cnnp_model_read`
-- Recorded artifacts:
-	- `output/ab_post_replay_20260605_121548.md`
-	- `output/ab_post_replay_20260605_121548_official.log`
-	- `output/ab_post_replay_20260605_121548_custom.log`
+Legacy workspace notes are preserved in `docs/archive/2026_q6p_debug/WORKSPACE_MANUAL.md`.
