@@ -1503,3 +1503,81 @@ bash tools/dt_test_distilled_lora.sh 10_e_v1_4_q4p_alias \
 Additionally, `tools/dt_test.sh` now accepts `--sampler <n>` and forwards it to
 `run_q6p_canary_once.sh` so scheduler selection is explicit at the top-level test
 entrypoint.
+
+---
+
+## 27) Local LoRA conversion parity vs iOS conversion — PROVEN (2026-07-21)
+
+### 27.1 Objective
+
+Now that the downloaded iOS-converted LoRA (`...ceil52_condsafe_lora_f16.ckpt`) is known-good,
+verify whether our local conversion pipeline produces an equivalent ckpt and equivalent runtime
+behavior.
+
+### 27.2 Conversion performed (local tooling)
+
+Command:
+
+```bash
+bash tools/dt_lora_convert.sh \
+  dt-models/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil52_condsafe.safetensors \
+  --name ltx-2.3-22b-distilled-lora-1.1_fro90_ceil52_condsafe_ourconvert \
+  --version ltx2.3 \
+  --force
+```
+
+Output:
+
+- `dt-models/ltx_2.3_22b_distilled_lora_1.1_fro90_ceil52_condsafe_ourconvert_lora_f16.ckpt`
+
+Registration (local `custom_lora.json`):
+
+- `ltx-2.3-22b-distilled-lora-1.1_fro90_ceil52_condsafe_ourconvert`
+
+### 27.3 Static parity check (iOS ckpt vs our ckpt)
+
+Compared both ckpts by reading the SQLite `tensors` table and checking:
+
+- tensor names
+- datatype / format / dims
+- raw float16 payload values
+
+Result:
+
+- tensor count: `3368` vs `3368`
+- missing keys both directions: `0`
+- metadata mismatches: `0`
+- value mismatches: `0`
+- **exact-equal tensors: `3368/3368`**
+
+This is full byte-level parity for all stored tensor payloads.
+
+### 27.4 Runtime parity check under distilled-safe schedule
+
+Used the proven distilled recipe (`sampler=19` TCDTrailing, `steps=2`) on
+`official_q6p_via_custom` and compared iOS-converted vs locally-converted LoRA in the same
+harness (`run_q6p_canary_once.sh`, same prompt/seed/resolution).
+
+iOS-converted LoRA recheck:
+
+- Run: `output/q6p_canary_official_q6p_tcdtrailing_s2_ios52_recheck_20260721_083617/`
+- RESULT: PASS (images `9`, audio `1`)
+
+Locally-converted LoRA recheck:
+
+- Run: `output/q6p_canary_official_q6p_tcdtrailing_s2_our52_recheck_20260721_084644/`
+- RESULT: PASS (images `9`, audio `1`)
+
+Final-frame comparison:
+
+- compared `image_r0016_01.bin` payloads
+- **exact-equal bytes**
+- max abs diff: `0.0`
+
+### 27.5 Conclusion
+
+For `ltx-2.3-22b-distilled-lora-1.1_fro90_ceil52_condsafe`, our local converter output is
+equivalent to the iOS-converted ckpt both statically and at runtime when tested under the correct
+distilled schedule.
+
+Therefore, local LoRA conversion is validated for this case.
