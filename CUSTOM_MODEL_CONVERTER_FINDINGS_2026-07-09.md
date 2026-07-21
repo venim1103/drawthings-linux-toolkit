@@ -1581,3 +1581,94 @@ equivalent to the iOS-converted ckpt both statically and at runtime when tested 
 distilled schedule.
 
 Therefore, local LoRA conversion is validated for this case.
+
+---
+
+## 28) LoRA quantization — WORKING (q8p / q6p / q4p) (2026-07-21)
+
+### 28.1 Objective
+
+Now that local LoRA conversion is validated (§27), extend the pipeline to **quantize** the LoRA
+ckpt (f16 → q8p/q6p/q4p) to shrink it, and verify each still renders coherently.
+
+### 28.2 Revisiting the "LoRA specifics" from the base-model work
+
+During base-model quantization (§17–§22) the sensitive tensors (Q/K de-interleave, ada_ln
+norms, QK-norms) needed converter fixes and post-quant F32 restores. The open question was
+whether LoRAs have analogous specifics.
+
+Two things were checked here:
+
+1. **Runtime LoRA read codecs.** `LoRALoader.swift` reads every LoRA tensor with
+   `codec: [.q6p, .q8p, .ezm7, .externalData]` at all 25 read sites (no `q4p`/`q5p`/`q7p`
+   literally listed). This initially looked like a hard "no q4p for LoRA" limit.
+   **Empirically disproven** (§28.4): s4nnc dequantizes the *self-describing* palettized blob
+   regardless of that hint list, so q4p LoRA loads fine. The codec list is not a hard filter for
+   dequantizing reads.
+
+2. **Sensitive-tensor handling by the quantizer.** The existing `model-quantizer -m ltx2.3`
+   forced path already routes the LoRA's sensitive tensors to safe precision **by key
+   substring**, and the LoRA's abbreviated key names line up well enough:
+   - `*embedder*`, `*proj_out*` up+down → **fp16** (40 tensors preserved verbatim).
+   - rank-1 projections + all `adaln_single`/scalar rows → **ezm7** (near-lossless; 1984 tensors).
+     (Confirmed: all 64 LoRA `adaln_single` tensors are rank-1 `[1,N]`/`[N]` → ezm7, none quantized.)
+   - rank>1 attention/FFN deltas → **[codec, ezm7]** (1344 tensors).
+   So **no separate F32 norm-restore is needed for LoRAs** (unlike the base model).
+
+### 28.3 Quantization performed
+
+Tool: existing `tools/dt_quantize_model.sh` → `model-quantizer -m ltx2.3 --target-codec <c>`
+with `--ltx-trace-output` for the per-tensor decision log. Source:
+`ltx_2.3_22b_distilled_lora_1.1_fro90_ceil52_condsafe_ourconvert_lora_f16.ckpt` (§27).
+
+| variant | file size | bytes/elem (rank-52 `a_q` up) | decision histogram |
+|---------|-----------|-------------------------------|--------------------|
+| f16     | 489 MB    | 2.00 (fp16)                   | —                  |
+| q8p     | 256 MB    | 1.03                          | ezm7×1984, fp16×40, [q8p,ezm7]×1344 |
+| q6p     | 196 MB    | 0.78                          | ezm7×1984, fp16×40, [q6p,ezm7]×1344 |
+| q4p     | 144 MB    | 0.56                          | ezm7×1984, fp16×40, [q4p,ezm7]×1344 |
+
+Note: the SQLite `datatype` column reads `131072` (FP16 logical type) for all tensors in every
+variant; the actual palettization is visible only via the stored blob bytes/element (above), not
+that column.
+
+### 28.4 Runtime validation (official q6p base, distilled schedule, sampler 19 / steps 2)
+
+All three quantized LoRAs **PASS** (9 images + audio, no NaN, coherent), compared against the
+f16 LoRA reference frame (`output/q6p_canary_official_q6p_tcdtrailing_s2_our52_recheck_20260721_084644/`):
+
+| variant | RESULT | final std | mean abs diff vs f16 |
+|---------|--------|-----------|----------------------|
+| f16     | PASS   | 0.6822    | 0.000000 (reference) |
+| q8p     | PASS   | 0.6801    | 0.021773             |
+| q6p     | PASS   | 0.6806    | 0.033328             |
+| q4p     | PASS   | 0.6810    | 0.051412             |
+
+The drift is smooth and monotonic (q8p < q6p < q4p), the signature of progressive quantization
+loss — **not** of dropped/unreadable tensors. This confirms all quantized LoRA tensors are
+genuinely applied at runtime, including q4p.
+
+Runs:
+- q8p: `output/q6p_canary_lora_q8p_test_20260721_092034/`
+- q6p: `output/q6p_canary_lora_q6p_test_20260721_093453/`
+- q4p: `output/q6p_canary_lora_q4p_test_20260721_095054/`
+
+### 28.5 Conclusion + recommendation
+
+LoRA quantization works with the existing `model-quantizer` and needs **no** converter change and
+**no** post-quant norm restore. Recommended default: **q8p** (best quality/size, ~0.022 drift,
+~2× smaller). q6p is a good balance (~2.5× smaller). q4p is usable (~3.4× smaller) with more drift.
+
+### 28.6 Tooling added
+
+`tools/dt_lora_quantize.sh` — one-command LoRA quantize + register:
+
+```bash
+bash tools/dt_lora_quantize.sh <lora_f16.ckpt|NAME> --codec q8p   # q8p (default) | q6p | q4p
+# then:
+bash tools/dt_test_distilled_lora.sh official_q6p_via_custom <registered_name>:1.0
+```
+
+It wraps `dt_quantize_model.sh` with `-m ltx2.3`, opts into q4p for LoRAs (safe here; the base-
+model q4p gate does not apply), registers the output in `dt-models/custom_lora.json`, and skips
+the base-model-only F32 norm restores.
