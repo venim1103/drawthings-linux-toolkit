@@ -56,6 +56,7 @@ Options:
   --width <n>               Pixel width for request config (default: 256).
   --height <n>              Pixel height for request config (default: 256).
   --steps <n>               Sampling steps for request config (default: 4).
+  --sampler <n>             Sampler enum id for request config (default: 17).
   --seed <n>                Seed for request config (default: 4242).
   --lora <file[:weight[:mode]]>
                             Repeatable LoRA spec passed into config.
@@ -124,6 +125,10 @@ if [[ $# -gt 0 ]]; then
         ;;
       --steps)
         STEPS="${2:-}"
+        shift 2
+        ;;
+      --sampler)
+        SAMPLER="${2:-}"
         shift 2
         ;;
       --seed)
@@ -347,6 +352,11 @@ if ! [[ "$STEPS" =~ ^[0-9]+$ ]] || [[ "$STEPS" -lt 1 ]]; then
   exit 1
 fi
 
+if ! [[ "$SAMPLER" =~ ^[0-9]+$ ]]; then
+  echo "error: --sampler must be a non-negative integer" >&2
+  exit 1
+fi
+
 if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
   echo "error: --seed must be a non-negative integer" >&2
   exit 1
@@ -373,6 +383,7 @@ echo "server_gpu=$SERVER_GPU"
 echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
 echo "server_no_flash_attention=$SERVER_NO_FLASH_ATTENTION"
 echo "server_weights_cache=${SERVER_WEIGHTS_CACHE:-default}"
+echo "sampler=$SAMPLER"
 echo "final_mode=$FINAL_MODE"
 if [[ "$NO_TIMEOUT" == "1" ]]; then
   echo "timeout_sec=none"

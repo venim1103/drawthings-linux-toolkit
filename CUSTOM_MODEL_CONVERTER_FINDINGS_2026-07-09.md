@@ -1373,3 +1373,133 @@ loss + the distillation-LoRA delta pushing the final latent to NaN** — NOT a c
 - ❌ Weight-1.0 overdrive as sole cause (0.6 still NaN, §23.3).
 - ❌ Missing `.ltx2_3` LoRA branch / structural code gap (prior subagent static analysis).
 - ❌ VAE-decode arithmetic (f32 fallback active and still NaNs → NaN is upstream, in the latent).
+
+---
+
+## 26) Distilled LoRA schedule alignment — BREAKTHROUGH (2026-07-21)
+
+### 26.1 What changed
+
+User clarified that `ltx_2.3_22b_distilled_lora_1.1_fro90_ceil52_condsafe` is a **distillation /
+acceleration LoRA** intended to shift the base model toward a distilled (TCD-like) sampling
+regime. Prior failing runs used the existing canary defaults (`sampler=17`, `steps=8`), which are
+not a distilled schedule.
+
+### 26.2 Control re-validation after restoring official q6p file
+
+`dt-models/ltx_2.3_22b_distilled_1.1_q6p.ckpt` had temporarily become `0` bytes, which invalidated
+earlier official-control attempts (`Illegal instruction` in `TextEncoder.encodeLTX2`). After user
+restored the file (valid SQLite header, non-zero size), controls became meaningful again.
+
+- `official_q6p_via_custom` **without LoRA**: PASS/COHERENT.
+  - Run: `output/q6p_canary_official_q6p_via_custom_test_20260720_133252/`
+  - Final: `image_r0014_01.bin`, std≈0.6909, NaN=0.
+
+- Same alias + iOS-converted distilled LoRA @1.0, default sampler path (`sampler=17`, `steps=8`):
+  FAIL (no final image payload).
+  - Run: `output/q6p_canary_official_q6p_via_custom_test_20260720_134524/`
+
+This proves the base path is healthy and the failure is schedule-sensitive with LoRA enabled.
+
+### 26.3 Signature of the failing schedule (sampler 17 path)
+
+Across multiple failing LoRA runs (`official` and `custom` q6p/q4p) the preview signature was
+identical:
+
+- `preview_0004..0010`: `NaN=18560`, finite std≈`0.965333`.
+- No final `image_r*.bin` payload.
+
+This includes mode split tests:
+- `mode=all`, `mode=base`, `mode=refiner` all fail under sampler 17 schedule.
+- Lowering LoRA weight to `0.1` still fails with the same signature.
+
+Interpretation: this is not merely weight magnitude; the default scheduler/step regime is the wrong
+operating point for this distilled LoRA.
+
+### 26.4 Distilled-aligned run — SUCCESS
+
+Using a distilled-style schedule on the same official q6p base + same iOS LoRA:
+
+- sampler: `19` (`TCDTrailing`)
+- steps: `2`
+- frames: default canary stream path (`num_frames` from harness)
+- LoRA: `ltx_2.3_22b_distilled_lora_1.1_fro90_ceil52_condsafe_lora_f16.ckpt:1.0`
+
+Result: **PASS**, full payloads returned.
+
+- Run: `output/q6p_canary_official_q6p_tcdtrailing_s2_lora52_20260721_074416/`
+- Stream summary: images written `9`, audio `1`, generation stream finished.
+- Preview: `preview_0004.bin` NaN=0, std≈1.1837.
+- Final: `image_r0016_01.bin` NaN=0, std≈0.6822.
+
+### 26.5 q4p + distilled LoRA under distilled schedule — SUCCESS
+
+Added a dedicated q4p alias with correct companions:
+
+- `10_e_v1_4_q4p_alias` in `dt-models/custom.json`
+  - file/clip_encoder: `10_e_v1_4_q4p.ckpt`
+  - autoencoder/text-encoder/objective same as `10_e_v1_4`.
+
+Run with the same distilled schedule:
+
+- model: `10_e_v1_4_q4p_alias`
+- sampler: `19` (`TCDTrailing`)
+- steps: `2`
+- LoRA: `...ceil52_condsafe...:1.0`
+
+Result: **PASS**, full payloads returned.
+
+- Run: `output/q6p_canary_q4p_tcdtrailing_s2_lora52_20260721_080815/`
+- Stream summary: images written `9`, audio `1`.
+- Final: `image_r0016_01.bin` NaN=0, std≈0.6353.
+- PNG saved: `image_r0016_01.png`.
+
+### 26.6 Net conclusion
+
+For this LoRA, the prior failures were primarily **schedule mismatch** (using default sampler 17 /
+higher-step path with a distilled acceleration LoRA), not file corruption or converter defects.
+
+Working recipe established:
+
+- Use `TCDTrailing` (`sampler=19`) + low steps (`2` to start) for
+  `ltx_2.3_22b_distilled_lora_1.1_fro90_ceil52_condsafe`.
+
+### 26.7 Tooling note
+
+`tools/run_q6p_canary_once.sh` had an internal `SAMPLER` variable wired into config generation but
+no CLI flag parsing for `--sampler`. Added:
+
+- `--sampler <n>` to usage,
+- argument parsing,
+- validation,
+- and run-time logging (`sampler=<n>`).
+
+This enables reproducible distilled-schedule canary runs from the command line.
+
+### 26.8 Convenience preset for repeatable validation
+
+Added `tools/dt_test_distilled_lora.sh` to run the now-proven safe preset in one
+command:
+
+```bash
+bash tools/dt_test_distilled_lora.sh
+```
+
+Defaults:
+- model: `official_q6p_via_custom`
+- lora: `ltx-2.3-22b-distilled-lora-1.1_fro90_ceil52_condsafe:1.0`
+- steps: `2`
+- sampler: `19` (`TCDTrailing`)
+- frames: `5`
+- timeout: `2700`
+
+It also accepts optional overrides:
+
+```bash
+bash tools/dt_test_distilled_lora.sh 10_e_v1_4_q4p_alias \
+  ltx-2.3-22b-distilled-lora-1.1_fro90_ceil52_condsafe:1.0
+```
+
+Additionally, `tools/dt_test.sh` now accepts `--sampler <n>` and forwards it to
+`run_q6p_canary_once.sh` so scheduler selection is explicit at the top-level test
+entrypoint.

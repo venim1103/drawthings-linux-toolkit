@@ -14,6 +14,7 @@ set -euo pipefail
 #   --lora SPEC           Repeatable LoRA spec: NAME_OR_FILE[:WEIGHT[:MODE]].
 #                         mode: all/base/refiner or 0/1/2.
 #   --steps N             Sampling steps. Default: 8.
+#   --sampler N           Sampler enum id. Default: 17 (DPMPP2MTrailing).
 #   --width N             Default: 384.   --height N   Default: 384.
 #   --seed N              Default: 4242.
 #   --frames N            Frames to sample (video). Default: 9.
@@ -28,7 +29,7 @@ PYTHON_BIN="$ROOT/.venv/bin/python"
 LD_PATH="${DRAWTHINGS_LD_LIBRARY_PATH:-/usr/local/swift/usr/lib/swift/linux:/usr/lib/wsl/lib:/usr/local/cuda/targets/x86_64-linux/lib}"
 
 NAME=""
-STEPS=8; WIDTH=384; HEIGHT=384; SEED=4242; FRAMES=9; TIMEOUT_SEC=1800
+STEPS=8; SAMPLER=17; WIDTH=384; HEIGHT=384; SEED=4242; FRAMES=9; TIMEOUT_SEC=1800
 PROMPT=""; NEG_PROMPT=""
 LORA_SPECS=()
 
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --neg-prompt) NEG_PROMPT="${2:-}"; shift 2 ;;
     --lora) LORA_SPECS+=("${2:-}"); shift 2 ;;
     --steps) STEPS="${2:-}"; shift 2 ;;
+    --sampler) SAMPLER="${2:-}"; shift 2 ;;
     --width) WIDTH="${2:-}"; shift 2 ;;
     --height) HEIGHT="${2:-}"; shift 2 ;;
     --seed) SEED="${2:-}"; shift 2 ;;
@@ -60,7 +62,7 @@ for sfx in _f16 _q6p _q8p _q4p; do NAME="${NAME%$sfx}"; done
 
 TAG="${NAME}_test_$(date +%Y%m%d_%H%M%S)"
 echo "== dt_test =="
-echo "  model : $NAME   ${WIDTH}x${HEIGHT}  steps=$STEPS  seed=$SEED  frames=$FRAMES"
+echo "  model : $NAME   ${WIDTH}x${HEIGHT}  steps=$STEPS  sampler=$SAMPLER  seed=$SEED  frames=$FRAMES"
 if [[ "${#LORA_SPECS[@]}" -gt 0 ]]; then
   echo "  loras : ${LORA_SPECS[*]}"
 fi
@@ -79,7 +81,7 @@ env LD_LIBRARY_PATH="$LD_PATH" \
     --model "$NAME" --tag "$TAG" \
     --timeout-sec "$TIMEOUT_SEC" --max-responses 0 \
     --require-complete-stream --require-final-output \
-    --width "$WIDTH" --height "$HEIGHT" --steps "$STEPS" --seed "$SEED" \
+    --width "$WIDTH" --height "$HEIGHT" --steps "$STEPS" --sampler "$SAMPLER" --seed "$SEED" \
     "${LORA_ARGS[@]}" \
     --allow-missing-model --soft-fail 2>&1 | tail -8 || true
 
