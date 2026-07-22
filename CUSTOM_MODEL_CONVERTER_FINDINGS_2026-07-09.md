@@ -1672,3 +1672,166 @@ bash tools/dt_test_distilled_lora.sh official_q6p_via_custom <registered_name>:1
 It wraps `dt_quantize_model.sh` with `-m ltx2.3`, opts into q4p for LoRAs (safe here; the base-
 model q4p gate does not apply), registers the output in `dt-models/custom_lora.json`, and skips
 the base-model-only F32 norm restores.
+
+---
+
+## 29) Quantized LoRA + q4p base = crash (base-precision incompatibility) (2026-07-21) — **RETRACTED, see §30**
+
+> **RETRACTED (2026-07-22).** The conclusion below ("base-precision incompatibility") was
+> **confounded** and is WRONG. Every PASS run cited here used `run_q6p_canary_once.sh` (default
+> `numFrames=9`); every FAIL run used `dt_test_distilled_lora.sh`, which shipped with
+> `--frames 5`. The real cause is the **frame count** (5 is an invalid LTX-2.3 temporal size),
+> not the base precision or the quantized LoRA. See §30 for the corrected root cause and proof.
+> The isolation matrix and "q4p-base" conclusion in §29.3/§29.4 should be disregarded.
+
+### 29.1 Symptom
+
+User ran `tools/dt_test_distilled_lora.sh` with their saved defaults (base
+`10_e_v1_4_q4p_alias` = the **custom q4p** model, LoRA = the **quantized** q8p/q6p ckpt,
+distilled schedule sampler 19 / steps 2). Every combination failed with `canary rc`:
+
+- q4p base + **q8p** LoRA → server **crashes** during the first sampling exec (no preview
+  written). Client sees `gRPC error: UNAVAILABLE: Socket closed`.
+- q4p base + **q6p** LoRA → no crash logged, but stream ends after 1 preview with **no final
+  image** (`images written: 0`).
+
+Reproduced cleanly (`output/q6p_canary_10_e_v1_4_q4p_alias_test_20260721_105314/`).
+
+### 29.2 Crash signature
+
+`server.log` — Signal 11, `Bad pointer dereference at 0x0`, Thread 2:
+
+```
+0  libcudnn_graph.so.9.8.0
+1  libcudnn_graph.so.9.8.0
+2  libcudnn.so.9.8.0
+3  _ccv_nnc_device_local_drain + 71            in gRPCServerCLI
+4  ccv_nnc_tensor_from_variable_impl + 560     in gRPCServerCLI
+5  ccv_nnc_dynamic_graph_exec_ret + 2318       in gRPCServerCLI
+6  ccv_nnc_dynamic_graph_exec + 112            in gRPCServerCLI
+```
+
+A null-pointer dereference inside cuDNN at the first dynamic-graph exec of sampling.
+
+### 29.3 Isolation matrix (all distilled schedule: sampler 19, steps 2, 384², seed 4242)
+
+| base                              | LoRA            | result | run |
+|-----------------------------------|-----------------|--------|-----|
+| official q6p (`official_q6p_via_custom`) | q8p / q6p / q4p | **PASS** | §28.4 |
+| official q6p                      | f16             | PASS   | §26.4 |
+| **custom q6p** (`10_e_v1_4`)      | **q8p**         | **PASS** | `output/q6p_canary_customq6p_q8plora_*` |
+| custom q4p (`10_e_v1_4_q4p_alias`)| **f16**         | PASS   | §26.5 (`..._q4p_tcdtrailing_s2_lora52_20260721_080815`) |
+| **custom q4p**                    | **q8p**         | **CRASH** | `..._q4p_alias_test_20260721_105314` / `..._104204` |
+| **custom q4p**                    | **q6p**         | **FAIL (no output)** | `..._q4p_alias_test_20260721_103743` |
+
+### 29.4 Conclusion
+
+The failure is **not** the quantized LoRA itself and **not** the custom model:
+
+- Quantized LoRAs (q8p/q6p/q4p) work fine on **q6p bases** — both the official q6p and our
+  **custom** `10_e_v1_4` q6p.
+- The **q4p base** works fine with an **f16 LoRA**.
+- Only the **quantized-LoRA × q4p-base** combination breaks (crash with q8p; silent no-output
+  with q6p).
+
+So this is a **base-precision incompatibility**: a q4p base has too little numeric headroom to
+run alongside a quantized LoRA delta. The two low-precision sources compound and either produce
+a malformed tensor that trips a null-pointer deref in cuDNN (q8p LoRA) or diverge before a final
+frame (q6p LoRA). f16 LoRA on q4p still has enough precision to stay valid; a q6p+ base has
+enough headroom for a quantized LoRA.
+
+### 29.5 Practical guidance / working combinations
+
+- **Recommended:** quantized LoRA (q8p) **on a q6p base** (official or custom `10_e_v1_4`).
+  This is the smallest-footprint combo that is proven stable.
+- If a **q4p base** is required, use the **f16 LoRA** (do not pair q4p base + quantized LoRA).
+- Do **not** ship `dt_test_distilled_lora.sh` defaults pointing at `10_e_v1_4_q4p_alias` + a
+  quantized LoRA — that is exactly the broken combination. Prefer base `10_e_v1_4` (q6p) or
+  `official_q6p_via_custom` for the quantized-LoRA preset.
+
+### 29.6 Open (not yet done)
+
+- Root-cause the null deref in the merge path for a q4p base (`LoRALoader.mergeLoRA` /
+  `filesRequireMerge` when the base weight is q4p and the LoRA is palettized). Whether q4p base
+  forces a merge (vs separate) path that mishandles a quantized LoRA tensor descriptor is the
+  next thing to check. Anchors: `Libraries/SwiftDiffusion/Sources/LoRALoader.swift` (`rank`,
+  `mergeLoRA`, `concatenateLoRA`), and the `.ltx2_3` LoRA gating in `UNetProtocol.swift` /
+  `UNetFixedEncoder.swift`.
+- Not yet tested: q4p base + **q4p** LoRA (expected to also fail); q8p base + quantized LoRA.
+
+---
+
+## 30) ROOT CAUSE: invalid frame count (numFrames must be 8k+1), NOT base precision (2026-07-22)
+
+### 30.1 The confound that broke §29
+
+§29 concluded "q4p base + quantized LoRA is broken." That was a **confound**: the two harness
+entry points used different default frame counts.
+
+- `tools/run_q6p_canary_once.sh` → `numFrames = 9` (its default) → every one of my PASS runs.
+- `tools/dt_test_distilled_lora.sh` → shipped with `--frames 5` → every FAIL run (user + repro).
+
+So "base precision" was perfectly correlated with "frame count" across the runs, and I attributed
+the failure to the wrong variable.
+
+### 30.2 The one-byte proof
+
+User re-ran q4p base + **f16** LoRA and it failed (`output/q6p_canary_10_e_v1_4_q4p_alias_test_20260722_071105/`),
+even though §26.5 had that exact pairing PASS (`..._q4p_tcdtrailing_s2_lora52_20260721_080815/`).
+
+Diffing the two `config.bin` files: they are **identical except a single byte** at offset 188:
+
+- PASS config: `numFrames = 9`
+- FAIL config: `numFrames = 5`
+
+Same base, same LoRA, same sampler/steps/seed/size. The only difference is 9 vs 5 frames.
+FAIL preview signature: `preview_0004` is `NaN=18560, std=0.965333` (all-NaN latent on step 1) —
+the same recurring "diverged" signature seen in the §26.3 failures. PASS preview: `NaN=0`.
+
+### 30.3 Direct confirmation
+
+Re-ran the exact §29 "crash" case (**custom q4p base + q8p LoRA**, sampler 19, steps 2) but with
+**`numFrames = 9`**:
+
+- Result: **PASS**, 9 images, no crash. Run: `output/q6p_canary_q4p_q8plora_frames9_*/`.
+
+So q4p base + quantized LoRA is **fine**; only `frames=5` was breaking it. §29's crash was
+`frames=5` on a q4p base; §29's "no output" q6p-LoRA case was `frames=5` too.
+
+### 30.4 The rule (from the code)
+
+LTX-2.3 uses 8× temporal compression. In `LocalImageGenerator.swift` (multiple sites, e.g.
+`:3962`, `:4422`, `:5224`, `:6559`, `:7458`):
+
+```
+let latentFrames = ((Int(configuration.numFrames) - 1) / 8) + 1
+```
+
+With integer division, `numFrames` must satisfy `numFrames ≡ 1 (mod 8)` — i.e. **8k+1: 1, 9, 17,
+25, …** — for the requested pixel frames to map cleanly to the latent temporal size. `numFrames=5`
+gives `(5-1)/8 = 0` (remainder 4 dropped) → a temporal-size mismatch → invalid latent → NaN on
+the first sampling step (and, with some weights, a cuDNN null-pointer crash in
+`ccv_nnc_dynamic_graph_exec`). `numFrames=1` is degenerate/crashes too (per earlier notes); the
+smallest safe "real video" value is **9**.
+
+### 30.5 Corrected conclusions
+
+- **The frame count was the bug all along.** Base precision (q4p vs q6p), quantized vs f16 LoRA,
+  and custom vs official model are all **irrelevant** to this failure.
+- Everything works with `numFrames = 9` (verified): official/custom **q6p** base and custom
+  **q4p** base, each with **f16 / q8p / q6p / q4p** LoRA, all PASS under the distilled schedule.
+- §29's isolation matrix accidentally proved this: every PASS was frames=9, every FAIL was
+  frames=5.
+
+### 30.6 Fixes applied
+
+- `tools/dt_test_distilled_lora.sh`: default `FRAMES=9` (was hard-coded `--frames 5`), added a
+  third optional `FRAMES` arg, and a guard that rejects any `FRAMES` not of the form `8k+1`.
+- `tools/dt_test.sh`: added an early guard — `--frames` must be `8k+1` (9, 17, 25, …) or it
+  errors out before launching a ~15–25 min run.
+
+### 30.7 Lesson
+
+When two harness paths give different results for "the same" test, **diff the emitted
+`config.bin` byte-for-byte before theorizing**. A single-byte `numFrames` difference here would
+have saved the entire §29 mis-diagnosis.

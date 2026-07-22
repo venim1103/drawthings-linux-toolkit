@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# dt_test.sh — Step 3/3: render a test frame from a quantized custom model
+# dt_test.sh Step 3/3: render a test frame from a quantized custom model
 # (GPU inference) and decode it to a viewable PNG.
 #
 #   bash tools/dt_test.sh <NAME> [options]
@@ -56,6 +56,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$NAME" ]]; then echo "error: <NAME> is required" >&2; usage; exit 1; fi
+# LTX-2.3 uses 8x temporal compression: latentFrames = ((numFrames - 1) / 8) + 1.
+# numFrames MUST be 8k+1 (9, 17, 25, ...); other values (e.g. 5) give an invalid
+# temporal latent size -> NaN / cuDNN crash on the first sampling step.
+if [[ "$FRAMES" =~ ^[0-9]+$ ]] && (( (FRAMES - 1) % 8 != 0 )); then
+  echo "error: --frames $FRAMES is invalid for LTX-2.3 (must be 8k+1: 9, 17, 25, ...)." >&2
+  echo "       numFrames not of the form 8k+1 diverges to NaN / crashes on step 1." >&2
+  exit 1
+fi
 # Accept either a bare alias (10_e_v1_4) or a path to a ckpt.
 NAME="$(basename "$NAME")"; NAME="${NAME%.ckpt}"
 for sfx in _f16 _q6p _q8p _q4p; do NAME="${NAME%$sfx}"; done
