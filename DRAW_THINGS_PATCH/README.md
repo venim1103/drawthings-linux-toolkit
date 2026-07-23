@@ -139,6 +139,35 @@ Notes:
 - Use `--skip-build` for a faster gate when you only need patch integrity.
 - Use `--build-product <name>` to smoke-test a different Swift product.
 
+## Before/after upstream update helper
+
+Use the guard helper to standardize update flow:
+
+```bash
+# 1) Before updating draw-things-community:
+bash /workspaces/drawthings-linux-toolkit/tools/drawthings_update_guard.sh before
+
+# 2) Update/rebase draw-things-community.
+
+# 3) After update/rebase:
+bash /workspaces/drawthings-linux-toolkit/tools/drawthings_update_guard.sh after --allow-dirty
+```
+
+What it does:
+
+- `before`
+  - runs strict verify (`verify_drawthings_patch_bundle.sh`)
+  - saves baseline metadata to `DRAW_THINGS_PATCH/patches/update_baseline_latest.env`
+- `after`
+  - shows prior baseline info (if available)
+  - runs full strict safety gate (`strict_drawthings_safety_check.sh`)
+
+For a faster post-update pass (skip build):
+
+```bash
+bash /workspaces/drawthings-linux-toolkit/tools/drawthings_update_guard.sh after --allow-dirty --skip-build
+```
+
 ## Build quantizer
 
 ```bash
