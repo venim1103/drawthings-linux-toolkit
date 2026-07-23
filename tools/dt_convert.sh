@@ -12,7 +12,9 @@ set -euo pipefail
 # Optional:
 #   --name NAME           Output/alias base name. Default: derived from the
 #                         filename (strips .safetensors and a trailing
-#                         _bf16/_fp16/_f16). Produces dt-models/<NAME>_f16.ckpt.
+#                         _bf16/_fp16/_f16). The converter normalizes model
+#                         filenames (non-alnum/dot -> _, lowercase); this
+#                         wrapper auto-detects the produced *_f16.ckpt.
 #   --force               Re-convert even if <NAME>_f16.ckpt already exists.
 #   -h, --help            Show this help.
 #
@@ -54,17 +56,52 @@ if [[ -z "$NAME" ]]; then
   NAME="${NAME%_bf16}"; NAME="${NAME%_fp16}"; NAME="${NAME%_f16}"
 fi
 
-F16="$MODELS_DIR/${NAME}_f16.ckpt"
+CLEAN_NAME="$($PYTHON_BIN - "$NAME" <<'PY'
+import sys
+
+name = sys.argv[1]
+out = []
+for ch in name:
+    if ch.isascii() and (ch.isalpha() or ch.isdigit() or ch == "."):
+        out.append(ch)
+    else:
+        out.append("_")
+print("".join(out).lower())
+PY
+)"
+
+REQUESTED_F16="$MODELS_DIR/${NAME}_f16.ckpt"
+CLEAN_F16="$MODELS_DIR/${CLEAN_NAME}_f16.ckpt"
+RESOLVED_NAME="$NAME"
+F16="$REQUESTED_F16"
+
+resolve_f16_output() {
+  if [[ "$NAME" != "$CLEAN_NAME" && -f "$CLEAN_F16" ]]; then
+    F16="$CLEAN_F16"
+    RESOLVED_NAME="$CLEAN_NAME"
+  elif [[ -f "$REQUESTED_F16" ]]; then
+    F16="$REQUESTED_F16"
+    RESOLVED_NAME="$NAME"
+  else
+    F16="$REQUESTED_F16"
+    RESOLVED_NAME="$NAME"
+  fi
+}
+
+resolve_f16_output
 
 echo "== dt_convert =="
 echo "  safetensors : $SAFETENSORS"
 echo "  name        : $NAME"
+if [[ "$NAME" != "$CLEAN_NAME" ]]; then
+  echo "  normalized  : $CLEAN_NAME"
+fi
 echo "  output      : $F16"
 
 if [[ -f "$F16" && "$FORCE" != "1" ]]; then
   echo "==> f16 already exists; skipping (pass --force to rebuild)."
   echo "OK: $F16"
-  echo "Next: bash tools/dt_quantize.sh $NAME"
+  echo "Next: bash tools/dt_quantize.sh $RESOLVED_NAME"
   exit 0
 fi
 
@@ -80,8 +117,13 @@ DRAWTHINGS_CONVERTER_ALIGN_METADATA_MODE=0 \
     --name "$NAME" \
     --output-directory "$MODELS_DIR"
 
+resolve_f16_output
 if [[ ! -f "$F16" ]]; then
-  echo "error: converter output not found: $F16" >&2; exit 1
+  echo "error: converter output not found: $REQUESTED_F16" >&2
+  if [[ "$REQUESTED_F16" != "$CLEAN_F16" ]]; then
+    echo "       also checked normalized path: $CLEAN_F16" >&2
+  fi
+  exit 1
 fi
 
 echo "==> [3/3] Validate converted checkpoint"
@@ -90,4 +132,4 @@ echo "==> [3/3] Validate converted checkpoint"
 
 echo ""
 echo "OK: $F16"
-echo "Next: bash tools/dt_quantize.sh $NAME            # q6p (default); or --codec q8p / q4p"
+echo "Next: bash tools/dt_quantize.sh $RESOLVED_NAME   # q6p (default); or --codec q8p / q4p"
