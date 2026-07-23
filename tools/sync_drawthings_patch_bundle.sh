@@ -41,6 +41,7 @@ done
 
 PATCH_ROOT="$ROOT/DRAW_THINGS_PATCH"
 REPO_ROOT="$ROOT/draw-things-community"
+MANIFEST_FILE="$PATCH_ROOT/patches/manifest.sh"
 
 if [[ ! -d "$PATCH_ROOT" ]]; then
   echo "error: patch root not found: $PATCH_ROOT" >&2
@@ -51,6 +52,14 @@ if [[ ! -d "$REPO_ROOT" ]]; then
   echo "error: draw-things-community repo not found: $REPO_ROOT" >&2
   exit 1
 fi
+
+if [[ ! -f "$MANIFEST_FILE" ]]; then
+  echo "error: patch manifest not found: $MANIFEST_FILE" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$MANIFEST_FILE"
 
 copy_required() {
   local src="$1"
@@ -67,21 +76,9 @@ copy_required() {
 }
 
 echo "==> Syncing DRAW_THINGS_PATCH snapshots into draw-things-community..."
-copy_required "$PATCH_ROOT/Package.swift" "$REPO_ROOT/Package.swift"
-copy_required "$PATCH_ROOT/Package.resolved" "$REPO_ROOT/Package.resolved"
-copy_required "$PATCH_ROOT/Apps/ModelConverter/Converter.swift" "$REPO_ROOT/Apps/ModelConverter/Converter.swift"
-copy_required "$PATCH_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift" "$REPO_ROOT/Libraries/ModelOp/Sources/ModelImporter.swift"
-copy_required "$PATCH_ROOT/Libraries/ModelZoo/Sources/ModelZoo.swift" "$REPO_ROOT/Libraries/ModelZoo/Sources/ModelZoo.swift"
-copy_required "$PATCH_ROOT/Apps/ModelQuantizer/Quantizer.swift" "$REPO_ROOT/Apps/ModelQuantizer/Quantizer.swift"
-copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Functional+SwishMul.swift"
-copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/TextEncoder.swift"
-copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Archive/SafeTensors.swift"
-copy_required "$PATCH_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift" "$REPO_ROOT/Libraries/SwiftDiffusion/Sources/Models/HiDream.swift"
-copy_required "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift" "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/LocalImageGenerator.swift"
-copy_required "$PATCH_ROOT/Libraries/LocalImageGenerator/Sources/ImageConverter.swift" "$REPO_ROOT/Libraries/LocalImageGenerator/Sources/ImageConverter.swift"
-copy_required "$PATCH_ROOT/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift" "$REPO_ROOT/Libraries/GRPC/Server/Sources/GRPCServerAdvertiser.swift"
-copy_required "$PATCH_ROOT/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift" "$REPO_ROOT/Libraries/GRPC/Server/Sources/GRPCServiceBrowser.swift"
-copy_required "$PATCH_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift" "$REPO_ROOT/Vendors/ZIPFoundation/Sources/ZIPFoundation/Archive+MemoryFile.swift"
+for rel_path in "${PATCH_ROOT_FILES[@]}"; do
+  copy_required "$PATCH_ROOT/$rel_path" "$REPO_ROOT/$rel_path"
+done
 
 echo "==> Resolving Swift packages to ensure checkouts are present..."
 (
@@ -90,13 +87,13 @@ echo "==> Resolving Swift packages to ensure checkouts are present..."
 )
 
 echo "==> Syncing checkout snapshots..."
-copy_required "$PATCH_ROOT/checkouts/s4nnc/Package.swift" "$REPO_ROOT/.build/checkouts/s4nnc/Package.swift"
-copy_required "$PATCH_ROOT/checkouts/ccv/Package.swift" "$REPO_ROOT/.build/checkouts/ccv/Package.swift"
-copy_required "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_cnnp_model.c" "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_cnnp_model.c"
-copy_required "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_cnnp_model_addons.c" "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_cnnp_model_addons.c"
-copy_required "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_nnc_tensor.c" "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_nnc_tensor.c"
-copy_required "$PATCH_ROOT/checkouts/ccv/lib/nnc/ccv_nnc_cmd.c" "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/ccv_nnc_cmd.c"
-copy_required "$PATCH_ROOT/checkouts/ccv/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c" "$REPO_ROOT/.build/checkouts/ccv/lib/nnc/cmd/scaled_dot_product_attention/ccv_nnc_scaled_dot_product_attention.c"
+for rel_path in "${PATCH_S4NNC_FILES[@]}"; do
+  copy_required "$PATCH_ROOT/checkouts/s4nnc/$rel_path" "$REPO_ROOT/.build/checkouts/s4nnc/$rel_path"
+done
+
+for rel_path in "${PATCH_CCV_FILES[@]}"; do
+  copy_required "$PATCH_ROOT/checkouts/ccv/$rel_path" "$REPO_ROOT/.build/checkouts/ccv/$rel_path"
+done
 
 if [[ "$RUN_REGENERATE" == "1" ]]; then
   echo "==> Regenerating unified patch files..."
