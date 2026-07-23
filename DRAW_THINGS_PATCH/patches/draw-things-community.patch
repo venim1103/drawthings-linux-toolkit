@@ -2189,15 +2189,16 @@ index 34bef46a..686eeeba 100644
        "identity" : "swift-system",
        "kind" : "remoteSourceControl",
 diff --git a/Package.swift b/Package.swift
-index 6ae4c90b..25f75ca3 100644
+index 6ae4c90b..0485b2e5 100644
 --- a/Package.swift
 +++ b/Package.swift
-@@ -8,15 +8,17 @@ let package = Package(
+@@ -8,15 +8,18 @@ let package = Package(
    products: [
      .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
      .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
 +    .executable(name: "model-quantizer", targets: ["ModelQuantizer"]),
 +    .executable(name: "model-converter", targets: ["ModelConverter"]),
++    .executable(name: "lora-converter", targets: ["LoRAConverter"]),
      .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
    ],
    dependencies: [
@@ -2212,7 +2213,7 @@ index 6ae4c90b..25f75ca3 100644
      .package(
        url: "https://github.com/liuliu/dflat.git",
        revision: "73925e51e4f44add842177a229f9990cb13711ff"),
-@@ -78,6 +80,15 @@ let package = Package(
+@@ -78,6 +81,15 @@ let package = Package(
        path: "Libraries/BinaryResources/GeneratedC",
        publicHeadersPath: "."
      ),
@@ -2228,7 +2229,7 @@ index 6ae4c90b..25f75ca3 100644
      .target(
        name: "BinaryResources",
        dependencies: ["C_Resources"],
-@@ -91,6 +102,7 @@ let package = Package(
+@@ -91,6 +103,7 @@ let package = Package(
      ),
      .target(
        name: "ZIPFoundation",
@@ -2236,7 +2237,7 @@ index 6ae4c90b..25f75ca3 100644
        path: "Vendors/ZIPFoundation/Sources/ZIPFoundation"
      ),
  
-@@ -101,11 +113,10 @@ let package = Package(
+@@ -101,11 +114,10 @@ let package = Package(
      .target(
        name: "LLM",
        dependencies: [
@@ -2250,7 +2251,7 @@ index 6ae4c90b..25f75ca3 100644
      ),
      .target(
        name: "Diffusion",
-@@ -166,7 +177,10 @@ let package = Package(
+@@ -166,7 +178,10 @@ let package = Package(
        name: "DiffusionUNetWrapper",
        dependencies: [
          "Diffusion",
@@ -2262,7 +2263,7 @@ index 6ae4c90b..25f75ca3 100644
          "DataModels",
          .product(name: "Algorithms", package: "swift-algorithms"),
          .product(name: "Atomics", package: "swift-atomics"),
-@@ -335,7 +349,10 @@ let package = Package(
+@@ -335,7 +350,10 @@ let package = Package(
          "DiffusionPreprocessors",
          "DiffusionUNetWrapper",
          "Upscaler",
@@ -2274,7 +2275,7 @@ index 6ae4c90b..25f75ca3 100644
          .product(name: "Logging", package: "swift-log"),
          .product(name: "ccv", package: "ccv"),
          .product(name: "NNC", package: "s4nnc"),
-@@ -481,6 +498,28 @@ let package = Package(
+@@ -481,6 +499,40 @@ let package = Package(
        path: "Apps/DrawThingsCLI",
        sources: ["DrawThingsCLI.swift"]
      ),
@@ -2298,6 +2299,18 @@ index 6ae4c90b..25f75ca3 100644
 +        .product(name: "NNC", package: "s4nnc"),
 +      ],
 +      path: "Apps/ModelConverter",
++      sources: ["Converter.swift"]
++    ),
++    .executableTarget(
++      name: "LoRAConverter",
++      dependencies: [
++        "Diffusion",
++        "ModelOp",
++        "ModelZoo",
++        .product(name: "ArgumentParser", package: "swift-argument-parser"),
++        .product(name: "NNC", package: "s4nnc"),
++      ],
++      path: "Apps/LoRAConverter",
 +      sources: ["Converter.swift"]
 +    ),
      .target(
