@@ -1835,3 +1835,144 @@ smallest safe "real video" value is **9**.
 When two harness paths give different results for "the same" test, **diff the emitted
 `config.bin` byte-for-byte before theorizing**. A single-byte `numFrames` difference here would
 have saved the entire §29 mis-diagnosis.
+
+> **See also §31** for the iOS-side follow-up (the "Optimize for Speed" / q4p investigation),
+> which builds on this section's frame-count and precision conclusions.
+
+---
+
+## 31) iOS "Optimize for Speed" + q4p behavior (source-level inference, 2026-07-23)
+
+### 31.1 Scope + hard limitation
+
+This repo snapshot does **not** include the iOS app UI sources (the settings screen where
+"Optimize for Speed" is toggled). `Apps/` here contains CLI/converter targets only. That means we
+cannot prove the exact UI-control -> setting-key mapping directly in code from this workspace.
+
+What we *can* do is trace the runtime settings consumed by generation and infer the most likely
+path.
+
+### 31.2 What is explicit in source
+
+1. **LTX-2.3 officially ships q8p/q6p/i8x, not q4p.**
+   `ModelZoo` has LTX-2.3 entries for q8p, q6p, and i8x variants; there is no built-in q4p LTX-2.3
+   specification.
+
+2. **UNet/DiT read paths for LTX-2.3 do not explicitly list q4p.**
+   In both `UNetProtocol` and `UNetFixedEncoder` LTX-2.3 paths, model reads use codec lists like:
+   `[..., .q6p, .q8p, .i8x, .ezm7, ...]` (plus `.jit` / external-data modes), with no literal
+   `.q4p` in those LTX DiT branches.
+
+3. **Text-encoder paths do explicitly list q4p.**
+   `TextEncoder.encodeLTX2(...)` includes `.q4p` in codec lists for `text_model` and
+   `text_feature_extractor` loads.
+
+4. **Important nuance from §28 still applies:** codec lists are not always hard filters.
+   We already proved q4p LoRA tensors can be read/applied despite `LoRALoader` listing only
+   q6p/q8p/ezm7/external-data codecs. So "q4p not listed" is strong evidence of non-first-class
+   support, but not a formal proof of impossible read.
+
+### 31.3 Likely runtime meaning of "Optimize for Speed"
+
+The strongest source-level candidate is **weights residency / on-demand loading mode**, controlled
+by `external_store_v2` in `ModelPreloader`:
+
+- `external_store_v2` maps to `JITWeightsLoading`:
+  - `automatic`
+  - `alwaysPartially`
+  - `alwaysFully`
+  - `never`
+- That value feeds `externalOnDemand(...)` behavior and cache reset/reload decisions.
+- For `.ltx2/.ltx2_3`, `DeviceCapability.externalOnDemand(...)` returns file-backed/on-demand for
+  all non-ultra-memory devices.
+
+So if "Optimize for Speed" pushes behavior toward `alwaysFully` (or otherwise reduces file-backed
+streaming), it can plausibly explain why a custom q6p checkpoint may only load after toggling it:
+the load path changes from aggressive on-demand streaming to more resident loading.
+
+Because UI code is missing here, this remains an inference, not a direct binding proof.
+
+### 31.4 Updated compatibility picture (iOS-facing)
+
+- **Most reliable LTX-2.3 base formats:** q8p / q6p / i8x (officially shipped).
+- **q4p LTX-2.3 base:** experimental/unsupported posture (not officially shipped for LTX-2.3,
+  no explicit q4p in LTX DiT codec lists, user-observed instability on iOS).
+- **LoRA on LTX-2.3 q6p base:** validated in §28 (including q4p LoRA variants).
+
+### 31.5 Practical recommendation
+
+For iOS use, treat **q6p base + (f16 or q8p/q6p LoRA)** as the stability target. Keep q4p for
+LoRA-size experiments only, not as a base-model deployment target.
+
+If a device only succeeds after "Optimize for Speed", that is likely signaling a
+memory-residency/weights-loading pressure issue rather than a converter correctness issue.
+
+---
+
+## 32) What we can do on our end for unmodified iOS (checkpoint-side options, 2026-07-23)
+
+Question: since we cannot change the iOS app, can we make a "special patch" to a q4p model so it
+works? Short answer: **no patch can make a q4p _base DiT_ run on the stock iOS app**, but there
+are real checkpoint-side moves that get you the size/speed you want on a supported path.
+
+### 32.1 Why a q4p-base patch cannot work on stock iOS
+
+The blocker is **not** the file — it is the app's compute path:
+
+- The shipped iOS app has no LTX-2.3 DiT read/compute path that includes `.q4p` (only
+  `.q6p/.q8p/.i8x/.ezm7`, per §31.2), and Apple ships LTX-2.3 only as q8p/i8x/q6p.
+- On Metal, the dequant + quantized-GEMM kernels used for the DiT exist for q6p/q8p/i8x, not for
+  4-bit-palettized DiT weights. So even a byte-perfect q4p DiT has no kernel to run against on the
+  device.
+- This is a **missing-kernel** problem, not a serialization/metadata problem. Nothing we write into
+  the checkpoint creates the Metal kernel the app doesn't have. (Contrast Linux/CUDA, where the
+  self-describing palettized blob *does* dequantize — which is exactly why q4p "works here but not
+  there".)
+
+Conclusion: do **not** invest in a q4p-base repair/patch for iOS. It is structurally impossible
+without an app change.
+
+### 32.2 What we *can* do (in order of preference)
+
+1. **Ship the base at the smallest iOS-supported codec: q6p.**
+   For the LTX-2.3 DiT, q6p (6-bit) is the smallest codec the stock app can read *and* compute.
+   This is the direct, correct replacement for a q4p base.
+   ```bash
+   tools/dt_quantize_model.sh \
+     -i dt-models/<model>_f16.ckpt \
+     -m ltx2.3 \
+     -o dt-models/<model>_q6p.ckpt \
+     --target-codec q6p
+   # then restore fragile norms if this is a base-model conversion (see §8 / dt_q6p_restore_*.py)
+   ```
+
+2. **Put the size savings in the LoRA instead of the base (proven safe, §28).**
+   Quantized LoRAs (q8p/q6p/**q4p**) load and apply correctly on a q6p base. So the smallest
+   *stable* deployment is **q6p base + q4p LoRA**, not a q4p base.
+   ```bash
+   bash tools/dt_lora_quantize.sh <lora_f16.ckpt|NAME> --codec q4p
+   ```
+   This keeps the DiT on a supported codec while still shrinking the delta you actually ship/update.
+
+3. **If you need 8-bit-for-ANE behavior, ship the i8x ("8-bit S") base.**
+   `i8x` is the variant the app associates with the Apple-Neural-Engine / speed path. It is fully
+   supported for LTX-2.3 and is a legitimate "faster/smaller-than-q8p, more-compatible-than-q4p"
+   middle option.
+
+### 32.3 The "loads only after Optimize for Speed" (q6p) angle
+
+This is a **memory-residency** signal, not corruption, so there is no byte-patch that removes it.
+What helps from our side:
+
+- Prefer **i8x** or **q6p** (smaller resident footprint than f16/q8p) so the model fits the
+  device's automatic (non-forced) loading budget.
+- Ensure the checkpoint is stored with external-data layout (our converter/quantizer already emit
+  this) so the app's on-demand streaming path works instead of demanding full residency.
+- Treat "must enable Optimize for Speed to load" as *expected* on tighter-RAM devices for a 22B
+  LTX-2.3 model — it is the app forcing a more resident load, not a defect in our checkpoint.
+
+### 32.4 One-line answer for the user
+
+We can't rescue a q4p **base** for stock iOS (missing Metal kernel), but we can ship a **q6p (or
+i8x) base** and move aggressive quantization into a **q4p LoRA** on top — that is the smallest
+combination that actually loads and runs on an unmodified device.

@@ -9,8 +9,10 @@ set -euo pipefail
 # - Keeps quantizer CLI arguments unchanged (pass-through).
 
 # Safety policy:
-# - For LTX2.3, forcing q4p is blocked by default.
-# - Set override env vars below to bypass safeguards.
+# - For LTX2.3, forcing q4p BASE quantization is blocked by default: the stock iOS app has no
+#   q4p read/compute path for the LTX-2.3 DiT, so a q4p base cannot run on-device. Prefer a q6p
+#   or i8x base, and move aggressive quantization into a q4p LoRA instead (see findings 31-32).
+# - Set override env vars below to bypass safeguards (Linux/CUDA only).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${DRAWTHINGS_WORKSPACE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -36,6 +38,9 @@ Environment:
   DRAWTHINGS_QUANTIZER_ALLOW_Q4P_LTX23
                                       Set to 1 to allow forced --target-codec q4p
                                       for -m ltx2.3 / ltx2_3. Default: 0 (blocked).
+                                      NOTE: a q4p LTX-2.3 base does NOT run on the stock
+                                      iOS app (no q4p DiT kernel). Override is Linux/CUDA
+                                      only. Prefer q6p/i8x base + q4p LoRA.
   DRAWTHINGS_BUILD_CONFIG             release (default) or debug.
 
 Examples:
@@ -43,14 +48,15 @@ Examples:
   tools/dt_quantize_model.sh \
     -i dt-models/model_f16.ckpt \
     -m ltx2.3 \
-    -o dt-models/model_q4p.ckpt \
-    --target-codec q4p
+    -o dt-models/model_q6p.ckpt \
+    --target-codec q6p
 
 Notes:
   - Progress percentage is based on input bytes read from /proc/<pid>/io.
   - On some workloads, read progress can reach 100% before final file flush completes.
   - LTX2.3 safety default:
-      * --target-codec q4p is blocked unless overridden.
+      * --target-codec q4p is blocked for the base model (iOS cannot run a q4p DiT).
+        Use q6p/i8x for the base and put q4p on the LoRA instead.
 EOF
 }
 
@@ -337,8 +343,19 @@ target_codec_norm="${target_codec_raw,,}"
 
 if [[ "$model_version_norm" == "ltx2.3" ]]; then
   if [[ "$target_codec_norm" == "q4p" && "$ALLOW_Q4P_LTX23" != "1" ]]; then
-    echo "error: refusing --target-codec q4p for model version $model_version_raw (known unstable for LTX2.3)." >&2
-    echo "       Set DRAWTHINGS_QUANTIZER_ALLOW_Q4P_LTX23=1 to force anyway." >&2
+    echo "error: refusing --target-codec q4p for a LTX2.3 base model ($model_version_raw)." >&2
+    echo "       The stock iOS app has no q4p read/compute path for the LTX-2.3 DiT" >&2
+    echo "       (only q6p/q8p/i8x/ezm7), so a q4p base cannot load/run on-device." >&2
+    echo "       See CUSTOM_MODEL_CONVERTER_FINDINGS_2026-07-09.md sections 31-32." >&2
+    echo "" >&2
+    echo "       iOS-safe alternatives:" >&2
+    echo "         * smallest supported base:   --target-codec q6p" >&2
+    echo "         * 8-bit ANE/speed path:       --target-codec i8x" >&2
+    echo "         * shrink the LoRA instead:    tools/dt_lora_quantize.sh <lora> --codec q4p" >&2
+    echo "                                       (q4p LoRA on a q6p base is validated; see section 28)" >&2
+    echo "" >&2
+    echo "       Set DRAWTHINGS_QUANTIZER_ALLOW_Q4P_LTX23=1 to force q4p anyway" >&2
+    echo "       (Linux/CUDA only; will not run on the stock iOS app)." >&2
     exit 2
   fi
 fi
