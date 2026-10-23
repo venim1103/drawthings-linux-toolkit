@@ -135,6 +135,14 @@ def _tensor_to_numpy(blob: bytes, header: TensorHeader, expected_count: int) -> 
     return np.frombuffer(decoded, dtype=np_dtype)
 
 
+def validate_finite_tensor(blob: bytes) -> None:
+    header = _read_tensor_header(blob)
+    values = _tensor_to_numpy(blob, header, int(np.prod(header.dims)))
+    nonfinite = int(np.count_nonzero(~np.isfinite(values)))
+    if nonfinite:
+        raise ValueError(f"Tensor contains {nonfinite} non-finite values before conversion")
+
+
 def _float_image_to_uint8(arr: np.ndarray) -> np.ndarray:
     arr = arr.astype(np.float32, copy=False)
     finite = np.isfinite(arr)
@@ -305,12 +313,27 @@ def main() -> int:
     parser.add_argument("--mp4-fps", type=int, default=12)
     parser.add_argument("--mp4-seconds", type=float, default=2.0)
     parser.add_argument("--audio-sample-rate", type=int, default=48000)
+    parser.add_argument("--strict", action="store_true", help="Reject non-finite tensors before conversion")
+    parser.add_argument("--expected-frames", type=int, help="Require exactly this many image tensors")
     args = parser.parse_args()
+
+    if args.expected_frames is not None:
+        if args.expected_frames < 1 or len(args.image_bin) != args.expected_frames:
+            parser.error("--expected-frames must be positive and match the number of --image-bin inputs")
 
     frames = []
     for image_bin in args.image_bin:
         image_blob = Path(image_bin).read_bytes()
+        if args.strict:
+            validate_finite_tensor(image_blob)
         frames.append(decode_image_tensor_to_uint8(image_blob))
+
+    stereo = None
+    if args.audio_bin:
+        audio_blob = Path(args.audio_bin).read_bytes()
+        if args.strict:
+            validate_finite_tensor(audio_blob)
+        stereo = decode_audio_tensor_to_stereo_f32(audio_blob)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -331,9 +354,7 @@ def main() -> int:
     else:
         print("skipped mp4: OpenCV not available or failed to initialize encoder")
 
-    if args.audio_bin:
-        audio_blob = Path(args.audio_bin).read_bytes()
-        stereo = decode_audio_tensor_to_stereo_f32(audio_blob)
+    if stereo is not None:
         wav_path = out_dir / f"{args.base_name}.wav"
         write_wav_f32(stereo, wav_path, sample_rate=args.audio_sample_rate)
         print(f"wrote audio: {wav_path}")

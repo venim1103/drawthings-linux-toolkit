@@ -158,7 +158,7 @@ Exit gate: a launchable, identified CUDA executable built from the intended revi
 
 Use the candidate's protobuf and FlatBuffers schemas for candidate requests. Regenerate Python bindings into a revision-specific cache, and retain the old bindings for the old server. The client already accepts a protobuf path and the configuration builder accepts a bindings directory; use those boundaries before adding new machinery.
 
-Run the candidate on loopback and a separate port, such as 7862, with an explicit binary path. Own its PID and stop only that process. The current [canary runner](../tools/run_q6p_canary_once.sh#L1) includes broad process kills tied to port 7861, so it should not be reused unchanged for side-by-side migration tests. Keep insecure/no-TLS operation limited to the intended local test boundary.
+Run the candidate on loopback and a separate port, such as 7862, with an explicit binary path. The updated [canary runner](../tools/run_q6p_canary_once.sh#L1) owns its PID and stops only that process; older revisions included broad process kills tied to port 7861. Keep insecure/no-TLS operation limited to the intended local test boundary. Use `--models-dir` with private writable copies of the selected checkpoints, sidecars, and catalogs: runtime offload preparation can rewrite model storage in place.
 
 Run the smallest meaningful LTX regression set under identical emitted configurations:
 
@@ -395,7 +395,43 @@ bash tools/run_q6p_canary_once.sh \
 
 This only verifies wiring. Select the matched known-good LTX configuration and enforce finite, fully decoded final frames before treating a real run as an acceptance result.
 
-No default runtime has been replaced. U2 generation-request integration and matched LTX regression renders, U3 CPU patch rebase, and all MOSS inference/custom-conversion gates remain pending. The new native prerequisites are opt-in and must be provisioned again after rebuilding a runtime-only devcontainer; see the [builder instructions](../.devcontainer/README.md#optional-native-cuda-builder).
+No default runtime has been replaced. The new native prerequisites are opt-in and must be provisioned again after rebuilding a runtime-only devcontainer; see the [builder instructions](../.devcontainer/README.md#optional-native-cuda-builder).
+
+### U2 Render Results: October 23
+
+Matched requests used the available custom `10_e_v1.5_q6p.ckpt`, its registered Gemma and LTX VAE companions, 256x256 pixels, 9 frames, seed 4242, TCDTrailing (19), 2 steps, guidance 1, shift 3, CPU offload, and weights cache 0. The prompt was the canary's default red sports car on a mountain road at sunset. Old-server requests used the original schema/cache on port 7863; candidate requests used revision-specific bindings on port 7862. Both successful pairs also used `--fread-preferred`.
+
+| Profile | Old Request Time | Candidate Request Time | Observed Result |
+| --- | --- | --- | --- |
+| No LoRA | 192 s | 220 s | All 9 final image tensors byte-identical; finite audio, maximum audio sample difference `8.35e-7` |
+| Locally converted f16 acceleration LoRA, weight 1 | 396 s | 406 s | Both return 9 finite frames and finite audio; frames are not byte-identical |
+
+Times are whole seconds between the server's request-begin and image-processed log messages, including loading and decoding. These sequential cold-process runs are not controlled throughput benchmarks; GPU peak memory was not recorded.
+
+The no-LoRA pair has identical 276-byte configurations, SHA-256 `a3667c366a477174776873b1fea9fff996fac33993ecb92596726a7aa065f573`. At only two steps the image is visibly under-denoised, so this establishes numerical parity, not a no-LoRA quality gate. The LoRA pair has identical 392-byte configurations, SHA-256 `6569f3eeda53651b2b5faeb87b4d33823ebef8e25ab31d2a80bde3db4ff6e472`. Its first frames are visually coherent red cars matching the prompt. Across the 9 frames, raw mean absolute differences range from `0.01593` to `0.01714`, with maximum absolute difference `0.64783`. Audio's maximum sample difference is `0.12509`. These differences are measured, not certified numerical equivalence; within-runtime repeatability and acceptance tolerances remain unresolved.
+
+All final image tensors decode to `[1, 256, 256, 3]`, and all raw image/audio values are finite before clipping or normalization. Streams finish with 9 image payloads and 1 audio payload, and post-generation Echo succeeds. The candidate LoRA output differs from its no-LoRA output. The [media converter](../tools/dt_tensor_to_playable.py) now offers opt-in `--strict` raw finiteness checks and `--expected-frames`; it validates audio before writing any media. Six CPU-only tests cover finite and non-finite raw/zipped tensors, truncated payloads, frame-count rejection, and strict failures before artifact creation:
+
+```bash
+.venv/bin/python -m unittest tools.test_dt_tensor_to_playable -v
+```
+
+Successful raw run directories under `output/`:
+
+- `q6p_canary_upgrade_old_base_fread_20261023T115014Z`
+- `q6p_canary_upgrade_candidate_base_fread_20261023T115502Z`
+- `q6p_canary_upgrade_old_lora_fread_retry_20261023T121121Z`
+- `q6p_canary_upgrade_candidate_lora_fread_20261023T120258Z`
+
+Strictly validated PNG/GIF/MP4/WAV exports are under `output/upgrades/regression-0621d819/{candidate_base,candidate_lora,old_lora}`. These generated artifacts are not committed.
+
+**Storage-layout change:** the first old-server generation run automatically externalized the active custom q6p store before the candidate was run. The original 21,456,027,648-byte SQLite checkpoint is now a 36,331,520-byte SQLite file plus `10_e_v1.5_q6p.ckpt-tensordata` at 21,369,192,448 bytes. This is the offload preparation implemented by upstream `TensorData.makeExternalData`, not deletion of the tensor payload. The resulting SQLite `quick_check` passes, all 5,746 tensor names match the existing f16 source, and both runtimes render from the pair. The rollback snapshot did not copy or hash model payloads, so original payload byte identity is not established and the original single-file layout has not been restored. Keep both files together; compatibility of this layout with the existing CPU utilities is not yet established. The other 17 inventoried model files retain their recorded size/mtime. Catalog hashes and all five original server/launcher/CPU-tool hashes still match the snapshot.
+
+The initial old-server no-LoRA request and the first old-server LoRA request crashed before streamed output, with cuFile errors and a null dereference in `_ccv_nnc_gemm_forw`. Successful runs also emit cuFile warnings. The opt-in canary `--server-fread-preferred` flag is a diagnostic control, not a proven fix or a new default. The old LoRA run succeeded on one retry without changing generation settings. No source patch or CUDA-driver change has been made to conceal this failure.
+
+Further renders were stopped after discovering the active-store migration. `--models-dir` now selects the same directory for server loading, model/LoRA file checks, and config-builder catalog lookup. A dry-run fixture verifies independent staged catalogs, including aliases containing spaces; it starts no server. This option does not copy models or make the legacy default directory read-only. Prepare real private copies, not hardlinks or symlinks, before the next GPU test.
+
+U2 remains incomplete: the registered official q6p control file is absent, the low-bit LoRA pairing has not been rerun, full no-LoRA quality and LoRA numerical/repeatability acceptance remain open, peak memory is unmeasured, and early-load reliability needs investigation. All test-owned servers are stopped and GPU memory returned to 0 MiB. No default binary or catalog was promoted. U3 CPU patch rebase and all MOSS download/inference/custom-conversion gates remain pending.
 
 ## Sources
 

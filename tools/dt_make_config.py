@@ -9,6 +9,7 @@ import flatbuffers
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PY_BINDINGS = WORKSPACE_ROOT / ".cache/dt_flatbuf_py"
+DEFAULT_MODELS_DIR = WORKSPACE_ROOT / "dt-models"
 
 
 def _parse_bool(v: str) -> bool:
@@ -43,7 +44,9 @@ def _optional_string_offset(builder: flatbuffers.Builder, value: str):
     return builder.CreateString(txt)
 
 
-def _resolve_model_name_to_file(model: str) -> tuple[str, str | None]:
+def _resolve_model_name_to_file(
+    model: str, models_dir: Path = DEFAULT_MODELS_DIR
+) -> tuple[str, str | None]:
     """Resolve a custom model display name to its file key when possible.
 
     GenerationConfiguration.model is expected to be a downloadable file key.
@@ -54,7 +57,7 @@ def _resolve_model_name_to_file(model: str) -> tuple[str, str | None]:
     if not query:
         return model, None
 
-    custom_json = WORKSPACE_ROOT / "dt-models" / "custom.json"
+    custom_json = models_dir / "custom.json"
     if not custom_json.exists():
         return model, None
 
@@ -79,12 +82,14 @@ def _resolve_model_name_to_file(model: str) -> tuple[str, str | None]:
     return model, None
 
 
-def _resolve_lora_name_to_file(lora: str) -> tuple[str, str | None]:
+def _resolve_lora_name_to_file(
+    lora: str, models_dir: Path = DEFAULT_MODELS_DIR
+) -> tuple[str, str | None]:
     query = lora.strip()
     if not query:
         return lora, None
 
-    custom_lora_json = WORKSPACE_ROOT / "dt-models" / "custom_lora.json"
+    custom_lora_json = models_dir / "custom_lora.json"
     if not custom_lora_json.exists():
         return lora, None
 
@@ -161,7 +166,7 @@ def _parse_lora_specs(args) -> list[dict]:
         if len(parts) >= 3 and parts[2].strip():
             mode = _parse_lora_mode(parts[2], default_mode)
 
-        resolved_file, resolved_from = _resolve_lora_name_to_file(lora_name)
+        resolved_file, resolved_from = _resolve_lora_name_to_file(lora_name, Path(args.models_dir))
         specs.append(
             {
                 "input": lora_name,
@@ -312,6 +317,7 @@ def build_config(args) -> bytes:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Build Draw Things GenerationConfiguration flatbuffer")
     p.add_argument("--bindings-dir", default=str(DEFAULT_PY_BINDINGS))
+    p.add_argument("--models-dir", default=str(DEFAULT_MODELS_DIR), help="Directory containing model catalogs")
     p.add_argument("--out", required=True, help="Output .bin path")
 
     p.add_argument(
@@ -399,7 +405,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    resolved_model, resolved_from = _resolve_model_name_to_file(args.model)
+    resolved_model, resolved_from = _resolve_model_name_to_file(args.model, Path(args.models_dir))
     if resolved_model != args.model:
         print(f"resolved model alias: {args.model} -> {resolved_model} ({resolved_from})")
         args.model = resolved_model

@@ -7,6 +7,7 @@ GRPC_BIN="${DRAWTHINGS_GRPC_BIN:-drawthings-grpc}"
 PROTO_FILE="$ROOT/draw-things-community/Libraries/GRPC/Models/Sources/imageService/imageService.proto"
 PROTO_CACHE_DIR="$ROOT/.cache/dt_proto"
 BINDINGS_DIR="$ROOT/.cache/dt_flatbuf_py"
+MODELS_DIR="$ROOT/dt-models"
 DRY_RUN=0
 
 MODEL_KEY="10_e_v1_bf16_regen_0_q6p.ckpt"
@@ -24,6 +25,7 @@ REQUIRE_FINAL_OUTPUT=0
 ALLOW_MISSING_MODEL=0
 SERVER_GPU=0
 SERVER_CPU_OFFLOAD=0
+SERVER_FREAD_PREFERRED=0
 SERVER_NO_FLASH_ATTENTION=0
 SERVER_WEIGHTS_CACHE=""
 
@@ -54,9 +56,13 @@ Options:
   --proto <path>            Explicit imageService.proto for the selected server.
   --cache-dir <path>        Directory for generated protobuf bindings.
   --bindings-dir <path>     Generated FlatBuffer bindings for the selected server.
+  --models-dir <path>       Model files and catalogs (default: dt-models).
+                            Servers may rewrite checkpoint storage layouts;
+                            use private copies for upgrade regression tests.
   --dry-run                 Generate config and print the server command only.
   --server-gpu <n>          GPU id passed to server launcher (default: 0).
   --server-cpu-offload      Pass --cpu-offload to server launcher.
+  --server-fread-preferred  Pass --fread-preferred to server launcher.
   --server-no-flash-attention
                             Pass --no-flash-attention to server launcher.
   --server-weights-cache <gib>
@@ -119,6 +125,10 @@ if [[ $# -gt 0 ]]; then
         BINDINGS_DIR="${2:-}"
         shift 2
         ;;
+      --models-dir)
+        MODELS_DIR="${2:-}"
+        shift 2
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
@@ -129,6 +139,10 @@ if [[ $# -gt 0 ]]; then
         ;;
       --server-cpu-offload)
         SERVER_CPU_OFFLOAD=1
+        shift
+        ;;
+      --server-fread-preferred)
+        SERVER_FREAD_PREFERRED=1
         shift
         ;;
       --server-no-flash-attention)
@@ -252,6 +266,12 @@ if [[ ! -f "$PROTO_FILE" || ! -d "$BINDINGS_DIR" || -z "$PROTO_CACHE_DIR" ]]; th
 fi
 CLIENT_SCHEMA_ARGS=(--proto "$PROTO_FILE" --cache-dir "$PROTO_CACHE_DIR")
 
+if [[ ! -d "$MODELS_DIR" ]]; then
+  echo "error: model directory not found: $MODELS_DIR" >&2
+  exit 1
+fi
+MODELS_DIR="$(cd "$MODELS_DIR" && pwd)"
+
 if [[ "$GRPC_BIN" == */* ]]; then
   if [[ ! -x "$GRPC_BIN" ]]; then
     echo "error: gRPC binary is not executable: $GRPC_BIN" >&2
@@ -287,7 +307,7 @@ fi
 if [[ "$ALLOW_MISSING_MODEL" != "1" ]]; then
   case "$MODEL_KEY" in
     *.ckpt|*.safetensors)
-      MODEL_FILE="$ROOT/dt-models/$MODEL_KEY"
+      MODEL_FILE="$MODELS_DIR/$MODEL_KEY"
       if [[ ! -f "$MODEL_FILE" ]]; then
         echo "error: model file not found: $MODEL_FILE" >&2
         echo "hint: use --allow-missing-model to permit fallback-resolution tests" >&2
@@ -299,7 +319,7 @@ fi
 
 resolve_custom_lora_file() {
   local lora_name="$1"
-  local custom_lora_json="$ROOT/dt-models/custom_lora.json"
+  local custom_lora_json="$MODELS_DIR/custom_lora.json"
 
   if [[ -z "$lora_name" || ! -f "$custom_lora_json" ]]; then
     echo "$lora_name"
@@ -345,8 +365,8 @@ PY
 NORMALIZED_LORA_SPECS=()
 if [[ "${#LORA_SPECS[@]}" -gt 0 ]]; then
   for raw_spec in "${LORA_SPECS[@]}"; do
-    spec="${raw_spec//[[:space:]]/}"
-    if [[ -z "$spec" ]]; then
+    spec="$raw_spec"
+    if [[ -z "${spec//[[:space:]]/}" ]]; then
       echo "error: --lora value must not be empty" >&2
       exit 1
     fi
@@ -364,7 +384,7 @@ if [[ "${#LORA_SPECS[@]}" -gt 0 ]]; then
 
     case "$lora_file" in
       *.ckpt|*.safetensors)
-        lora_path="$ROOT/dt-models/$lora_file"
+        lora_path="$MODELS_DIR/$lora_file"
         if [[ ! -f "$lora_path" ]]; then
           echo "error: lora file not found: $lora_path" >&2
           exit 1
@@ -426,8 +446,10 @@ echo "grpc_bin=$GRPC_BIN"
 echo "proto=$PROTO_FILE"
 echo "proto_cache_dir=$PROTO_CACHE_DIR"
 echo "bindings_dir=$BINDINGS_DIR"
+echo "models_dir=$MODELS_DIR"
 echo "server_gpu=$SERVER_GPU"
 echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
+echo "server_fread_preferred=$SERVER_FREAD_PREFERRED"
 echo "server_no_flash_attention=$SERVER_NO_FLASH_ATTENTION"
 echo "server_weights_cache=${SERVER_WEIGHTS_CACHE:-default}"
 echo "sampler=$SAMPLER"
@@ -458,16 +480,20 @@ server_args=(
 if [[ "$SERVER_CPU_OFFLOAD" == "1" ]]; then
   server_args+=(--cpu-offload)
 fi
+if [[ "$SERVER_FREAD_PREFERRED" == "1" ]]; then
+  server_args+=(--fread-preferred)
+fi
 if [[ "$SERVER_NO_FLASH_ATTENTION" == "1" ]]; then
   server_args+=(--no-flash-attention)
 fi
 if [[ -n "$SERVER_WEIGHTS_CACHE" ]]; then
   server_args+=(--weights-cache "$SERVER_WEIGHTS_CACHE")
 fi
-server_args+=("$ROOT/dt-models")
+server_args+=("$MODELS_DIR")
 
 "$PYTHON_BIN" "$ROOT/tools/dt_make_config.py" \
   --bindings-dir "$BINDINGS_DIR" \
+  --models-dir "$MODELS_DIR" \
   --out "$CONFIG_BIN" \
   --model "$MODEL_KEY" \
   --width "$WIDTH" \
