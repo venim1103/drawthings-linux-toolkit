@@ -73,6 +73,31 @@ nvidia-smi
 
 The smoke check requires the configured system CA environment, real CUDA matrix multiplication/convolution, verified Python HTTPS to GitHub/Hugging Face/PyPI, and a verified GitHub `git ls-remote`. Omit `--network` for an offline trust-store/compute check; an offline pass does not establish HTTPS connectivity.
 
-If `/dev/dxg` or the GPU disappears in a future session, check GPU visibility in WSL first with `/usr/lib/wsl/lib/nvidia-smi`. Update WSL and the Windows NVIDIA driver only if that host-side check fails or the installed versions are incompatible. Do not install Linux NVIDIA kernel/display drivers into WSL. Native CUDA compiler and Bazel provisioning belongs to the later dedicated Draw Things builder setup.
+If `/dev/dxg` or the GPU disappears in a future session, check GPU visibility in WSL first with `/usr/lib/wsl/lib/nvidia-smi`. Update WSL and the Windows NVIDIA driver only if that host-side check fails or the installed versions are incompatible. Do not install Linux NVIDIA kernel/display drivers into WSL.
 
 The container engine/build is not accessible from this editor session, so the revised image build and Windows-root export must be confirmed on the host. The existing `.devcontainer/OTHER` examples are reference files and are not part of the active configuration.
+
+## Optional Native CUDA Builder
+
+The runtime image does not include a complete native build environment. Provision it explicitly inside the devcontainer, then build a separate pinned checkout:
+
+```bash
+bash tools/drawthings_update_guard.sh snapshot
+sudo bash .devcontainer/install-build-tools.sh
+bash tools/drawthings_build_candidate.sh build
+```
+
+The [provisioner](install-build-tools.sh) installs Bazel 7.4.1 after checking its published SHA-256, LLVM/Clang and OpenMP, and the CUDA 12.8 development libraries needed by upstream Bazel. It pins development packages to the currently installed CUDA/cuDNN runtime versions and checks that those versions do not change. CUPTI, cuFile linker files, and CUDA profiler headers are build prerequisites; this does not enable GPU Direct Storage or install a Linux driver/kernel module.
+
+The [build helper](../tools/drawthings_build_candidate.sh) requires Swift 6.0.3 and pins community revision `0621d8198f3ed505bb7cefc71b84f8f0e1ce5936`. It refuses changed source or another revision, uses a detached checkout under `output/upgrades`, and never installs the resulting executable. The existing CPU conversion checkout and runtime remain independent.
+
+The helper uses NVCC with the canonical LLVM host compiler path, passes Clang's relaxed template-template matching option for CUTLASS, and points Bazel's Java downloader at the system Java CA store. It keeps TLS verification enabled. Its defaults target the current SM86 GPU with 16 jobs and 8192 MB of build memory; adjust `DT_BUILD_JOBS`, `DT_BUILD_MEMORY_MB`, and `DT_CUDA_COMPUTE_CAPABILITIES` deliberately for other machines.
+
+```bash
+bash tools/drawthings_build_candidate.sh --check
+bash tools/drawthings_build_candidate.sh prepare
+```
+
+`--check` is read-only; `prepare` creates/configures the checkout without compiling. Optional `DRAWTHINGS_CANDIDATE_DIR` and `DRAWTHINGS_BAZEL_ROOT` overrides select the checkout/cache directories. Logs and the successful executable's SHA-256 are written under `output/upgrades`. The binary remains at `output/upgrades/community-0621d819/bazel-bin/Apps/gRPCServerCLI` by default.
+
+These packages are not automatically installed by post-create, so rerun the provisioner after a container rebuild when native compilation is needed. A successful build does not promote the server: candidate schema checks, separate-port LTX regressions, and MOSS validation remain required by the [upgrade plan](../docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md).

@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="$ROOT/.venv/bin/python"
 GRPC_BIN="${DRAWTHINGS_GRPC_BIN:-drawthings-grpc}"
+PROTO_FILE="$ROOT/draw-things-community/Libraries/GRPC/Models/Sources/imageService/imageService.proto"
+PROTO_CACHE_DIR="$ROOT/.cache/dt_proto"
+BINDINGS_DIR="$ROOT/.cache/dt_flatbuf_py"
+DRY_RUN=0
 
 MODEL_KEY="10_e_v1_bf16_regen_0_q6p.ckpt"
 HOST="127.0.0.1:7861"
@@ -47,6 +51,10 @@ Options:
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
   --grpc-bin <path|name>    gRPC server launcher binary
                             (default: DRAWTHINGS_GRPC_BIN or drawthings-grpc).
+  --proto <path>            Explicit imageService.proto for the selected server.
+  --cache-dir <path>        Directory for generated protobuf bindings.
+  --bindings-dir <path>     Generated FlatBuffer bindings for the selected server.
+  --dry-run                 Generate config and print the server command only.
   --server-gpu <n>          GPU id passed to server launcher (default: 0).
   --server-cpu-offload      Pass --cpu-offload to server launcher.
   --server-no-flash-attention
@@ -98,6 +106,22 @@ if [[ $# -gt 0 ]]; then
       --grpc-bin)
         GRPC_BIN="${2:-}"
         shift 2
+        ;;
+      --proto)
+        PROTO_FILE="${2:-}"
+        shift 2
+        ;;
+      --cache-dir)
+        PROTO_CACHE_DIR="${2:-}"
+        shift 2
+        ;;
+      --bindings-dir)
+        BINDINGS_DIR="${2:-}"
+        shift 2
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        shift
         ;;
       --server-gpu)
         SERVER_GPU="${2:-}"
@@ -207,6 +231,26 @@ if [[ -z "$GRPC_BIN" ]]; then
   echo "error: --grpc-bin cannot be empty" >&2
   exit 1
 fi
+
+if [[ "$HOST" =~ ^(\[[^]]+\]|[^:[:space:]]+):([0-9]{1,5})$ && "$HOST" != *[[:space:]]* ]]; then
+  SERVER_ADDRESS="${BASH_REMATCH[1]}"
+  SERVER_PORT="$((10#${BASH_REMATCH[2]}))"
+  SERVER_ADDRESS="${SERVER_ADDRESS#[}"
+  SERVER_ADDRESS="${SERVER_ADDRESS%]}"
+else
+  echo "error: --host must be host:port or [IPv6]:port" >&2
+  exit 1
+fi
+if [[ "$SERVER_PORT" -lt 1 || "$SERVER_PORT" -gt 65535 ]]; then
+  echo "error: --host port must be between 1 and 65535" >&2
+  exit 1
+fi
+
+if [[ ! -f "$PROTO_FILE" || ! -d "$BINDINGS_DIR" || -z "$PROTO_CACHE_DIR" ]]; then
+  echo "error: selected schema or bindings are missing, or cache directory is empty" >&2
+  exit 1
+fi
+CLIENT_SCHEMA_ARGS=(--proto "$PROTO_FILE" --cache-dir "$PROTO_CACHE_DIR")
 
 if [[ "$GRPC_BIN" == */* ]]; then
   if [[ ! -x "$GRPC_BIN" ]]; then
@@ -379,6 +423,9 @@ echo "== q6p canary once =="
 echo "model=$MODEL_KEY"
 echo "host=$HOST"
 echo "grpc_bin=$GRPC_BIN"
+echo "proto=$PROTO_FILE"
+echo "proto_cache_dir=$PROTO_CACHE_DIR"
+echo "bindings_dir=$BINDINGS_DIR"
 echo "server_gpu=$SERVER_GPU"
 echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
 echo "server_no_flash_attention=$SERVER_NO_FLASH_ATTENTION"
@@ -400,12 +447,9 @@ else
 fi
 echo "work_dir=$WORK_DIR"
 
-pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
-pkill -9 -f 'dt_api_client.py .*generate-raw' || true
-
 server_args=(
-  --address 127.0.0.1
-  --port 7861
+  --address "$SERVER_ADDRESS"
+  --port "$SERVER_PORT"
   --gpu "$SERVER_GPU"
   --no-tls
   --model-browser
@@ -422,25 +466,8 @@ if [[ -n "$SERVER_WEIGHTS_CACHE" ]]; then
 fi
 server_args+=("$ROOT/dt-models")
 
-nohup "$GRPC_BIN" "${server_args[@]}" > "$SERVER_LOG" 2>&1 &
-SERVER_PID=$!
-echo "server_pid=$SERVER_PID"
-
-READY=0
-for _ in $(seq 1 200); do
-  if "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" --host "$HOST" echo --name "q6p-canary" >/dev/null 2>&1; then
-    READY=1
-    break
-  fi
-done
-echo "server_ready=$READY"
-if [[ "$READY" != "1" ]]; then
-  pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
-  echo "RESULT=FAIL server did not become ready"
-  exit 1
-fi
-
 "$PYTHON_BIN" "$ROOT/tools/dt_make_config.py" \
+  --bindings-dir "$BINDINGS_DIR" \
   --out "$CONFIG_BIN" \
   --model "$MODEL_KEY" \
   --width "$WIDTH" \
@@ -455,9 +482,64 @@ fi
   --seed "$SEED" \
   "${LORA_ARGS[@]}"
 
+printf 'server_command='
+printf '%q ' "$GRPC_BIN" "${server_args[@]}"
+printf '\n'
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "RESULT=DRY_RUN"
+  exit 0
+fi
+
+"$PYTHON_BIN" - "$SERVER_ADDRESS" "$SERVER_PORT" <<'PY'
+import socket
+import sys
+
+address, port = sys.argv[1], int(sys.argv[2])
+family = socket.AF_INET6 if ":" in address else socket.AF_INET
+with socket.socket(family, socket.SOCK_STREAM) as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listener.bind((address, port))
+    except OSError as error:
+        raise SystemExit(f"error: server endpoint unavailable: {address}:{port}: {error}")
+PY
+
+SERVER_PID=""
+stop_server() {
+  if [[ -n "$SERVER_PID" ]]; then
+    kill -9 "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    SERVER_PID=""
+  fi
+}
+trap stop_server EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+nohup "$GRPC_BIN" "${server_args[@]}" > "$SERVER_LOG" 2>&1 &
+SERVER_PID=$!
+echo "server_pid=$SERVER_PID"
+
+READY=0
+for _ in $(seq 1 200); do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    break
+  fi
+  if "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" --host "$HOST" echo --name "q6p-canary" >/dev/null 2>&1 && kill -0 "$SERVER_PID" 2>/dev/null; then
+    READY=1
+    break
+  fi
+done
+echo "server_ready=$READY"
+if [[ "$READY" != "1" ]]; then
+  echo "RESULT=FAIL server did not become ready"
+  exit 1
+fi
+
 set +e
 if [[ "$NO_TIMEOUT" == "1" ]]; then
   "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
+      "${CLIENT_SCHEMA_ARGS[@]}" \
       --host "$HOST" \
       --max-recv-bytes 134217728 \
       generate-raw \
@@ -472,6 +554,7 @@ if [[ "$NO_TIMEOUT" == "1" ]]; then
 else
   timeout -k 10s "${TIMEOUT_SEC}s" \
     "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
+      "${CLIENT_SCHEMA_ARGS[@]}" \
       --host "$HOST" \
       --max-recv-bytes 134217728 \
       generate-raw \
@@ -485,12 +568,11 @@ else
   CANARY_RC=$?
 fi
 timeout -k 5s 15s \
-  "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" --host "$HOST" echo --name "q6p-canary-post" >/dev/null 2>&1
+  "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" --host "$HOST" echo --name "q6p-canary-post" >/dev/null 2>&1
 POST_ECHO_RC=$?
 set -e
 
-pkill -9 -f 'gRPCServerCLI --address 127.0.0.1 --port 7861' || true
-pkill -9 -f 'dt_api_client.py .*generate-raw' || true
+stop_server
 
 echo "canary_rc=$CANARY_RC"
 echo "post_echo_rc=$POST_ECHO_RC"

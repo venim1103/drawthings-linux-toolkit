@@ -352,7 +352,50 @@ Runtime selection, CPU utility selection, and model registration should be indep
 
 The next implementation action should be U0/U1: establish provenance and a separate pinned CUDA build environment, then validate LTX before downloading and testing the official MOSS set. This avoids making the relatively large custom-conversion task the critical path for initial MOSS support.
 
-What was actually done for this assessment: source/patch inspection, upstream source/release/model metadata research, binary help/fingerprint inspection, hardware/resource queries, shell syntax checks, and snapshot comparisons. No source rebase, dependency resolution, build, patch application, model download, quantization, or GPU inference was performed. Candidate buildability, throughput, VRAM peaks, numerical parity, and image quality remain implementation gates, not claimed results.
+At the time of the initial assessment, work comprised source/patch inspection, upstream source/release/model metadata research, binary help/fingerprint inspection, hardware/resource queries, shell syntax checks, and snapshot comparisons. No source rebase, dependency resolution, build, patch application, model download, quantization, or GPU inference had been performed. Implementation progress is recorded separately below; throughput, VRAM peaks, numerical parity, and image quality remain unverified until their gates pass.
+
+### Implementation Progress: October 23
+
+The [update guard](../tools/drawthings_update_guard.sh) now provides a read-only `snapshot` command. The first baseline is under `output/upgrades/baselines/20261023T092901_649458Z`, including repository heads/status, separate staged and working binary diffs, untracked source, the patch bundle, catalogs, CPU tools, installed server/launcher, schemas, and canary configurations. Model files are inventoried by size/mtime, not copied or fully hashed.
+
+Independent verification passed for all 89 saved-file hashes, all three original dependency/community source states, and the seven active binary/catalog rollback copies. The 18 inventoried model files retain their recorded size/mtime. The actual running container image digest remains unknown; the manifest records the declared image and an unset digest rather than inventing provenance.
+
+The [native provisioner](../.devcontainer/install-build-tools.sh) and [candidate build helper](../tools/drawthings_build_candidate.sh) implement the isolated U1 route. Bazel 7.4.1, Swift 6.0.3, CUDA 12.8, and LLVM/Clang 14 are in use. Existing CUDA/cuDNN runtime package versions are preserved. The candidate remains detached at the pinned community SHA with no legacy CPU patches applied.
+
+Build setup resolved Java CA trust, missing CUDA development components, the CUDA wrapper's host-compiler selection, canonical Clang header paths, and CUTLASS template matching. The CCV and NNC CUDA compatibility targets compile successfully, including the packed row-wise GEMM/dequantization code. The full pinned server build also succeeded, with executable SHA-256 `fd9f2d82119e6d79172a70b4230f79c75933958b78a36b2cd8e4799cfb265b5a`. Compilation alone does not establish packed codec numerical correctness. Subsequent builds default to 16 parallel jobs, overridable with `DT_BUILD_JOBS`.
+
+The candidate's CLI help and runtime library resolution pass. A temporary server on `127.0.0.1:7862` passes Echo and FilesExist RPCs using candidate-only protobuf bindings. Its owned process was stopped afterward and the existing model catalogs remain unchanged; results are saved under `output/upgrades/runtime-0621d819`. Keep the Bazel build tree available for its runtime library/resource layout rather than assuming that copying the executable alone produces a standalone installation.
+
+The rebuilt-container smoke check also passes real PyTorch CUDA matrix multiplication/convolution and verified HTTPS/Git access. It downloads no model weights.
+
+Candidate-only Python bindings are generated under `output/upgrades/schemas/0621d819`, with source hashes and generator versions recorded in its manifest. Stock `flatc` accepts the configuration schema after declaring the SQLite-only `primary` and `indexed` attributes; all fields and defaults remain unchanged. FlatBuffer field and protobuf request round-trips pass, including the 9-frame field and a sampler resolved by name from the generated enum. This fixture checks serialization only, not an inference schedule or image/video quality. Existing `--bindings-dir`, `--proto`, and `--cache-dir` options allow explicit candidate selection without modifying the current client caches.
+
+The [existing LTX canary](../tools/run_q6p_canary_once.sh) now forwards those schema options, binds the requested host/port, rejects occupied endpoints, and cleans up only its own child PID. Broad process-name kills are removed. `--dry-run` writes the configuration and prints the launch command without starting a server or GPU generation. Tests pass for occupied endpoints, failed-start cleanup, unrelated-process survival, IPv6 address parsing, and invalid ports.
+
+```bash
+bash tools/drawthings_update_guard.sh snapshot
+sudo bash .devcontainer/install-build-tools.sh
+bash tools/drawthings_build_candidate.sh --check
+bash tools/drawthings_build_candidate.sh build
+```
+
+Once the candidate binary exists, inspect its isolated canary wiring without rendering:
+
+```bash
+CANDIDATE=output/upgrades/community-0621d819
+bash tools/run_q6p_canary_once.sh \
+	--grpc-bin "$CANDIDATE/bazel-bin/Apps/gRPCServerCLI" \
+	--host 127.0.0.1:7862 --model 10_e_v1.5_q6p.ckpt \
+	--proto "$CANDIDATE/Libraries/GRPC/Models/Sources/imageService/imageService.proto" \
+	--cache-dir output/upgrades/schemas/0621d819 \
+	--bindings-dir output/upgrades/schemas/0621d819/flatbuffers \
+	--server-cpu-offload --server-weights-cache 0 \
+	--require-complete-stream --require-final-output --final-mode --dry-run
+```
+
+This only verifies wiring. Select the matched known-good LTX configuration and enforce finite, fully decoded final frames before treating a real run as an acceptance result.
+
+No default runtime has been replaced. U2 generation-request integration and matched LTX regression renders, U3 CPU patch rebase, and all MOSS inference/custom-conversion gates remain pending. The new native prerequisites are opt-in and must be provisioned again after rebuilding a runtime-only devcontainer; see the [builder instructions](../.devcontainer/README.md#optional-native-cuda-builder).
 
 ## Sources
 
