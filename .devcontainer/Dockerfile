@@ -8,6 +8,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV DRAWTHINGS_IMAGE=docker.io/drawthingsai/draw-things-grpc-server-cli:latest
 ENV DRAWTHINGS_MODEL_DIR=/workspaces/drawthings-linux-toolkit/dt-models
 ENV DRAWTHINGS_PORT=7861
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+    PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH}"
+
+COPY host-ca-certificates.crt install-host-certificates.sh /tmp/drawthings-ca/
+RUN bash /tmp/drawthings-ca/install-host-certificates.sh /tmp/drawthings-ca/host-ca-certificates.crt \
+    && rm -rf /tmp/drawthings-ca
 
 RUN set -eux; \
     apt-get update; \
@@ -15,7 +25,9 @@ RUN set -eux; \
         sudo \
         ca-certificates \
         ca-certificates-java \
+        openssl \
         git \
+        openssh-client \
         curl \
         python3 \
         python3-pip \

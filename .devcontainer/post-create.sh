@@ -19,15 +19,19 @@ GRPCURL_INSTALL_SCRIPT="$WORKSPACE_ROOT/tools/install_grpcurl.sh"
 # Ensure user-local tools are discoverable during setup.
 export PATH="$HOME/.local/bin:$PATH"
 
-# Update CA certificates if a real Zscaler cert is mounted (not an empty placeholder)
-if [ -s /usr/local/share/ca-certificates/ZscalerRootCertificate-2048-SHA256.crt ]; then
-    echo "==> Updating CA certificates (Zscaler)..."
-    sudo update-ca-certificates
-    if command -v update-ca-certificates-java >/dev/null 2>&1; then
-        sudo update-ca-certificates-java || true
-    fi
-    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-    export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
+export CURL_CA_BUNDLE="$SSL_CERT_FILE"
+export NODE_EXTRA_CA_CERTS="$SSL_CERT_FILE"
+export PIP_CERT="$SSL_CERT_FILE"
+if [[ -d /usr/lib/wsl/lib ]]; then
+    export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+HOST_CA_BUNDLE="$WORKSPACE_ROOT/.devcontainer/host-ca-certificates.crt"
+if [[ -s "$HOST_CA_BUNDLE" ]]; then
+    echo "==> Installing exported host certificates..."
+    sudo -n bash "$WORKSPACE_ROOT/.devcontainer/install-host-certificates.sh" "$HOST_CA_BUNDLE"
 fi
 
 echo "==> Verifying libxml2 runtime availability..."
@@ -160,6 +164,9 @@ fi
 echo "==> Creating Draw Things model cache directory..."
 mkdir -p "$DRAWTHINGS_MODEL_DIR"
 
+echo "==> Verifying HTTPS trust and CUDA computation..."
+"$VENV_DIR/bin/python" "$WORKSPACE_ROOT/.devcontainer/smoke.py" --network
+
 echo "==> Applying Draw Things quantization patch bundle..."
 if [[ -x "$QUANT_PATCH_SCRIPT" ]]; then
     "$QUANT_PATCH_SCRIPT" "$WORKSPACE_ROOT"
@@ -240,6 +247,7 @@ export DRAWTHINGS_WORKSPACE_ROOT="$WORKSPACE_ROOT"
 export DRAWTHINGS_ADDRESS="127.0.0.1"
 export DRAWTHINGS_PORT="7861"
 export DRAWTHINGS_GPU="0"
+export LD_LIBRARY_PATH="/usr/lib/wsl/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 export PATH="$HOME/.local/bin:$VENV_DIR/bin:\$PATH"
 # Starts gRPCServerCLI with stable local defaults and DRAWTHINGS_MODEL_DIR.
 alias drawthings-start='drawthings-grpc'

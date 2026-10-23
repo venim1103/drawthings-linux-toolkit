@@ -30,5 +30,9 @@ ComfyUI/input/
 # Optional local binaries
 tools/grpcurl
 
+# Host-specific trust material generated before devcontainer builds
+.devcontainer/host-ca-certificates.crt
+.devcontainer/host-ca-certificates.crt.*
+
 # Local AI scratch workspace
 ai/

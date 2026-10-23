@@ -1,5 +1,9 @@
 {
   "name": "Media AI Development",
+  "initializeCommand": [
+    "bash",
+    "${localWorkspaceFolder}/.devcontainer/prepare-build.sh"
+  ],
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".",
@@ -23,14 +27,12 @@
     "--env",
     "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
   ],
-  "initializeCommand": "mkdir -p /tmp/devcontainer-certs && (cp /etc/ssl/certs/ZscalerRootCertificate-2048-SHA256.pem /tmp/devcontainer-certs/ZscalerRootCertificate-2048-SHA256.crt 2>/dev/null || touch /tmp/devcontainer-certs/ZscalerRootCertificate-2048-SHA256.crt)",
-  "mounts": [
-    "source=/tmp/devcontainer-certs/ZscalerRootCertificate-2048-SHA256.crt,target=/usr/local/share/ca-certificates/ZscalerRootCertificate-2048-SHA256.crt,type=bind,readonly"
-  ],
   "containerEnv": {
     "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
     "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
     "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+    "NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/ca-certificates.crt",
+    "PIP_CERT": "/etc/ssl/certs/ca-certificates.crt",
     "DRAWTHINGS_MODEL_DIR": "/workspaces/drawthings-linux-toolkit/dt-models",
     "DRAWTHINGS_REPO_URL": "https://github.com/drawthingsai/draw-things-community.git",
     "DRAWTHINGS_REPO_REF": "9f3f04b7a0729a50384caf58179bed592044d64d",
