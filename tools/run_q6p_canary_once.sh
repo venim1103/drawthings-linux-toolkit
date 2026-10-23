@@ -28,6 +28,7 @@ SERVER_CPU_OFFLOAD=0
 SERVER_FREAD_PREFERRED=0
 SERVER_NO_FLASH_ATTENTION=0
 SERVER_WEIGHTS_CACHE=""
+GPU_METRICS=0
 
 WIDTH=256
 HEIGHT=256
@@ -67,6 +68,8 @@ Options:
                             Pass --no-flash-attention to server launcher.
   --server-weights-cache <gib>
                             Pass --weights-cache <gib> to server launcher.
+  --gpu-metrics             Sample whole-device memory/utilization every 500 ms into
+                            gpu.csv; requires nvidia-smi.
   --width <n>               Pixel width for request config (default: 256).
   --height <n>              Pixel height for request config (default: 256).
   --steps <n>               Sampling steps for request config (default: 4).
@@ -95,6 +98,7 @@ Options:
 
 Outputs:
   output/q6p_canary_<tag>/{config.bin,client.log,server.log}
+  With --gpu-metrics: gpu.csv and gpu-monitor.log in the same directory.
 EOF
 }
 
@@ -152,6 +156,10 @@ if [[ $# -gt 0 ]]; then
       --server-weights-cache)
         SERVER_WEIGHTS_CACHE="${2:-}"
         shift 2
+        ;;
+      --gpu-metrics)
+        GPU_METRICS=1
+        shift
         ;;
       --width)
         WIDTH="${2:-}"
@@ -452,6 +460,7 @@ echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
 echo "server_fread_preferred=$SERVER_FREAD_PREFERRED"
 echo "server_no_flash_attention=$SERVER_NO_FLASH_ATTENTION"
 echo "server_weights_cache=${SERVER_WEIGHTS_CACHE:-default}"
+echo "gpu_metrics_enabled=$GPU_METRICS"
 echo "sampler=$SAMPLER"
 echo "final_mode=$FINAL_MODE"
 if [[ "$NO_TIMEOUT" == "1" ]]; then
@@ -531,16 +540,33 @@ with socket.socket(family, socket.SOCK_STREAM) as listener:
 PY
 
 SERVER_PID=""
+GPU_MONITOR_PID=""
 stop_server() {
   if [[ -n "$SERVER_PID" ]]; then
     kill -9 "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
     SERVER_PID=""
   fi
+  if [[ -n "$GPU_MONITOR_PID" ]]; then
+    kill "$GPU_MONITOR_PID" 2>/dev/null || true
+    wait "$GPU_MONITOR_PID" 2>/dev/null || true
+    GPU_MONITOR_PID=""
+  fi
 }
 trap stop_server EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [[ "$GPU_METRICS" == "1" ]]; then
+  GPU_QUERY="timestamp,index,memory.used,utilization.gpu,temperature.gpu,power.draw"
+  nvidia-smi --id="$SERVER_GPU" --query-gpu="$GPU_QUERY" --format=csv,nounits \
+    > "$WORK_DIR/gpu.csv"
+  nvidia-smi --id="$SERVER_GPU" --query-gpu="$GPU_QUERY" --format=csv,noheader,nounits \
+    --loop-ms=500 >> "$WORK_DIR/gpu.csv" 2> "$WORK_DIR/gpu-monitor.log" &
+  GPU_MONITOR_PID=$!
+  echo "gpu_monitor_pid=$GPU_MONITOR_PID"
+  echo "gpu_metrics=$WORK_DIR/gpu.csv"
+fi
 
 nohup "$GRPC_BIN" "${server_args[@]}" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!

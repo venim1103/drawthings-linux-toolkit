@@ -431,7 +431,46 @@ The initial old-server no-LoRA request and the first old-server LoRA request cra
 
 Further renders were stopped after discovering the active-store migration. `--models-dir` now selects the same directory for server loading, model/LoRA file checks, and config-builder catalog lookup. A dry-run fixture verifies independent staged catalogs, including aliases containing spaces; it starts no server. This option does not copy models or make the legacy default directory read-only. Prepare real private copies, not hardlinks or symlinks, before the next GPU test.
 
-U2 remains incomplete: the registered official q6p control file is absent, the low-bit LoRA pairing has not been rerun, full no-LoRA quality and LoRA numerical/repeatability acceptance remain open, peak memory is unmeasured, and early-load reliability needs investigation. All test-owned servers are stopped and GPU memory returned to 0 MiB. No default binary or catalog was promoted. U3 CPU patch rebase and all MOSS download/inference/custom-conversion gates remain pending.
+### U2 Private-Store Low-Bit Follow-Up: October 23
+
+GPU tests resumed using `output/upgrades/models-ltx-0621d819-20261023`, containing private writable copies of both catalogs, the split q6p model, the split Gemma encoder, the LTX VAE, and the locally converted f16/q4p LoRAs. The nine files were copied with `cp --reflink=auto --preserve=mode,timestamps`, not hardlinked or symlinked. Full source/copy SHA-256 matches and independent file identities were verified before inference. The manifest is `source.sha256` in the private directory. After the old/candidate q4p runs, all nine active files and all nine staged copies still match that manifest. This protects the already externalized layout; it does not establish the original single-file model's byte identity.
+
+The canary's opt-in `--gpu-metrics` records timestamp, device index, memory used, GPU utilization, temperature, and power in `gpu.csv` every 500 ms. These are sampled **whole-device** readings, not exact allocator/process peaks, and can include unrelated workloads. The monitor is owned and reaped with the server; dry-run starts no monitor. Missing/failed telemetry setup aborts before server launch. Failed-start cleanup and successful-run cleanup were checked.
+
+The matched profile is unchanged from the earlier LoRA comparison except for selecting the locally converted **q4p** LoRA at weight 1 and the private model directory. Both successful configurations are 392 bytes, SHA-256 `4496c0882c9140ccf7c1f0f4198a380b7842f0d9454a1241792c46ad60721492`.
+
+| Runtime | Request Time | Sampled Device Peak | Samples | Maximum GPU Temperature | Result |
+| --- | --- | --- | --- | --- | --- |
+| Installed | 437 s | 7,007 MiB | 868 | 60 C | 9 finite frames and finite audio; complete stream and post-Echo pass |
+| Candidate, unchanged retry | 394 s | 7,007 MiB | 785 | 61 C | 9 finite frames and finite audio; complete stream and post-Echo pass |
+
+All nine final image tensors are byte-identical between these two runs and decode to `[1, 256, 256, 3]`. Audio's mean absolute difference is `3.36e-7`, with maximum absolute difference `2.24e-6`. Raw finiteness was checked before normalization. These sequential runs are not controlled performance benchmarks, and this result concerns palettized `q4p`, not packed 4-bit S / `i4x`.
+
+The **first candidate attempt failed** before any streamed response, with `UNAVAILABLE: Socket closed`, signal 11, and a null dereference at `_ccv_nnc_gemm_forw + 54`. Its post-Echo failed. An unchanged retry succeeded; this does not resolve the startup reliability gate. cuFile warnings occur in both attempts, and the warning path has an mmap/copy fallback, so those warnings alone do not establish the crash cause. All old/q4p candidate server and monitor PIDs were confirmed reaped after these runs.
+
+Disassembly of the pinned candidate identifies the fault at ELF address `0x11591b6`: `mov (%r12),%ebp`, with `r12 = 0`. The function first loads `inputs[0]` into `r12`; this is a null input-tensor object, before matrix setup or the packed-weight branch, not evidence of a packed arithmetic-kernel failure. The owning source is CCV's `lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu`. The graph/caller that supplied the null input still needs identification; no crash-suppression patch has been applied.
+
+Strict PNG/GIF/MP4/WAV exports are under `output/upgrades/regression-0621d819/{old_q4plora,candidate_q4plora}`. The inspected first frames are coherent, identical red-car images matching the prompt. This is a small canary, not a general temporal-quality assessment.
+
+Raw run directories under `output/`:
+
+- `q6p_canary_upgrade_staged_old_q4plora_20261023T131742Z`
+- `q6p_canary_upgrade_staged_candidate_q4plora_20261023T132616Z` (failed)
+- `q6p_canary_upgrade_staged_candidate_q4plora_retry_20261023T133003Z`
+
+The registered official control `ltx_2.3_22b_distilled_1.1_q6p.ckpt` is still absent. The pinned model zoo records SHA-256 `f7c804dd0e4ae14af2ff200fc96b2848b2967f7595bac830bf270ea39b47a611`. Metadata-only HEAD probes returned 404 from `models.drawthings.ai` and 403 from `static.libnnc.org`; a public Hugging Face model search for author `drawthingsai` and search term `ltx` returned no results. The pinned `MediaGenerationEnvironment+Ensure.swift` confirms `https://static.libnnc.org/<filename>` as the model download route. A ranged GET there also returned 403; no model response body was read. These probes do not prove that every mirror is unavailable. No weights were downloaded or substituted for the official control.
+
+An attempted candidate f16 repeat under `q6p_canary_upgrade_staged_candidate_f16lora_repeat_20261023T134622Z` was invalidated by editing the executing shell harness: Bash later reported a syntax error and exited 2, despite the on-disk script passing `bash -n`. Both owned processes were reaped. Exclude this interrupted attempt from runtime reliability and numerical comparisons. Freeze shell-script contents until their processes exit; documentation edits do not affect the running harness.
+
+### U2 Candidate f16 Repeatability Follow-Up: October 23
+
+The uninterrupted repeat is `output/q6p_canary_upgrade_staged_candidate_f16lora_repeat_retry_20261023T135528Z`. It uses the private stores and the same 392-byte configuration as the earlier candidate f16 run, SHA-256 `6569f3eeda53651b2b5faeb87b4d33823ebef8e25ab31d2a80bde3db4ff6e472`. It returned 9 finite `[1, 256, 256, 3]` image tensors and finite audio, completed the stream, and passed post-generation Echo. Request time was 460 s; 916 telemetry samples recorded a 7,007 MiB whole-device peak and maximum temperature 61 C. This is not a controlled throughput benchmark.
+
+All nine image tensors are byte-identical to the earlier candidate f16 run. Within-candidate audio mean absolute difference is `5.11e-7`, maximum `6.85e-6`. Against the earlier installed-server f16 run, image mean absolute differences remain `0.01593` to `0.01714`, maximum `0.64783`; audio maximum difference is `0.12509`. These two candidate runs therefore establish exact image repeatability for this one seed/profile, but do not explain or accept the cross-runtime f16 difference. Installed-server repeatability and numerical acceptance tolerances remain open.
+
+After the final repeat, all nine active files and all nine staged copies again matched the pre-render SHA-256 manifest, and the final server/monitor PIDs were confirmed reaped. Six tensor-validator tests, shell syntax/help checks, and the documentation diff check pass.
+
+U2 remains incomplete: full no-LoRA quality, the official control, cross-runtime f16 LoRA numerical acceptance, and early-load reliability remain open. No default binary or catalog was promoted. U3 CPU patch rebase and all MOSS download/inference/custom-conversion gates remain pending. The next reliability investigation should identify the graph/caller supplying GEMM's null first input; the successful retry is not a fix.
 
 ## Sources
 
