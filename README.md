@@ -18,6 +18,8 @@ Details and examples are in `PIPELINE.md`.
 - `CUSTOM_MODEL_CONVERTER_FINDINGS_2026-07-09.md` - validated root-cause/fix history.
 - `REPO_MIGRATION_GUIDE.md` - migration/sync guidance.
 - `DRAW_THINGS_PATCH/README.md` - patch workflow for Draw Things source updates.
+- `docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md` - CUDA runtime upgrade and MOSS-Image integration plan.
+- `docs/WEELLM_HYBRID_TOOLING_PLAN_2026-10-24.md` - WeeLLM comparison and hybrid conversion/oracle tooling recipe.
 
 ## Repository layout
 
