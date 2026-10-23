@@ -1,0 +1,390 @@
+# Community Upgrade and MOSS Image Plan
+
+Assessment date: 2026-10-23. This is an analysis and implementation plan, not an executed upgrade.
+
+## 1. Recommendation
+
+Upgrade the CUDA inference runtime in an isolated candidate checkout, preserve the working CPU conversion toolchain, and validate existing LTX checkpoints before introducing MOSS. Start MOSS with the official Draw Things conversions of both Base and SFT. Custom MOSS conversion and quantization should be a subsequent milestone.
+
+The main findings change the scope substantially:
+
+- Current upstream already implements MOSS inference, Base/SFT registrations, mixed-precision model builders, and LoRA import. We do not need to implement the architecture from scratch.
+- The latest published server release explicitly adds CUDA 4-bit S support, but predates MOSS integration. Pulling the current Docker `latest` is not sufficient to obtain MOSS support.
+- Our `q4p` workflow is not the new `i4x` / 4-bit S workflow.
+- The generic upstream model importer still does not implement MOSS import. Running an official conversion and converting arbitrary MOSS weights are different deliverables.
+- Our local SwiftPM build is a CPU utility build. Updating it does not update the CUDA server installed in the container.
+- A blanket replay of the old patch bundle would restore obsolete dependency pins and omit newly required LLM sources. Rebase by purpose, not by whole-file snapshot.
+
+The first useful outcome is a reproducibly pinned CUDA server that preserves LTX behavior and renders official MOSS Base and SFT checkpoints. It should not depend on completing a custom MOSS converter first.
+
+## 2. Verified Baseline
+
+| Surface | Observed state |
+| --- | --- |
+| Toolkit worktree before this report | Clean, on `main` |
+| Community source HEAD | `9f3f04b7a0729a50384caf58179bed592044d64d`, 2026-05-18 |
+| Community local changes | 16 modified tracked files and one new activation helper |
+| Active s4nnc checkout | `c91108d94ebadc53b7e782e90c51e48c1162c4de`, 2026-04-30, locally patched |
+| Active CCV checkout | `0b3bb15153c19f120a9e41f842c26e6ab6c09ece`, 2026-04-30, locally patched |
+| Managed patch files | 17 community files, 2 s4nnc files, 6 CCV files |
+| Snapshot consistency check | All 25 snapshot/source pairs are byte-identical |
+| Active shell syntax check | All 20 active shell/manifest files pass `bash -n` |
+| Local conversion binaries | Converter built July 13; quantizer July 23; LoRA converter July 16 |
+| Inference executable | `/usr/local/bin/gRPCServerCLI`, invoked through the container launcher by default |
+| Installed server SHA-256 | `5241dff6220e4f6fbcc7be7cc500b5e0df5f5331ffe30203d778e9c6f1f176ea` |
+| Installed Swift | 6.0.3, Linux x86_64 |
+| GPU | NVIDIA RTX A3000 Laptop, 12,288 MiB, SM86, driver 595.95 |
+| Container-visible RAM | About 29 GiB total, 24 GiB available at inspection; 8 GiB swap |
+| Container-visible free disk | About 524 GiB; Windows host physical free space was not established |
+| Native CUDA build prerequisites | Neither `bazel` nor `nvcc` is on `PATH` |
+| Secure GitHub access from Git | Certificate verification fails, including with the system CA bundle explicitly selected |
+
+The installed server has a reproducible-build timestamp of 2000-01-01, so its modification time cannot identify its release. A string scan found a Qwen3.5 encoder filename but no MOSS model registrations. This is a clue, not a substitute for a runtime capability test or build provenance.
+
+The source checkout and installed runtime must be tracked independently. The current [launcher definition](../.devcontainer/Dockerfile#L1) resolves the server from `PATH`, while conversion wrappers resolve local SwiftPM products.
+
+## 3. Upstream Target and Release Gap
+
+The assessed upstream candidate is [0621d8198f3ed505bb7cefc71b84f8f0e1ce5936][upstream-head], committed 2026-10-22. GitHub's comparison reports it is 320 commits ahead of our community HEAD, with our HEAD as the merge base.
+
+Its relevant dependency pins are:
+
+| Dependency | Candidate revision |
+| --- | --- |
+| s4nnc | `b5476a77e7f67f12729872e4b9f1a649b3cd3df0` |
+| CCV | `69b1ed1f4e281520c29cd4b45b93c6fcdde8d2e8` |
+| Bazel | 7.4.1 |
+
+The Linux build still uses WORKSPACE dependencies: the candidate disables Bzlmod and loads s4nnc from [WORKSPACE.linux][upstream-workspace]. Updating only the SwiftPM lockfile would not update a Bazel-built runtime.
+
+Important chronology:
+
+1. [v26.1014.0][server-release] was published October 15. Its notes explicitly say "Support 4-bit S variant on CUDA."
+2. Docker Hub's public `latest` was also last pushed October 15. The observed Linux/amd64 image digest is `sha256:71cb9882ab60deb8b5e63f1c6b0fb14deb71f21bb4d15c416b77f7b0b3352873`. This is the registry observation, not a verified digest of the running devcontainer.
+3. [a32aa0bb][moss-initial] added MOSS inference on October 20.
+4. [6c1dd093][moss-followup] added the related MOSS model registrations and LoRA import later on October 20.
+
+Therefore, use a source-built, pinned post-MOSS candidate now, or a later packaged release whose provenance actually includes those commits. Do not equate `latest`, a current source tree, and the active executable.
+
+The candidate's Linux WORKSPACE references a CUDA 12.8.1 / Swift 6.0.3 / Ubuntu 22.04 builder image. Its README still contains older CUDA 12.4 examples. Follow the pinned build configuration and verify the actual CUDA/cuDNN/compiler versions rather than copying the old example blindly. A Swift major-version upgrade is not established as necessary by this assessment.
+
+## 4. What 4-bit S Means Here
+
+| Name | Meaning in this stack | Consequence |
+| --- | --- | --- |
+| `q4p` | 4-bit palettization | Existing toolkit option; not interchangeable with 4-bit S |
+| `q6p`, `q8p` | Palettized formats | Preserve as regression controls |
+| `i8x` | Row-wise integer format, exposed as 8-bit S | Distinct storage and compute path |
+| `i4x` | Published filename convention for packed 4-bit S weights | s4nnc represents the Q4_K format through `.i8x(.q4k)`, not a new `.i4x` codec constant |
+| `i5x` encoder artifact | Published Qwen3.5 companion checkpoint | Use the official encoder artifact initially; do not apply denoiser quantization rules to it |
+
+The new [s4nnc store implementation][upstream-store] supports packed row-wise formats, optional Hadamard rotation, importance-matrix inputs, external data, and trailer stores. Its universal JIT decoder dispatches on encoded identifiers. Consequently, the absence of an explicit `i4x` spelling in a model's codec list is not proof that the model cannot load 4-bit S weights.
+
+The pinned [CCV CUDA GEMM implementation][upstream-cuda-gemm] has a packed row-wise path. It can decode packed weights into row-wise int8 workspace, apply the appropriate activation rotation, and use a supported GEMM path; a more general dense decode/cuBLAS path also exists. This is concrete CUDA implementation evidence, but not a benchmark of our GPU.
+
+Do not promise native INT4 arithmetic everywhere, a fourfold peak-memory reduction, or a speedup based on the filename alone. Validate loading, numerical correctness, temporary workspace, and latency on SM86.
+
+The stock candidate [standalone quantizer][upstream-quantizer] still lacks our `--target-codec` and LTX trace options. Its LTX cases still terminate with `fatalError()`. Its MOSS policy preserves original FP32 tensors and otherwise produces a model-specific q8p output; it is not a general CLI for producing the published `i4x` variants.
+
+## 5. Patch Disposition
+
+The [manifest](../DRAW_THINGS_PATCH/patches/manifest.sh#L1) is an accurate inventory of today's working sources, but not a declaration that every patch remains appropriate upstream.
+
+| Patch purpose | Recommended treatment |
+| --- | --- |
+| April CCV/s4nnc pins and old lockfile | Do not carry into the candidate runtime. Use its matched dependency revisions. |
+| SwiftPM converter/quantizer/LoRA products | Retain or replace with the existing Bazel targets. They are not declared as products in the candidate SwiftPM manifest. |
+| LLM target restricted to two source files | Remove this restriction in a modernized build. MOSS needs Qwen3.5 sources and their dependencies; preserve upstream's expanded module graph. |
+| LTX model detection and raw import path | Preserve until replaced by a demonstrated equivalent. Generic upstream LTX import is still incomplete. |
+| CPU rotary permutation and QK-norm mapping fixes | Rebase narrowly against the new mapping API, then prove value/rank parity. Do not assume a clean patch application proves correctness. |
+| BF16 aggregate embeddings and F32/rank repairs | Preserve the established LTX serialization contract. Retire repairs only when converter-native output passes the same checks. |
+| Forced codec options and LTX quantization policy | Preserve the LTX CLI contract and precision safeguards, but keep them model-specific. A generic forced FP16 path must not bypass MOSS's FP32 preservation. |
+| Linux CoreML/ImageIO/NetService guards and ZIP integration | Port only the guards still needed by the selected build route. Do not replace newer files with old platform stubs. |
+| Activation helper and HiDream type disambiguations | Candidates for retirement after compilation against the new s4nnc API. Check for duplicate or changed upstream APIs first. |
+| LTX tracing | Optional diagnostic layer, disabled by default. It is not a MOSS prerequisite. |
+| CCV reshape/view/parameter/backend assertion suppression | Do not replay into the CUDA server. Reassess each CPU-conversion workaround with a minimal reproducer and correct the caller where possible. |
+| Global SQLite `synchronous=OFF` | Keep out of the runtime baseline. Any retained fast-write mode should be explicit, limited to regenerable conversion outputs, and paired with validation and atomic promotion. |
+
+Two implementation hazards deserve explicit gates:
+
+- [dt_quantize.sh](../tools/dt_quantize.sh#L1) accepts a model-version option but still writes LTX companions, LTX metadata, and invokes LTX norm repairs. It must not become the MOSS entrypoint merely by passing a different version.
+- [dt_convert.sh](../tools/dt_convert.sh#L1) treats preflight and checkpoint validation failures as warnings. A new custom MOSS path should fail closed on unsupported architecture, missing tensors, or precision violations.
+
+Historical findings contain retractions. Preserve the final LTX lessons, especially the frame-count correction in [section 30](../CUSTOM_MODEL_CONVERTER_FINDINGS_2026-07-09.md#L1764), rather than reviving earlier precision diagnoses. Older iOS compatibility conclusions are version-specific and are not evidence about the new CUDA 4-bit S path.
+
+## 6. Upgrade Guard Improvements
+
+The existing strict update workflow is useful, but insufficient as the sole migration acceptance test:
+
+- [Patch verification](../tools/apply_drawthings_quant_patch.sh#L1) compares `git status --porcelain` before and after the second application. File contents can change while the same paths remain marked modified. Add content-based comparison, including new files, and distinguish an already-applied patch from a conflicting one.
+- The 3-way fallback can modify the index/worktree before returning failure. Use an isolated disposable candidate; check the already-applied case before attempting a mutating merge and explicitly detect conflict state.
+- [Patch regeneration](../tools/generate_drawthings_quant_patches.sh#L1) uses ordinary `git diff`, which omits staged changes. A successful 3-way apply may stage changes. Regeneration must account for both index and worktree changes relative to the recorded base, plus untracked manifest files.
+- The safety script's default build is only the CPU quantizer. That does not prove the CUDA server, protocol, model loading, or MOSS works.
+- Record the community/dependency revisions, build route, binary hashes, container digest, schema hashes, and model identities together. The current revision-only baseline is not enough to reproduce a mixed runtime/tool installation.
+
+Do not run the default snapshot-fallback apply mode against a newly updated tree. Do not regenerate the production bundle until the candidate changes have been reviewed and validated. Keep the existing bundle usable for rollback while producing the replacement.
+
+## 7. Staged Upgrade
+
+### U0. Freeze the working installation
+
+Preserve the current source diffs, dependency diffs, untracked activation helper, patch snapshots, conversion binaries, runtime binary/image identity, model catalogs, and exact known-good request configurations. Keep original checkpoints and any sidecars protected from in-place conversion or repair experiments.
+
+Use separate build/cache/output directories for the candidate. Back up catalogs rather than testing alias registration against the production copies. Record model size, storage layout, critical tensor metadata, and checksums from trusted manifests; hash large files only where necessary.
+
+Current cheap gates already passed: active shell syntax, all 25 snapshot comparisons, installed-server help, and the local quantizer's CLI contract. A fresh GPU baseline has not been run in this assessment.
+
+Exit gate: a recoverable old installation and an unambiguous baseline manifest. No requirement to overwrite it or create a new Git branch.
+
+### U1. Build one pinned CUDA candidate
+
+Fix the trusted CA chain first. The devcontainer already has a corporate-root-certificate mounting/update mechanism; verify the actual certificate and trust configuration. Do not disable TLS verification to make fetches succeed.
+
+Create a separate checkout at the assessed upstream SHA. Provision Bazelisk/Bazel 7.4.1, a matching CUDA development toolchain, cuDNN headers/libraries, and the Linux build prerequisites there or in a dedicated builder image. Keep the current runtime container available for rollback. Limit build concurrency for the approximately 29 GiB RAM budget.
+
+Prefer upstream's Bazel route for the GPU runtime. After configuring the candidate's Linux setup, the documented build target is:
+
+```bash
+bazel build //Apps:gRPCServerCLI --spawn_strategy=local --compilation_mode=opt
+```
+
+Include SM86 in the CUDA architecture configuration and verify the effective configuration. Do not assume a successful CPU SwiftPM build contains CUDA kernels. Do not apply the CPU CCV bundle to this build.
+
+Keep upstream's newer DiffusionMappings/LLM/tokenizer/generated-source structure. Pin source, dependencies, and builder identity. Confirm `--help`, dynamic-library resolution, CUDA device discovery, and explicit executable selection before loading weights.
+
+Exit gate: a launchable, identified CUDA executable built from the intended revision. A successful compile alone does not certify inference.
+
+### U2. Match the wire format and preserve LTX
+
+Use the candidate's protobuf and FlatBuffers schemas for candidate requests. Regenerate Python bindings into a revision-specific cache, and retain the old bindings for the old server. The client already accepts a protobuf path and the configuration builder accepts a bindings directory; use those boundaries before adding new machinery.
+
+Run the candidate on loopback and a separate port, such as 7862, with an explicit binary path. Own its PID and stop only that process. The current [canary runner](../tools/run_q6p_canary_once.sh#L1) includes broad process kills tied to port 7861, so it should not be reused unchanged for side-by-side migration tests. Keep insecure/no-TLS operation limited to the intended local test boundary.
+
+Run the smallest meaningful LTX regression set under identical emitted configurations:
+
+1. Known-good official LTX q6p, without LoRA.
+2. Known-good custom LTX q6p, without LoRA.
+3. Known-good base plus the validated distilled LoRA, using its established TCDTrailing schedule and 9 frames.
+4. A previously validated low-bit LoRA pairing if that remains part of the supported workflow.
+
+LTX video tests must preserve the established valid temporal geometry: start with 9 frames, not the historical failing 5-frame case. Compare emitted configurations before interpreting model differences. Distillation schedules belong to their specific LoRAs, not to MOSS SFT.
+
+Require a completed stream and finite final decoded output, not merely a preview, signpost, or zero exit status. [The raw client](../tools/dt_api_client.py#L150) can return success after preview-only output, and response caps can end a stream early. An acceptance runner must enforce final payload, complete chunk assembly, expected dimensions, and finite values itself.
+
+Exit gate: existing LTX workflows remain coherent on the candidate, with measured memory/latency and a tested binary-selection rollback.
+
+### U3. Rebase and consolidate CPU utilities
+
+Use the patch disposition table to port the remaining necessary conversion/quantization changes. Choose deliberately between preserving a minimal Linux CPU SwiftPM layer and moving utility wrappers to the existing Bazel targets. Do not attempt both build-system migrations at once merely for completeness.
+
+Keep old utility binaries pinned and accessible until replacements pass:
+
+- CLI argument compatibility, including forced codecs and LoRA conversion.
+- Small CPU permutation fixtures, QK-norm rank/dtype checks, and BF16 embedding preservation.
+- Strict tensor coverage and round-trip checks.
+- Conversion of the official LTX source as a positive control, followed by custom conversion through the same path.
+- A matched LTX canary using the new artifacts on the validated new runtime.
+
+Regenerate the reviewed replacement patch bundle against its actual base. Run strict application and content-based idempotence on a fresh candidate before making it the default.
+
+Exit gate: a reproducible replacement utility stack. MOSS official-checkpoint testing can proceed after U2 and need not wait for custom MOSS conversion.
+
+## 8. MOSS Architecture and Existing Integration
+
+Base and SFT use the same architecture and inference pipeline. SFT is a separate full checkpoint, not an acceleration LoRA or a different model version.
+
+| Component | Verified contract |
+| --- | --- |
+| Denoiser | Approximately 5B parameters; 42 layers; width 3072; 24 heads of width 128; FFN width 8192 |
+| Text features | Qwen3.5-9B, hidden width 4096; hybrid linear/full attention; MOSS has a two-block text refiner |
+| Image latent | 32 VAE channels; 2x2 packing produces 128 values per image token |
+| Rotary positions | Four axes, with centered spatial coordinates and prompt-length-dependent positions |
+| Precision | FP32 residual/modulation computation and an FP32-sensitive second timestep projection in the Draw Things implementation |
+| Guidance | Separate conditional/unconditional forwards; the unconditional branch skips layer 22 |
+| Variant identity | `moss_image` for both Base and SFT; separate checkpoint filenames |
+
+The [MOSS model builders][upstream-moss] and [runtime dispatch][upstream-unet] already implement the main architecture, LoRA variants, and layer-22 skipping. Skipping is hardcoded in the runtime using zero-length rotary inputs, not a missing client configuration field. Exercise that zero-length CUDA path explicitly during validation rather than replacing it with old assertion-suppression patches.
+
+The candidate server initializes the Qwen3.5 tokenizer from its own vocabulary and merge resources. Reusing the old Gemma or Qwen3 tokenizer is not valid. Model registration alone cannot repair missing tokenizer resources or an LLM target pruned to the old source subset.
+
+The [generic importer][upstream-importer] has no MOSS architecture detection and still has MOSS `fatalError()` branches in import/specification construction. That is the principal custom-conversion gap, not missing inference architecture.
+
+## 9. Official Checkpoints and Resource Budget
+
+Both [Draw Things Base][dt-moss-base] and [Draw Things SFT][dt-moss-sft] repositories publish the following. Sizes are rounded decimal GB from the file listings, not measured VRAM allocations.
+
+| Artifact | Approximate size |
+| --- | --- |
+| Each Base/SFT `f16` denoiser | 10.2 GB |
+| Each Base/SFT `q8p` denoiser | 5.28 GB |
+| Each Base/SFT `i8x` denoiser | 5.13 GB |
+| Each Base/SFT `i4x` denoiser | 2.95 GB |
+| Shared `qwen_3.5_9b_i5x.ckpt` | 8.75 GB |
+| Shared `flux_2_vae_f16.ckpt` | 0.169 GB |
+
+Approximate download/storage sets:
+
+- One i4x variant plus companions: 11.9 GB.
+- Both i4x variants with companions downloaded once: 14.8 GB.
+- Both i4x variants plus one q8p control and shared companions: 20.1 GB.
+- Both q8p and both i4x variants with shared companions: 25.4 GB.
+
+Pin the Hugging Face revisions and validate each file against its published hash. The observed conversion revisions are `add235e9063a9fb0eec06f61cba6a970337abf1e` for Base and `55d7bdb21604cba9ff35795b6b0e163f0d51802a` for SFT. Verify shared-component identity before deduplicating; identical names alone are insufficient.
+
+Do not download complete repository snapshots containing all formats and duplicated companions by default. Reserve additional space for partial downloads, extraction/repacking, build caches, reference environments, and later conversion outputs. The free-space reading inside WSL does not establish the host's physical headroom.
+
+Even the i4x set is close to the GPU's capacity before activations, temporary decodes, attention workspace, and driver/display usage. The q8p set exceeds 12 GiB if treated as simultaneously resident stored weights. These are warning-level storage comparisons, not precise VRAM predictions.
+
+Start with batch size 1, weights cache 0, verified component/partial offload, and modest smoke-test resolution. Measure encoder, denoiser, and VAE peaks separately. Keep FlashAttention enabled on this SM86 GPU initially; indiscriminately disabling it can worsen memory use. Run inference on AC power, consistent with the recorded laptop/WSL GPU-reset history.
+
+## 10. MOSS Functional Milestones
+
+### M1. Official checkpoint inference
+
+Start with SFT as the first user-facing test, then Base. Use their built-in specifications rather than manufacturing LTX-shaped aliases.
+
+The [upstream model zoo][upstream-zoo] already specifies:
+
+- `moss_image_sft_q8p.ckpt`, `moss_image_sft_i8x.ckpt`, and `moss_image_sft_i4x.ckpt`.
+- Equivalent `moss_image_base_*` registrations.
+- `qwen_3.5_9b_i5x.ckpt` and `flux_2_vae_f16.ckpt` as companions.
+- Flow/velocity objective with condition scale 1000 and default scale 16.
+- No LTX connector-as-CLIP dependency or `kontext` modifier.
+
+Recommended request profile, grounded in the [official model card][official-moss]:
+
+| Setting | Initial correctness profile |
+| --- | --- |
+| Output | One image; batch size 1; no audio/video workflow |
+| Resolution | Small smoke test, then 1024x1024 and a portrait/landscape pair |
+| Steps | 50 for correctness/quality acceptance |
+| Guidance | CFG 3 |
+| Shift | Fixed 5; resolution-dependent shift disabled for controlled comparisons |
+| Negative prompt | Empty initially |
+| Layer skipping | Upstream's existing negative-branch layer 22 behavior |
+| Sampler | Validate the engine's deterministic flow-Euler-equivalent schedule; do not inherit UniPC/TCD defaults |
+| Seed | Fixed and recorded, with compatible noise generation verified before cross-engine numerical comparison |
+| Other acceleration | Hires fix, TeaCache, CFG shortcuts, and approximate attention disabled initially |
+
+Shorter runs establish loading/finiteness only, not the model's final quality. Compare q8p and i4x using the same variant, prompt, emitted configuration, and initial noise where possible. Use offload for the q8p control; an OOM is not evidence of a model-mapping defect. Add i8x as a diagnostic control only if needed to isolate codec-specific behavior.
+
+Keep the image workflow separate from LTX's frame guards and distilled schedules. The current [configuration builder](../tools/dt_make_config.py#L177) defaults to 8 steps, CFG 1, sampler 17, and video-oriented fields. Its start dimensions use 64-pixel units. Initially choose dimensions it can represent exactly; do not silently round the model card's arbitrary multiple-of-16 resolutions.
+
+The reference pipeline requests BF16 transformer/encoder, FP32 initial noise and VAE, and describes a small FLUX.2 decoder. Draw Things publishes its own converted VAE under the generic FLUX.2 filename and uses its own mixed-precision implementation. Validate latent normalization, packing, decoder compatibility, and finite output before asserting reference parity or substituting components by name.
+
+Acceptance: both variants produce finite, coherent final images; all chunks are complete; memory fits the chosen offload policy; repeated requests and Base/SFT switches do not crash or reuse the wrong weights.
+
+### M2. Image workflow and quality validation
+
+Reuse the existing gRPC transport, configuration generation, requirements checks, and tensor decoding where they fit. Add one small image-oriented test entrypoint or explicit image mode, not a second parallel toolkit. Do not loosen LTX safety checks globally to accommodate images.
+
+Require final image presence and successful PNG decoding, finite values before clipping, exact dimensions, and saved run metadata. Include tests for preview-only responses, interrupted chunk streams, missing companions, unknown models, and wrong schema selection. Prefer named sampler selection resolved from generated enums to new hardcoded integer literals.
+
+Use a small fixed prompt suite covering natural-language scenes, English and Chinese text, tag-style prompts, and a structured JSON layout. Pass layout JSON as a prompt string with the model's documented centered coordinates; it is not a new ControlNet interface. Inspect text placement and object layout, not only image standard deviation. Investigate vertical banding against the reference before attributing it to quantization.
+
+Validate full 50-step generation, a second request on the same server, variant switching, and at least one non-square resolution. Characterize i4x quality drift against the same variant's q8p control. Do not require pixel identity between Base and SFT, or between independently seeded CUDA and PyTorch runs.
+
+Acceptance: reproducible image commands and per-variant baseline artifacts, while LTX requests still behave as before.
+
+### M3. Custom MOSS conversion
+
+Only after official conversions work, extend the generic importer and its specification inference for MOSS. Reuse the existing MOSS main/fixed builders and weight mappers. Keep official text encoder and VAE companions initially, so custom denoiser conversion is the only new variable.
+
+Implementation requirements:
+
+- Detect and validate the actual architecture from config and tensor shapes, not just filename or a version override.
+- Support the actual source packaging: a selected supported single-file format first, or an explicit sharded safetensors/index reader. Reject unsupported directories/shards clearly rather than silently importing a subset.
+- Cover both the 42-layer denoiser and fixed text-refiner/timestep/modulation parameters.
+- Use the new mapper's Q/K interleaving metadata, including QK norms. Preserve packed FFN up/gate order and head-modulation order.
+- Preserve original FP32 timestep projection values before any FP16 cast. Widening already-downcast values cannot recover underflowed weights.
+- Derive tensor dtype/rank contracts from the runtime parameter schema and validate key coverage. Do not import LTX tensor-count constants or run LTX post-processors over MOSS.
+- Use strict read/write results, component-aware metadata validation, and atomic promotion of completed output. Recognize inline, sidecar, and trailer storage where applicable.
+- Keep variants distinct in model identity, outputs, aliases, hashes, and caches while sharing architecture code.
+
+Use the official source checkpoint as the positive control. Compare converted metadata and representative values to the official Draw Things f16 conversion, including every transformed parameter category. Compile and strictly load the converted model. Compare text features, selected denoiser outputs, and one sampling update before an expensive full render.
+
+Then run the identical converter on SFT and on a custom finetune. Do not use official model weights as a repair source for a custom model. The transferable lesson from LTX is to validate transformations and serialization policy, not to copy its repair scripts.
+
+Acceptance: source-to-checkpoint conversion preserves the intended values, metadata, and inference behavior for both variants and a custom checkpoint.
+
+### M4. Custom 4-bit S and LoRA
+
+Treat custom i4x generation as a separate policy surface. Use the appropriate packed s4nnc format, preserve sensitive tensors, identify any calibration/Hadamard requirements of the selected recipe, and trace actual codec identifiers rather than trusting an output suffix. Do not requantize an already-low-bit official checkpoint as the reference experiment.
+
+Start from the validated mixed-precision conversion, establish q8p parity, and then evaluate i8x/i4x only as needed. Keep text-encoder quantization separate from denoiser quantization. Do not invent an `.i4x` codec constant or relabel a q4p checkpoint.
+
+Upstream already includes MOSS LoRA main/fixed builders and import support. Integrate those after the no-LoRA baseline. Check the main transformer and text refiner/modulation projections, split/packed projection mappings, ranks, alpha scaling, and zero-weight behavior. Our current LoRA quantization wrapper is explicitly LTX2.3-specific and needs a model-aware path before reuse.
+
+MOSS SFT does not imply a distilled sampling schedule. Community acceleration LoRAs, full training, LyCORIS variants, image editing, and further encoder quantization are follow-up work with their own acceptance tests, not prerequisites for Base/SFT image inference.
+
+## 11. Reference Environment and Test Gates
+
+For a PyTorch reference, pin the official MOSS source/weights and the reviewed custom pipeline code. Its model card requires Python 3.10+, PyTorch 2.9+, Diffusers 0.38+, Transformers 5.3+, Accelerate 1.10+, Safetensors 0.6+, and Pillow 10+.
+
+The toolkit's CUDA requirements already specify PyTorch 2.10/CUDA 12.8, but several other requirements are unpinned. Installed compatibility was not measured. Prefer an isolated reference environment rather than broadly upgrading the working toolkit environment. Review remote pipeline code before enabling remote-code execution, and record its exact revision.
+
+| Gate | Required evidence |
+| --- | --- |
+| Reproducible build | Source/dependency/builder pins, executable hash, GPU-enabled build, library resolution |
+| Wire compatibility | Schemas and generators tied to candidate revision; serialized config round-trip |
+| LTX preservation | Matched official/custom controls and known-good LoRA configuration; final finite decoded video |
+| Packed codec support | Small CUDA decode/GEMM correctness checks for relevant shapes/dtypes/rotation; measured temporary memory |
+| MOSS runtime | Encoder, fixed model, denoiser and VAE load; CFG path with layer-22 skip; final finite image |
+| Variant support | Base and SFT tested independently; shared companion hashes verified; cache-switch test |
+| Quality | Fixed prompt suite and same-variant higher-precision control, not just nonzero pixel variance |
+| Custom import | Strict tensor coverage, dtype/rank/value checks, positive-control conversion and sampling parity |
+| Patch safety | Strict application on a fresh base; content-based second-pass no-op; reviewed regenerated bundle |
+
+Use existing nearby test homes and small fixtures where possible. Resolve tokens, sigma/timestep sequence, CFG formula, initial noise, and VAE latent normalization before setting numerical parity tolerances. Do not make cross-framework same-seed pixel equality a release gate.
+
+## 12. Scope, Rollback, and Next Action
+
+Suggested implementation units are:
+
+1. Freeze/provenance manifest and trustworthy candidate build setup.
+2. Explicit runtime/schema selection and LTX regression gates.
+3. Reviewed CPU patch rebase and improved bundle verification.
+4. Official MOSS image profile and complete-output acceptance runner.
+5. Custom MOSS import with serialization/value tests.
+6. Custom packed quantization and optional LoRA workflow.
+
+Runtime selection, CPU utility selection, and model registration should be independently reversible. Promote defaults only after their gates pass. Rollback should select the saved binary/image and catalogs, not reset user work or rewrite existing checkpoints. Keep the old and new bundles clearly associated with their respective base revisions.
+
+The next implementation action should be U0/U1: establish provenance and a separate pinned CUDA build environment, then validate LTX before downloading and testing the official MOSS set. This avoids making the relatively large custom-conversion task the critical path for initial MOSS support.
+
+What was actually done for this assessment: source/patch inspection, upstream source/release/model metadata research, binary help/fingerprint inspection, hardware/resource queries, shell syntax checks, and snapshot comparisons. No source rebase, dependency resolution, build, patch application, model download, quantization, or GPU inference was performed. Candidate buildability, throughput, VRAM peaks, numerical parity, and image quality remain implementation gates, not claimed results.
+
+## Sources
+
+- [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].
+- [Published server release][server-release] and [Docker Hub tag metadata][docker-latest].
+- [Initial MOSS integration][moss-initial] and [model/LoRA follow-up][moss-followup].
+- [Candidate model zoo][upstream-zoo], [MOSS builders][upstream-moss], [runtime dispatch][upstream-unet], [importer][upstream-importer], [quantizer][upstream-quantizer], and [SwiftPM manifest][upstream-package].
+- [Linux WORKSPACE][upstream-workspace], [Bazel version][upstream-bazel-version], and [configuration schema][upstream-config].
+- [Pinned s4nnc codecs/store][upstream-store] and [pinned CCV CUDA GEMM][upstream-cuda-gemm].
+- [Official MOSS Base card][official-moss], [SFT card][official-moss-sft], and [reference project][moss-project].
+- [Draw Things Base artifacts][dt-moss-base] and [SFT artifacts][dt-moss-sft].
+- Local [pipeline](../PIPELINE.md#L1), [findings history](../CUSTOM_MODEL_CONVERTER_FINDINGS_2026-07-09.md#L1), and [patch maintenance instructions](../DRAW_THINGS_PATCH/README.md#L1).
+
+[upstream-head]: https://github.com/drawthingsai/draw-things-community/commit/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936
+[upstream-compare]: https://api.github.com/repos/drawthingsai/draw-things-community/compare/9f3f04b7...0621d8198f3ed505bb7cefc71b84f8f0e1ce5936?per_page=1&page=2
+[server-release]: https://github.com/drawthingsai/draw-things-community/releases/tag/v26.1014.0
+[docker-latest]: https://hub.docker.com/v2/repositories/drawthingsai/draw-things-grpc-server-cli/tags/latest
+[moss-initial]: https://github.com/drawthingsai/draw-things-community/commit/a32aa0bbfd82ab37418acf58578eb164f076396c
+[moss-followup]: https://github.com/drawthingsai/draw-things-community/commit/6c1dd09303cde8e23b18d1f1e57894a559a498db
+[upstream-zoo]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Libraries/ModelZoo/Sources/ModelZoo.swift
+[upstream-moss]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Libraries/SwiftDiffusion/Sources/Models/MOSSImage.swift
+[upstream-unet]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Libraries/SwiftDiffusion/Sources/Models/UNetProtocol.swift
+[upstream-importer]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Libraries/ModelOp/Sources/ModelImporter.swift
+[upstream-quantizer]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Apps/ModelQuantizer/Quantizer.swift
+[upstream-package]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Package.swift
+[upstream-workspace]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/WORKSPACE.linux
+[upstream-bazel-version]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/.bazelversion
+[upstream-config]: https://github.com/drawthingsai/draw-things-community/blob/0621d8198f3ed505bb7cefc71b84f8f0e1ce5936/Libraries/DataModels/Sources/config.fbs
+[upstream-store]: https://github.com/liuliu/s4nnc/blob/b5476a77e7f67f12729872e4b9f1a649b3cd3df0/nnc/Store.swift
+[upstream-cuda-gemm]: https://github.com/liuliu/ccv/blob/69b1ed1f4e281520c29cd4b45b93c6fcdde8d2e8/lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu
+[official-moss]: https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base/blob/85975793d8b3d432f1b6e27f352abaa4c2a4c0d3/README.md
+[official-moss-sft]: https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT
+[moss-project]: https://github.com/OpenMOSS/MOSS-Image
+[dt-moss-base]: https://huggingface.co/drawthingsai/MOSS-Image-Base/tree/add235e9063a9fb0eec06f61cba6a970337abf1e
+[dt-moss-sft]: https://huggingface.co/drawthingsai/MOSS-Image-SFT/tree/55d7bdb21604cba9ff35795b6b0e163f0d51802a
