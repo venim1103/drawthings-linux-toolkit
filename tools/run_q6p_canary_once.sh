@@ -9,6 +9,8 @@ PROTO_CACHE_DIR="$ROOT/.cache/dt_proto"
 BINDINGS_DIR="$ROOT/.cache/dt_flatbuf_py"
 MODELS_DIR="$ROOT/dt-models"
 DRY_RUN=0
+IMAGE_MODE=0
+REQUIRED_MODEL_FILES=()
 
 MODEL_KEY="10_e_v1_bf16_regen_0_q6p.ckpt"
 HOST="127.0.0.1:7861"
@@ -60,6 +62,11 @@ Options:
   --models-dir <path>       Model files and catalogs (default: dt-models).
                             Servers may rewrite checkpoint storage layouts;
                             use private copies for upgrade regression tests.
+  --require-model-file <file>
+                            Require a companion file in --models-dir; repeatable.
+  --image-mode              Require one finite final image at the requested size,
+                            no audio, and post-Echo; export image.png and metadata.
+                            Uses one frame and disables resolution-dependent shift.
   --dry-run                 Generate config and print the server command only.
   --server-gpu <n>          GPU id passed to server launcher (default: 0).
   --server-cpu-offload      Pass --cpu-offload to server launcher.
@@ -73,7 +80,11 @@ Options:
   --width <n>               Pixel width for request config (default: 256).
   --height <n>              Pixel height for request config (default: 256).
   --steps <n>               Sampling steps for request config (default: 4).
-  --sampler <n>             Sampler enum id for request config (default: 17).
+  --sampler <name|n>        Selected schema's sampler name or id (default: 17).
+  --guidance-scale <n>      Text guidance (default: 1).
+  --shift <n>               Sampling shift (default: 3).
+  --prompt <text>           Override the generation prompt.
+  --negative-prompt <text>  Override the negative prompt; an empty string is valid.
   --seed <n>                Seed for request config (default: 4242).
   --lora <file[:weight[:mode]]>
                             Repeatable LoRA spec passed into config.
@@ -133,6 +144,14 @@ if [[ $# -gt 0 ]]; then
         MODELS_DIR="${2:-}"
         shift 2
         ;;
+      --require-model-file)
+        REQUIRED_MODEL_FILES+=("${2:-}")
+        shift 2
+        ;;
+      --image-mode)
+        IMAGE_MODE=1
+        shift
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
@@ -175,6 +194,22 @@ if [[ $# -gt 0 ]]; then
         ;;
       --sampler)
         SAMPLER="${2:-}"
+        shift 2
+        ;;
+      --guidance-scale)
+        GUIDANCE="${2:-}"
+        shift 2
+        ;;
+      --shift)
+        SHIFT="${2:-}"
+        shift 2
+        ;;
+      --prompt)
+        PROMPT="${2:-}"
+        shift 2
+        ;;
+      --negative-prompt)
+        NEG_PROMPT="${2:-}"
         shift 2
         ;;
       --seed)
@@ -236,6 +271,14 @@ if [[ $# -gt 0 ]]; then
   done
 fi
 
+CONFIG_EXTRA_ARGS=()
+if [[ "$IMAGE_MODE" == "1" ]]; then
+  NUM_FRAMES=1
+  REQUIRE_COMPLETE_STREAM=1
+  REQUIRE_FINAL_OUTPUT=1
+  CONFIG_EXTRA_ARGS=(--resolution-dependent-shift false)
+fi
+
 if [[ "$FINAL_MODE" == "1" && "$TIMEOUT_EXPLICIT" != "1" && "$NO_TIMEOUT" != "1" ]]; then
   TIMEOUT_SEC=900
 fi
@@ -279,6 +322,13 @@ if [[ ! -d "$MODELS_DIR" ]]; then
   exit 1
 fi
 MODELS_DIR="$(cd "$MODELS_DIR" && pwd)"
+
+for required_file in "${REQUIRED_MODEL_FILES[@]}"; do
+  if [[ -z "$required_file" || "$required_file" != "$(basename "$required_file")" || ! -f "$MODELS_DIR/$required_file" ]]; then
+    echo "error: required companion file missing or invalid: $required_file" >&2
+    exit 1
+  fi
+done
 
 if [[ "$GRPC_BIN" == */* ]]; then
   if [[ ! -x "$GRPC_BIN" ]]; then
@@ -424,8 +474,8 @@ if ! [[ "$STEPS" =~ ^[0-9]+$ ]] || [[ "$STEPS" -lt 1 ]]; then
   exit 1
 fi
 
-if ! [[ "$SAMPLER" =~ ^[0-9]+$ ]]; then
-  echo "error: --sampler must be a non-negative integer" >&2
+if ! [[ "$SAMPLER" =~ ^([0-9]+|[A-Za-z][A-Za-z0-9_]*)$ ]]; then
+  echo "error: --sampler must be an enum name or non-negative integer" >&2
   exit 1
 fi
 
@@ -455,6 +505,7 @@ echo "proto=$PROTO_FILE"
 echo "proto_cache_dir=$PROTO_CACHE_DIR"
 echo "bindings_dir=$BINDINGS_DIR"
 echo "models_dir=$MODELS_DIR"
+echo "image_mode=$IMAGE_MODE"
 echo "server_gpu=$SERVER_GPU"
 echo "server_cpu_offload=$SERVER_CPU_OFFLOAD"
 echo "server_fread_preferred=$SERVER_FREAD_PREFERRED"
@@ -515,6 +566,7 @@ server_args+=("$MODELS_DIR")
   --num-frames "$NUM_FRAMES" \
   --fps-id "$FPS_ID" \
   --seed "$SEED" \
+  "${CONFIG_EXTRA_ARGS[@]}" \
   "${LORA_ARGS[@]}"
 
 printf 'server_command='
@@ -675,6 +727,12 @@ if [[ "$REQUIRE_COMPLETE_STREAM" == "1" ]]; then
     fi
     exit 1
   fi
+
+  if grep -q '^warning: leftover partial .* chunk bytes:' "$CLIENT_LOG"; then
+    echo "RESULT=FAIL incomplete output chunks remain"
+    if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+    exit 1
+  fi
 fi
 
 if [[ "$REQUIRE_FINAL_OUTPUT" == "1" ]]; then
@@ -686,6 +744,55 @@ if [[ "$REQUIRE_FINAL_OUTPUT" == "1" ]]; then
     if [[ "$SOFT_FAIL" == "1" ]]; then
       exit 0
     fi
+    exit 1
+  fi
+fi
+
+if [[ "$IMAGE_MODE" == "1" ]]; then
+  if [[ "$POST_ECHO_RC" != "0" ]]; then
+    echo "RESULT=FAIL image post-generation Echo failed"
+    if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+    exit 1
+  fi
+  set +e
+  "$PYTHON_BIN" - "$ROOT" "$WORK_DIR" "$WIDTH" "$HEIGHT" "$PROMPT" "$NEG_PROMPT" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+from PIL import Image
+
+sys.path.insert(0, sys.argv[1])
+from tools.dt_tensor_to_playable import validate_image_tensor
+
+work = Path(sys.argv[2])
+width, height = int(sys.argv[3]), int(sys.argv[4])
+images = sorted(work.glob("image_*.bin"))
+if len(images) != 1 or list(work.glob("audio_*.bin")):
+    raise SystemExit("Expected exactly one final image payload and no audio")
+image = validate_image_tensor(images[0].read_bytes(), width, height)
+output = work / "image.png"
+Image.fromarray(image).save(output)
+with Image.open(output) as decoded:
+    decoded.load()
+    if decoded.size != (width, height):
+        raise SystemExit("PNG dimensions do not match the request")
+metadata = {
+    "result": "PASS", "images": 1, "audio": 0, "nonfinite": 0,
+    "width": width, "height": height, "prompt": sys.argv[5],
+    "negative_prompt": sys.argv[6], "raw_image": images[0].name,
+    "config_sha256": hashlib.sha256((work / "config.bin").read_bytes()).hexdigest(),
+    "complete_stream": True, "complete_chunks": True, "post_echo": True,
+}
+(work / "image_acceptance.json").write_text(json.dumps(metadata, indent=2) + "\n")
+print(f"validated_image={output}")
+PY
+  IMAGE_RC=$?
+  set -e
+  if [[ "$IMAGE_RC" != "0" ]]; then
+    echo "RESULT=FAIL image acceptance failed"
+    if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
     exit 1
   fi
 fi

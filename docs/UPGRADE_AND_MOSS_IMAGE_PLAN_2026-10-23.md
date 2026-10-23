@@ -241,7 +241,7 @@ Start with batch size 1, weights cache 0, verified component/partial offload, an
 
 ### M1. Official checkpoint inference
 
-Start with SFT as the first user-facing test, then Base. Use their built-in specifications rather than manufacturing LTX-shaped aliases.
+Start with Base q8p as the first correctness control, then test SFT, as selected for the experimental M1 work below. Use their built-in specifications rather than manufacturing LTX-shaped aliases.
 
 The [upstream model zoo][upstream-zoo] already specifies:
 
@@ -471,6 +471,46 @@ All nine image tensors are byte-identical to the earlier candidate f16 run. With
 After the final repeat, all nine active files and all nine staged copies again matched the pre-render SHA-256 manifest, and the final server/monitor PIDs were confirmed reaped. Six tensor-validator tests, shell syntax/help checks, and the documentation diff check pass.
 
 U2 remains incomplete: full no-LoRA quality, the official control, cross-runtime f16 LoRA numerical acceptance, and early-load reliability remain open. No default binary or catalog was promoted. U3 CPU patch rebase and all MOSS download/inference/custom-conversion gates remain pending. The next reliability investigation should identify the graph/caller supplying GEMM's null first input; the successful retry is not a fix.
+
+### M1 Base q8p Preparation and First Attempts: October 23
+
+The user authorized experimental MOSS work while deferring the GEMM investigation. This does not waive U2 or permit default-runtime promotion. The pinned candidate remains unmodified, and SFT/i4x/custom-conversion work has not started.
+
+Downloaded only three files from `drawthingsai/MOSS-Image-Base` at revision `add235e9063a9fb0eec06f61cba6a970337abf1e`, totaling 14,196,940,800 bytes:
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `moss_image_base_q8p.ckpt` | 5,283,102,720 | `0361102e9a21f05d63a686ce3ff2c8f9d6e59f86b7aa4e5fb116dd8f1d5eb745` |
+| `qwen_3.5_9b_i5x.ckpt` | 8,745,304,064 | `559d41f5e6721b4edb5a661c42b6f328a243876c2637cad36cf9937fb0d453c1` |
+| `flux_2_vae_f16.ckpt` | 168,534,016 | `48369d4b1495aec3df0579591f4bf9c199a73cc288130df2359c4a173c5ae864` |
+
+The denoiser hash also matches the pinned model zoo. Verified source files are under `output/upgrades/moss-image-base-add235e9/source`; private writable inference copies are under its `models` subdirectory, with independent file identities and no symlinks/hardlinks. Both sets matched the manifest before inference; all three source hashes still match after testing. Runtime copies retain their original sizes and no sidecars were created. Trailer stores can remain inline/read-only; sidecar absence alone does not prove that loading failed. The active `dt-models` directory was not selected or edited for these tests.
+
+The existing canary now has an explicit `--image-mode`, preserving legacy LTX defaults. Image mode selects one frame, disables resolution-dependent shift, requires a complete stream without leftover partial chunks, exactly one finite final image at the requested dimensions, no audio, and successful post-Echo. Its success path saves `image.png` and `image_acceptance.json`; no success artifact is produced for these failed MOSS attempts. Repeatable `--require-model-file` preflights companions. Guidance, shift, prompt, and negative prompt are explicit CLI options. The config builder accepts sampler names from the selected generated enum as well as legacy integers.
+
+Selected `DDIMTrailing` (candidate enum 16): the local sampler factory uses trailing linear discretization, and DDIM's `.u` branch performs the deterministic velocity/Euler update without added sampling noise for text-to-image. Euler A was rejected because its flow branch injects ancestral noise. This source-level mapping is not a claim of cross-framework numerical parity.
+
+The profile is 512x512, batch 1, 50 steps, CFG 3, fixed shift 5, seed 4242, empty negative prompt, no LoRA/hires/TeaCache, CPU offload, fread-preferred, and weights cache 0. Prompt: `An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.` Its 288-byte config has SHA-256 `f4a1fac323101d86d63fb2650483a9baa4d3cb8c1ef7edb3d64e81f16d5facf9`. Schema round-trip verifies these fields, including one frame and fixed shift. Legacy LTX serialization remains byte-identical; a sampler name and its numeric ID also emit identical configs.
+
+| Attempt | Observed Result | Sampled Device Peak | Samples |
+| --- | --- | --- | --- |
+| CFG 3, empty negative | SIGFPE in scaled dot-product attention after `sampling`; no final output | 983 MiB | 199 |
+| Same request, `--server-no-flash-attention` | Same SIGFPE and instruction; the flag does not bypass the failing operation | 983 MiB | 112 |
+| CFG 3, negative prompt `blur`, FlashAttention enabled | Same SIGFPE; changing the negative prompt did not fix it | 983 MiB | 108 |
+| CFG 1, empty negative, FlashAttention enabled, diagnostic only | Stream and post-Echo succeed, but only 4 previews and zero final images; acceptance correctly fails | 979 MiB | 71 |
+
+These are partial failed-attempt whole-device measurements, not full-inference VRAM requirements or proof of successful offload. Maximum sampled temperatures were 59-61 C. The guided failures are distinct from the deferred GEMM null-input crash: `_ccv_nnc_scaled_dot_product_attention_forw + 3614`, ELF `0x11be4ee`, faults at `idiv %ebx` while preparing the attention head ratio. The call site/tensor dimensions still need runtime identification. A zero-length text/refiner or skipped-layer descriptor remains a hypothesis, not an established cause. The CLI embeds Qwen3.5 resources and applies a chat template even to empty negative text; no missing-tokenizer or empty-negative-only cause has been proven. No assertion-suppression or upstream source patch was applied.
+
+Raw directories under `output/`:
+
+- `q6p_canary_moss_base_q8p_512_20261023T143626Z`
+- `q6p_canary_moss_base_q8p_512_noflash_20261023T144006Z`
+- `q6p_canary_moss_base_q8p_512_nonempty_negative_diagnostic_20261023T144305Z`
+- `q6p_canary_moss_base_q8p_512_cfg1_diagnostic_20261023T144616Z`
+
+All eight owned server/monitor PIDs were confirmed reaped. Ten CPU tests cover existing tensor validation, single-image finite/geometry/batch rejection, and sampler resolution. Dry-run starts no monitor; missing companions and unknown sampler names fail before launch. The real CFG-1 run verifies preview-only rejection. M1 remains blocked: there is no accepted MOSS image, full CFG-3 sampling/decoding and memory behavior are unverified, and SFT/packed-quality tests must not be treated as passed. Next, capture the failing attention tensor descriptors/caller before choosing a narrowly scoped candidate fix.
+
+Post-test preservation checks also passed for all three staged checkpoint hashes. The GPU was idle with 0 MiB allocated after cleanup; shell syntax, all ten CPU tests, editor diagnostics, and `git diff --check` passed.
 
 ## Sources
 

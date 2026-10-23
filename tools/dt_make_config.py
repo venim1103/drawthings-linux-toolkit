@@ -44,6 +44,18 @@ def _optional_string_offset(builder: flatbuffers.Builder, value: str):
     return builder.CreateString(txt)
 
 
+def _resolve_sampler(value: int | str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        import SamplerType
+
+        sampler = getattr(SamplerType.SamplerType, value, None)
+        if not isinstance(sampler, int):
+            raise ValueError(f"Unknown SamplerType name: {value}") from None
+        return sampler
+
+
 def _resolve_model_name_to_file(
     model: str, models_dir: Path = DEFAULT_MODELS_DIR
 ) -> tuple[str, str | None]:
@@ -247,7 +259,7 @@ def build_config(args) -> bytes:
     GC.GenerationConfigurationAddGuidanceScale(builder, args.guidance_scale)
     GC.GenerationConfigurationAddStrength(builder, args.strength)
     GC.GenerationConfigurationAddModel(builder, model)
-    GC.GenerationConfigurationAddSampler(builder, args.sampler)
+    GC.GenerationConfigurationAddSampler(builder, _resolve_sampler(args.sampler))
     GC.GenerationConfigurationAddBatchCount(builder, args.batch_count)
     GC.GenerationConfigurationAddBatchSize(builder, args.batch_size)
     GC.GenerationConfigurationAddHiresFix(builder, args.hires_fix)
@@ -335,7 +347,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--steps", type=int, default=8)
     p.add_argument("--guidance-scale", type=float, default=1.0)
     p.add_argument("--strength", type=float, default=1.0)
-    p.add_argument("--sampler", type=int, default=17, help="SamplerType enum value")
+    p.add_argument("--sampler", default=17, help="SamplerType enum name or integer value")
     p.add_argument("--seed-mode", type=int, default=2, help="SeedMode enum value")
 
     p.add_argument("--batch-count", type=int, default=1)

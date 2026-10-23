@@ -43,6 +43,22 @@ class TensorValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "payload size mismatch"):
             decoder.validate_finite_tensor(tensor_blob([0.0, 0.5, 1.0])[:-1])
 
+    def test_single_image_requires_finite_values_and_exact_size(self):
+        blob = tensor_blob([0.0, 0.5, 1.0])
+        self.assertEqual(decoder.validate_image_tensor(blob, 1, 1).shape, (1, 1, 3))
+        with self.assertRaisesRegex(ValueError, "Expected image dimensions"):
+            decoder.validate_image_tensor(blob, 2, 1)
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            decoder.validate_image_tensor(tensor_blob([0.0, np.nan, 1.0]), 1, 1)
+
+    def test_single_image_rejects_a_batched_tensor(self):
+        blob = tensor_blob([0.0, 0.5, 1.0])
+        header = list(struct.unpack("<17I", blob[:68]))
+        header[5] = 2
+        batched = struct.pack("<17I", *header) + blob[68:] * 2
+        with self.assertRaisesRegex(ValueError, "single image tensor"):
+            decoder.validate_image_tensor(batched, 1, 1)
+
     def test_rejects_frame_count_mismatch_before_reading(self):
         for expected in ("0", "9"):
             with self.subTest(expected=expected):

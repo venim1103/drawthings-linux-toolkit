@@ -204,6 +204,17 @@ def decode_image_tensor_to_uint8(blob: bytes) -> np.ndarray:
     return _float_image_to_uint8(rgb)
 
 
+def validate_image_tensor(blob: bytes, width: int, height: int) -> np.ndarray:
+    header = _read_tensor_header(blob)
+    if len(header.dims) not in (3, 4) or (len(header.dims) == 4 and header.dims[0] != 1):
+        raise ValueError(f"Expected a single image tensor, got dims={header.dims}")
+    validate_finite_tensor(blob)
+    image = decode_image_tensor_to_uint8(blob)
+    if image.shape != (height, width, 3):
+        raise ValueError(f"Expected image dimensions {width}x{height}, got shape={image.shape}")
+    return image
+
+
 def decode_audio_tensor_to_stereo_f32(blob: bytes) -> np.ndarray:
     header = _read_tensor_header(blob)
     dims = header.dims
