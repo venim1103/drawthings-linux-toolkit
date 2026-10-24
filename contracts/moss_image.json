@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "profile": "moss_image",
+  "model_version": "moss_image",
+  "architecture": {
+    "layers": 42,
+    "text_refiner_layers": 2,
+    "hidden_size": 3072,
+    "num_heads": 24,
+    "head_dim": 128,
+    "ffn_hidden_size": 8192,
+    "vae_channels": 32,
+    "packed_patch_channels": 128,
+    "unconditional_skip_layer": 22
+  },
+  "companions": {
+    "autoencoder": "flux_2_vae_f16.ckpt",
+    "text_encoder": "qwen_3.5_9b_i5x.ckpt",
+    "modifier": "none",
+    "default_scale": 16,
+    "objective": {
+      "u": {
+        "condition_scale": 1000
+      }
+    }
+  },
+  "geometry_guards": {
+    "latent_unit_pixels": 64,
+    "temporal_frame_rule": "single_frame",
+    "min_video_frames": 1
+  },
+  "source_required_keys": [
+    "transformer_blocks.41.attn.to_q.weight"
+  ],
+  "ckpt_required_prefixes": {
+    "__dit__[": 1
+  },
+  "restore_patterns": {
+    "f32_ada_ln_regex": "(ada_ln|t_embedder|time_embed|modulation)",
+    "f32_qk_norm_regex": "(norm_q|norm_k)-\\d+-0\\]$"
+  }
+}

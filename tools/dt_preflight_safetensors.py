@@ -50,6 +50,10 @@ LTX23_REQUIRED_KEYS = [
     "audio_embeddings_connector.transformer_1d_blocks.7.attn1.to_q.weight",
 ]
 
+MOSS_IMAGE_REQUIRED_KEYS = [
+    "transformer_blocks.41.attn.to_q.weight",
+]
+
 
 @dataclass
 class AuditResult:
@@ -193,13 +197,26 @@ def main() -> int:
     parser.add_argument("--file", required=True, help="Path to safetensors file")
     parser.add_argument(
         "--profile",
-        choices=["ltx2_3", "none"],
+        choices=["ltx2_3", "moss_image", "none"],
         default="ltx2_3",
         help="Model profile for required key checks",
     )
+    parser.add_argument(
+        "--contract",
+        default="",
+        help="Optional path to contracts/<profile>.json to load required source keys",
+    )
     args = parser.parse_args()
 
-    required = LTX23_REQUIRED_KEYS if args.profile == "ltx2_3" else []
+    if args.contract:
+        contract_obj = json.loads(open(args.contract, "r", encoding="utf-8").read())
+        required = list(contract_obj.get("source_required_keys", []))
+    elif args.profile == "ltx2_3":
+        required = LTX23_REQUIRED_KEYS
+    elif args.profile == "moss_image":
+        required = MOSS_IMAGE_REQUIRED_KEYS
+    else:
+        required = []
 
     try:
         result = audit(args.file, required)

@@ -32,6 +32,10 @@ LTX23_REQUIRED_PREFIX_MIN_COUNTS: Dict[str, int] = {
     "__text_video_connector__[t-down_proj-": 1,
 }
 
+MOSS_IMAGE_REQUIRED_PREFIX_MIN_COUNTS: Dict[str, int] = {
+    "__dit__[": 1,
+}
+
 KNOWN_INVALID_PLACEHOLDER_KEYS = {
     "__dit__[]",
     "__text_audio_connector__[]",
@@ -330,6 +334,15 @@ def validate_ckpt(
                 failures.append(
                     f"missing required LTX2.3 tensor prefix: {prefix} (found {found}, expected >= {min_count})"
                 )
+    elif resolved_profile == "moss_image":
+        print("== MOSS-Image Required Prefix Checks ==")
+        for prefix, min_count in MOSS_IMAGE_REQUIRED_PREFIX_MIN_COUNTS.items():
+            found = count_prefix(keys, prefix)
+            print(f"{prefix} count={found} required>={min_count}")
+            if found < min_count:
+                failures.append(
+                    f"missing required MOSS-Image tensor prefix: {prefix} (found {found}, expected >= {min_count})"
+                )
 
     if serialization_baseline is not None:
         apply_guard = True
@@ -370,7 +383,7 @@ def main() -> int:
     parser.add_argument("--file", required=True, help="Path to converted .ckpt")
     parser.add_argument(
         "--profile",
-        choices=["auto", "none", "ltx2_3"],
+        choices=["auto", "none", "ltx2_3", "moss_image"],
         default="auto",
         help="Validation profile (default: auto)",
     )

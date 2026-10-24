@@ -12,6 +12,11 @@ from tools.dt_keymap_compiler import (
     build_ltx23_contract,
     build_moss_image_contract,
 )
+from tools.dt_layer_parity_oracle import (
+    reference_gated_delta_rule,
+    reference_rmsnorm_gated,
+    verify_block_parity,
+)
 from tools.dt_lora_universal_bridge import verify_converted_lora
 from tools.dt_weellm.dequant import (
     dequantize_fp8_e4m3,
@@ -372,6 +377,33 @@ class DirectBuilderAndLoRABridgeTests(unittest.TestCase):
             self.assertEqual(report["rotary_permuted_up_verified"], 1)
             self.assertEqual(report["identity_up_verified"], 1)
             self.assertEqual(report["identity_down_verified"], 2)
+
+            # Test single-block weight & transform parity check (`dt_layer_parity_oracle.py`)
+            blk_ok, blk_report = verify_block_parity(
+                sf_path, f16_ckpt, contract_path, block_prefix="blocks.0."
+            )
+            self.assertTrue(blk_ok, msg=str(blk_report))
+            self.assertEqual(blk_report["tensors_checked"], 5)
+
+    def test_qwen35_gated_delta_and_rmsnorm_gated_reference(self):
+        rng = np.random.default_rng(123)
+        q = rng.standard_normal((1, 4, 2, 8)).astype(np.float32) * 0.1
+        k = rng.standard_normal((1, 4, 2, 8)).astype(np.float32) * 0.1
+        v = rng.standard_normal((1, 4, 2, 8)).astype(np.float32) * 0.1
+        beta = np.full((1, 4, 2), 0.5, dtype=np.float32)
+        decay = np.full((1, 4, 2), 0.9, dtype=np.float32)
+
+        out, state = reference_gated_delta_rule(q, k, v, beta, decay)
+        self.assertEqual(out.shape, (1, 4, 2, 8))
+        self.assertEqual(state.shape, (1, 2, 8, 8))
+        self.assertTrue(np.all(np.isfinite(out)))
+
+        x = rng.standard_normal((1, 4, 16)).astype(np.float32)
+        gate = rng.standard_normal((1, 4, 16)).astype(np.float32)
+        w = np.ones((16,), dtype=np.float32)
+        rg_out = reference_rmsnorm_gated(x, gate, w)
+        self.assertEqual(rg_out.shape, (1, 4, 16))
+        self.assertTrue(np.all(np.isfinite(rg_out)))
 
 
 if __name__ == "__main__":
