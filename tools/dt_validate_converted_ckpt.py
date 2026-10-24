@@ -288,6 +288,7 @@ def validate_ckpt(
     serialization_baseline: Path | None,
     serialization_guard_profile: str,
     serialization_report_limit: int,
+    contract_path: Path | None = None,
 ) -> int:
     if not ckpt_path.exists():
         print(f"RESULT=FAIL missing checkpoint file: {ckpt_path}")
@@ -325,7 +326,23 @@ def validate_ckpt(
     if placeholder_hits:
         failures.append(f"invalid placeholder keys found: {placeholder_hits}")
 
-    if resolved_profile == "ltx2_3":
+    if contract_path is not None and contract_path.is_file():
+        contract_obj = json.loads(contract_path.read_text(encoding="utf-8"))
+        req_prefixes = contract_obj.get("ckpt_required_prefixes", {})
+        print(f"== Contract Required Prefix Checks ({contract_path.name}) ==")
+        for prefix, min_count in req_prefixes.items():
+            found = count_prefix(keys, prefix)
+            print(f"{prefix} count={found} required>={min_count}")
+            if found < int(min_count):
+                failures.append(
+                    f"missing required contract tensor prefix: {prefix} (found {found}, expected >= {min_count})"
+                )
+        exp_total = contract_obj.get("expected_ckpt_tensor_count")
+        if isinstance(exp_total, int) and exp_total > 0 and len(keys) != exp_total:
+            failures.append(
+                f"checkpoint tensor count mismatch vs contract: got {len(keys)}, expected {exp_total}"
+            )
+    elif resolved_profile == "ltx2_3":
         print("== LTX2.3 Required Prefix Checks ==")
         for prefix, min_count in LTX23_REQUIRED_PREFIX_MIN_COUNTS.items():
             found = count_prefix(keys, prefix)
@@ -409,6 +426,11 @@ def main() -> int:
         default=10,
         help="Maximum mismatch examples printed per category (default: 10)",
     )
+    parser.add_argument(
+        "--contract",
+        default="",
+        help="Optional path to contracts/<profile>.json for contract-driven prefix/count checks",
+    )
     args = parser.parse_args()
 
     if args.serialization_report_limit < 1:
@@ -421,6 +443,7 @@ def main() -> int:
         if args.serialization_baseline
         else None
     )
+    contract_file = Path(args.contract).expanduser().resolve() if args.contract else None
 
     return validate_ckpt(
         ckpt,
@@ -429,6 +452,7 @@ def main() -> int:
         baseline,
         args.serialization_guard_profile,
         args.serialization_report_limit,
+        contract_path=contract_file,
     )
 
 

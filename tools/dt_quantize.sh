@@ -156,21 +156,42 @@ fi
 # --- register custom.json alias ---
 echo "==> [4/4] Upsert custom.json alias '$NAME' -> $QFILE"
 if [[ -f "$CUSTOM_JSON" ]]; then cp -f "$CUSTOM_JSON" "$CUSTOM_JSON.bak_$(date +%Y%m%d_%H%M%S)"; fi
-"$PYTHON_BIN" - "$CUSTOM_JSON" "$NAME" "$QFILE" "$AUTOENCODER" "$TEXT_ENCODER" "$MODIFIER" <<'PY'
+"$PYTHON_BIN" - "$CUSTOM_JSON" "$NAME" "$QFILE" "$AUTOENCODER" "$TEXT_ENCODER" "$MODIFIER" "$MODEL_VERSION" "${CONTRACT:-}" <<'PY'
 import json, os, sys
-path, name, qfile, ae, te, modifier = sys.argv[1:7]
+path, name, qfile, ae, te, modifier, model_version, contract_path = sys.argv[1:9]
+default_scale = 12
+hires_fix_scale = 24
+objective = {"u": {"condition_scale": 1000}}
+include_clip_self = True
+
+if contract_path and os.path.isfile(contract_path):
+    c = json.load(open(contract_path, "r", encoding="utf-8"))
+    model_version = str(c.get("model_version") or model_version)
+    comp = c.get("companions", {})
+    ae = str(comp.get("autoencoder") or ae)
+    te = str(comp.get("text_encoder") or te)
+    modifier = str(comp.get("modifier") or modifier)
+    default_scale = int(comp.get("default_scale", default_scale))
+    hires_fix_scale = int(comp.get("hires_fix_scale", default_scale * 2))
+    objective = comp.get("objective", objective)
+    if model_version != "ltx2.3":
+        include_clip_self = False
+
 entries = json.load(open(path)) if os.path.exists(path) else []
 entries = [e for e in entries if e.get("name") != name]
-entries.append({
-    "name": name, "version": "ltx2.3",
-    "autoencoder": ae, "clip_encoder": qfile, "prefix": "", "modifier": modifier,
-    "default_scale": 12, "hires_fix_scale": 24, "latents_upscalers": [],
+entry = {
+    "name": name, "version": model_version,
+    "autoencoder": ae, "prefix": "", "modifier": modifier,
+    "default_scale": default_scale, "hires_fix_scale": hires_fix_scale, "latents_upscalers": [],
     "file": qfile, "upcast_attention": False,
     "text_encoder": te, "high_precision_autoencoder": False,
-    "objective": {"u": {"condition_scale": 1000}},
-})
+    "objective": objective,
+}
+if include_clip_self:
+    entry["clip_encoder"] = qfile
+entries.append(entry)
 json.dump(entries, open(path, "w"), indent=2)
-print(f"  alias '{name}' -> {qfile}")
+print(f"  alias '{name}' -> {qfile} (version={model_version})")
 PY
 
 echo ""
