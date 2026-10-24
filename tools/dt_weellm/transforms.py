@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import struct
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -101,11 +103,16 @@ def split_tensor_chunks(
     axis: int = 0,
     offsets: Optional[Sequence[int]] = None,
     squeeze_unit_dims: bool = True,
+    split_policy: Optional[str] = None,
 ) -> List[np.ndarray]:
-    """Split a fused weight/modulation tensor along `axis` matching `TensorDescriptor.swift`.
+    """Split a fused weight/modulation tensor matching `TensorDescriptor.swift` lines 112-260.
 
-    When `count > 1` in `TensorDescriptor.swift`, unit dimensions are squeezed before slicing
-    along axis 0 (for `.O` format) or axis 1 (for `.I` format).
+    Supports:
+      - `split_policy=None` or `"chunk_o"`: split along axis 0 (or `axis`).
+      - `split_policy="chunk_i"`: split along axis 1 (when 2-D+) or axis 0 (when 1-D).
+      - `split_policy="diagonal_up"` / `"diagonal_down"`: block-diagonal extraction along both
+        axis 0 and axis 1 (`[i*c0:(i+1)*c0, i*c1:(i+1)*c1]`).
+      - `offsets`: explicit start offsets along the split axis.
     """
     if count <= 1:
         return [np.ascontiguousarray(arr)]
@@ -117,24 +124,52 @@ def split_tensor_chunks(
             squeezed_shape = [1]
         work = work.reshape(squeezed_shape)
 
-    if axis < 0 or axis >= work.ndim:
-        raise ValueError(f"Invalid split axis {axis} for shape {work.shape}")
+    if split_policy in ("diagonal_up", "diagonal_down") and work.ndim >= 2:
+        rows, cols = work.shape[0], work.shape[1]
+        j_step = cols // count
+        r_slices: List[Tuple[int, int]] = []
+        if offsets is not None:
+            if len(offsets) != count:
+                raise ValueError(f"Expected {count} offsets, got {len(offsets)}")
+            for i in range(count):
+                r_start = offsets[i]
+                r_end = offsets[i + 1] if i + 1 < count else rows
+                r_slices.append((r_start, r_end))
+        else:
+            r_step = rows // count
+            for i in range(count):
+                r_slices.append((i * r_step, (i + 1) * r_step))
 
-    dim_len = work.shape[axis]
+        diag_chunks: List[np.ndarray] = []
+        for i, (r0, r1) in enumerate(r_slices):
+            c0, c1 = i * j_step, (i + 1) * j_step
+            diag_chunks.append(np.ascontiguousarray(work[r0:r1, c0:c1]))
+        return diag_chunks
+
+    effective_axis = axis
+    if split_policy == "chunk_i":
+        effective_axis = 1 if work.ndim > 1 else 0
+    elif split_policy == "chunk_o":
+        effective_axis = 0
+
+    if effective_axis < 0 or effective_axis >= work.ndim:
+        raise ValueError(f"Invalid split axis {effective_axis} for shape {work.shape}")
+
+    dim_len = work.shape[effective_axis]
     slices: List[Tuple[int, int]] = []
     if offsets is not None:
         if len(offsets) != count:
             raise ValueError(f"Expected {count} offsets, got {len(offsets)}: {offsets}")
         for i in range(count):
-            start = offsets[i]
-            end = offsets[i + 1] if i + 1 < count else dim_len
+            start = int(offsets[i])
+            end = int(offsets[i + 1]) if i + 1 < count else dim_len
             if start < 0 or end < start or end > dim_len:
                 raise ValueError(f"Invalid slice [{start}:{end}] for axis length {dim_len}")
             slices.append((start, end))
     else:
         if dim_len % count != 0:
             raise ValueError(
-                f"Dimension length {dim_len} along axis {axis} is not divisible by count {count}"
+                f"Dimension length {dim_len} along axis {effective_axis} is not divisible by count {count}"
             )
         step = dim_len // count
         for i in range(count):
@@ -143,9 +178,69 @@ def split_tensor_chunks(
     chunks: List[np.ndarray] = []
     for start, end in slices:
         idx = [slice(None)] * work.ndim
-        idx[axis] = slice(start, end)
+        idx[effective_axis] = slice(start, end)
         chunks.append(np.ascontiguousarray(work[tuple(idx)]))
     return chunks
+
+
+def apply_contract_rule_to_tensor(
+    arr_f32: np.ndarray,
+    rule: Dict[str, Any],
+) -> List[Tuple[str, np.ndarray]]:
+    """Apply scaling, rotary de-interleaving, and chunk splitting according to a contract rule.
+
+    Handles both:
+      1. Single/pre-split rotary de-interleaving (`rotary_interleaved: True`).
+      2. Fused QKV splitting (`dt_names` has length > 1 and `rotary_interleaved_slices` is e.g.
+         `[True, True, False]`), where Q and K slices are rotary-deinterleaved after splitting
+         while V remains in identity order.
+    """
+    work = np.ascontiguousarray(arr_f32, dtype=np.float32)
+    scale = float(rule.get("scale", 1.0))
+    if scale != 1.0:
+        work = work * scale
+
+    dt_names: List[str] = list(rule["dt_names"])
+    rotary_slices: Optional[List[bool]] = rule.get("rotary_interleaved_slices")
+    heads = int(rule.get("num_heads", 0))
+    head_dim = int(rule.get("head_dim", 0))
+
+    # If the whole tensor is rotary-interleaved (and not a mixed fused QKV tensor), deinterleave first
+    if rule.get("rotary_interleaved", False) and not rotary_slices:
+        work = rotary_deinterleave(work, num_heads=heads, head_dim=head_dim)
+
+    if len(dt_names) > 1:
+        split_axis = int(rule.get("split_axis", 0))
+        split_policy = rule.get("split_policy")
+        offsets = rule.get("offsets")
+        squeeze = bool(rule.get("squeeze_unit_dims", True))
+        chunks = split_tensor_chunks(
+            work,
+            count=len(dt_names),
+            axis=split_axis,
+            offsets=offsets,
+            squeeze_unit_dims=squeeze,
+            split_policy=split_policy,
+        )
+    else:
+        chunks = [work]
+
+    if rotary_slices:
+        if len(rotary_slices) != len(chunks):
+            raise ValueError(
+                f"rotary_interleaved_slices length ({len(rotary_slices)}) != chunk count ({len(chunks)})"
+            )
+        processed_chunks: List[np.ndarray] = []
+        for chunk, should_deinterleave in zip(chunks, rotary_slices):
+            if should_deinterleave:
+                processed_chunks.append(
+                    rotary_deinterleave(chunk, num_heads=heads, head_dim=head_dim)
+                )
+            else:
+                processed_chunks.append(chunk)
+        chunks = processed_chunks
+
+    return list(zip(dt_names, chunks))
 
 
 def encode_dim_blob(
@@ -204,17 +299,12 @@ def f32_to_bf16_bytes(arr: np.ndarray) -> bytes:
     """Convert a float32/float16 NumPy array into raw little-endian BFloat16 bytes (round-to-nearest-even)."""
     f32 = np.ascontiguousarray(arr, dtype=np.float32)
     u32 = f32.view(np.uint32)
-    # Round-to-nearest-even for BFloat16 ( preserving NaN payload bits )
-    nan_mask = (u32 & 0x7F800000) == 0x7F800000 and_not_zero(u32 & 0x007FFFFF)
-    lsb = (u32 >> 16) & 1
-    rounding_bias = 0x00007FFF + lsb
-    rounded = np.where(nan_mask, u32 | 0x00400000, u32 + rounding_bias)
+    nan_mask = ((u32 & 0x7F800000) == 0x7F800000) & ((u32 & 0x007FFFFF) != 0)
+    lsb = (u32 >> 16) & np.uint32(1)
+    rounding_bias = np.uint32(0x00007FFF) + lsb
+    rounded = np.where(nan_mask, u32 | np.uint32(0x00400000), u32 + rounding_bias)
     u16 = (rounded >> 16).astype("<u2")
     return u16.tobytes()
-
-
-def and_not_zero(arr: np.ndarray) -> np.ndarray:
-    return arr != 0
 
 
 def tensor_to_ckpt_bytes(arr_f32: np.ndarray, target_datatype: int) -> bytes:
@@ -226,3 +316,41 @@ def tensor_to_ckpt_bytes(arr_f32: np.ndarray, target_datatype: int) -> bytes:
     if target_datatype == DT_BFLOAT16:
         return f32_to_bf16_bytes(arr_f32)
     raise ValueError(f"Unsupported target_datatype code: {target_datatype}")
+
+
+def write_safetensors_file(
+    output_path: str | Path,
+    tensors: Dict[str, Tuple[str, Sequence[int], bytes]],
+    metadata: Optional[Dict[str, str]] = None,
+) -> None:
+    """Write a standard `.safetensors` file from `{key: (dtype_str, shape, raw_bytes)}`."""
+    out = Path(output_path).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    header: Dict[str, Any] = {}
+    if metadata:
+        header["__metadata__"] = {str(k): str(v) for k, v in metadata.items()}
+
+    blobs: List[bytes] = []
+    offset = 0
+    for name in sorted(tensors.keys()):
+        dtype_str, shape, raw_bytes = tensors[name]
+        end = offset + len(raw_bytes)
+        header[name] = {
+            "dtype": str(dtype_str).upper(),
+            "shape": [int(d) for d in shape],
+            "data_offsets": [offset, end],
+        }
+        blobs.append(raw_bytes)
+        offset = end
+
+    header_json = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    # Pad header to 8-byte alignment
+    pad = (8 - (len(header_json) % 8)) % 8
+    if pad:
+        header_json += b" " * pad
+
+    with out.open("wb") as f:
+        f.write(struct.pack("<Q", len(header_json)))
+        f.write(header_json)
+        for b in blobs:
+            f.write(b)

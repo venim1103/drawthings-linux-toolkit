@@ -12,6 +12,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .dequant import dequantize_fp8_e4m3, dequantize_fp8_e5m2, dequantize_gguf_tensor
+from .keymaps import STANDARD_PREFIXES, get_architecture_aliases
 from .transforms import bf16_bytes_to_f32
 
 SAFETENSORS_DTYPE_BYTES: Dict[str, int] = {
@@ -184,12 +185,24 @@ class SafetensorsSeeker:
     def resolve_key(
         self,
         key: str,
-        prefixes: Sequence[str] = ("", "model.diffusion_model.", "model.", "diffusion_model."),
+        prefixes: Sequence[str] = ("", *STANDARD_PREFIXES),
+        aliases: Optional[Sequence[str]] = None,
+        profile: str = "ltx2_3",
     ) -> Optional[str]:
+        candidates: List[str] = []
         for p in prefixes:
-            candidate = f"{p}{key}" if p else key
-            if candidate in self.tensors:
-                return candidate
+            candidates.append(f"{p}{key}" if p else key)
+        if aliases:
+            for a in aliases:
+                candidates.append(a)
+                for p in prefixes:
+                    if p:
+                        candidates.append(f"{p}{a}")
+        for auto_alias in get_architecture_aliases(key, profile=profile):
+            candidates.append(auto_alias)
+        for c in candidates:
+            if c in self.tensors:
+                return c
         return None
 
     def read_raw_bytes(self, key: str) -> Tuple[TensorSliceInfo, bytes]:
@@ -386,6 +399,22 @@ class GGUFSeeker:
 
     def keys(self) -> List[str]:
         return list(self.tensors.keys())
+
+    def resolve_key(
+        self,
+        key: str,
+        prefixes: Sequence[str] = ("", *STANDARD_PREFIXES),
+        aliases: Optional[Sequence[str]] = None,
+        profile: str = "ltx2_3",
+    ) -> Optional[str]:
+        candidates: List[str] = [key]
+        if aliases:
+            candidates.extend(aliases)
+        candidates.extend(get_architecture_aliases(key, profile=profile))
+        for c in candidates:
+            if c in self.tensors:
+                return c
+        return None
 
     def read_f32(self, key: str) -> np.ndarray:
         info = self.tensors[key]
