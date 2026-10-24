@@ -6,18 +6,24 @@ from pathlib import Path
 
 import numpy as np
 
-from tools.dt_direct_ckpt_builder import convert_source_to_ckpt, restore_norms_from_contract
+from tools.dt_direct_ckpt_builder import (
+    convert_source_to_ckpt,
+    diff_ckpt_stores,
+    load_contract,
+    restore_norms_from_contract,
+)
 from tools.dt_keymap_compiler import (
     audit_swift_mapper_source,
     build_ltx23_contract,
     build_moss_image_contract,
 )
 from tools.dt_layer_parity_oracle import (
+    inspect_ckpt_health,
     reference_gated_delta_rule,
     reference_rmsnorm_gated,
     verify_block_parity,
 )
-from tools.dt_lora_universal_bridge import verify_converted_lora
+from tools.dt_lora_universal_bridge import normalize_lora_safetensors, verify_converted_lora
 from tools.dt_weellm.dequant import (
     dequantize_fp8_e4m3,
     dequantize_fp8_e5m2,
@@ -404,6 +410,76 @@ class DirectBuilderAndLoRABridgeTests(unittest.TestCase):
         rg_out = reference_rmsnorm_gated(x, gate, w)
         self.assertEqual(rg_out.shape, (1, 4, 16))
         self.assertTrue(np.all(np.isfinite(rg_out)))
+
+    def test_diff_ckpt_stores_and_inspect_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            c1_path = tmp_dir / "candidate.ckpt"
+            c2_path = tmp_dir / "reference.ckpt"
+
+            with DrawThingsCkptStore(c1_path, writable=True) as s1:
+                s1.write_tensor("t1", np.array([1.0, 2.0], dtype=np.float32), datatype=DT_FLOAT32)
+                s1.write_tensor(
+                    "__dit__[t-x_norm_q-0-0]",
+                    np.array([0.5, 0.5], dtype=np.float32),
+                    datatype=DT_FLOAT32,
+                    rank_policy="norm_1_1_n",
+                )
+
+            with DrawThingsCkptStore(c2_path, writable=True) as s2:
+                s2.write_tensor("t1", np.array([1.0, 2.0], dtype=np.float32), datatype=DT_FLOAT32)
+                s2.write_tensor(
+                    "__dit__[t-x_norm_q-0-0]",
+                    np.array([0.5, 0.5], dtype=np.float32),
+                    datatype=DT_FLOAT32,
+                    rank_policy="norm_1_1_n",
+                )
+
+            diff = diff_ckpt_stores(c1_path, c2_path)
+            self.assertTrue(diff["is_equivalent"])
+            self.assertEqual(diff["shared_tensor_count"], 2)
+
+            health_ok, report = inspect_ckpt_health(c1_path)
+            self.assertTrue(health_ok, msg=str(report))
+            self.assertEqual(report["total_tensors"], 2)
+            self.assertEqual(report["f32_tensors"], 2)
+
+    def test_lora_normalize_unmangles_kohya_keys_and_hydrates_contracts(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        ltx_contract = load_contract(repo_root / "contracts/ltx2_3.json")
+        self.assertEqual(len(ltx_contract["tensors"]), 1252)
+        moss_contract = load_contract(repo_root / "contracts/moss_image.json")
+        self.assertGreater(len(moss_contract["tensors"]), 400)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            raw_kohya = tmp_dir / "kohya_lora.safetensors"
+            w_down = np.ones((4, 8), dtype=np.float32)
+            w_up = np.ones((8, 4), dtype=np.float32)
+            write_mock_safetensors(
+                raw_kohya,
+                {
+                    "lora_unet_transformer_blocks_0_attn1_to_q.lora_down.weight": (
+                        "F32",
+                        w_down.shape,
+                        w_down.tobytes(),
+                    ),
+                    "lora_unet_transformer_blocks_0_attn1_to_q.lora_up.weight": (
+                        "F32",
+                        w_up.shape,
+                        w_up.tobytes(),
+                    ),
+                },
+            )
+
+            norm_out = tmp_dir / "normalized_lora.safetensors"
+            stats = normalize_lora_safetensors(raw_kohya, norm_out, profile="ltx2_3")
+            self.assertEqual(stats["normalized_down_tensors"], 1)
+            self.assertEqual(stats["normalized_up_tensors"], 1)
+
+            with SafetensorsSeeker(norm_out) as s:
+                self.assertIn("diffusion_model.transformer_blocks.0.attn1.to_q.lora_A.weight", s.keys())
+                self.assertIn("diffusion_model.transformer_blocks.0.attn1.to_q.lora_B.weight", s.keys())
 
 
 if __name__ == "__main__":

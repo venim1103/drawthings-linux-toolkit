@@ -27,6 +27,8 @@ MODELS_DIR="$ROOT/dt-models"
 SAFETENSORS=""
 NAME=""
 FORCE=0
+DIRECT=0
+CONTRACT=""
 
 usage() { awk '/^#!/{next} /^#/{sub(/^# ?/,"");print;c=1;next} c{exit}' "$0"; }
 
@@ -34,6 +36,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --direct) DIRECT=1; shift ;;
+    --contract) CONTRACT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "error: unknown option: $1" >&2; usage; exit 1 ;;
     *)
@@ -106,16 +110,31 @@ if [[ -f "$F16" && "$FORCE" != "1" ]]; then
 fi
 
 echo "==> [1/3] Preflight"
-"$PYTHON_BIN" "$ROOT/tools/dt_preflight_safetensors.py" --file "$SAFETENSORS" || {
+PREFLIGHT_ARGS=(--file "$SAFETENSORS")
+if [[ -n "$CONTRACT" && -f "$CONTRACT" ]]; then
+  PREFLIGHT_ARGS+=(--contract "$CONTRACT")
+fi
+"$PYTHON_BIN" "$ROOT/tools/dt_preflight_safetensors.py" "${PREFLIGHT_ARGS[@]}" || {
   echo "warn: preflight reported issues (continuing)" >&2; }
 
-echo "==> [2/3] Convert (raw, no align-to-official)"
-DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD=0 \
-DRAWTHINGS_CONVERTER_ALIGN_METADATA_MODE=0 \
-  bash "$ROOT/tools/dt_convert_model.sh" \
-    --file "$SAFETENSORS" \
-    --name "$NAME" \
-    --output-directory "$MODELS_DIR"
+if [[ "$DIRECT" == "1" ]]; then
+  if [[ -z "$CONTRACT" || ! -f "$CONTRACT" ]]; then
+    CONTRACT="$ROOT/contracts/ltx2_3.json"
+  fi
+  echo "==> [2/3] Direct Python Conversion (dt_direct_ckpt_builder.py)"
+  "$PYTHON_BIN" "$ROOT/tools/dt_direct_ckpt_builder.py" convert \
+    --input "$SAFETENSORS" \
+    --contract "$CONTRACT" \
+    --output "$F16"
+else
+  echo "==> [2/3] Convert (raw, no align-to-official)"
+  DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD=0 \
+  DRAWTHINGS_CONVERTER_ALIGN_METADATA_MODE=0 \
+    bash "$ROOT/tools/dt_convert_model.sh" \
+      --file "$SAFETENSORS" \
+      --name "$NAME" \
+      --output-directory "$MODELS_DIR"
+fi
 
 resolve_f16_output
 if [[ ! -f "$F16" ]]; then

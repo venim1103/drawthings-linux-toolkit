@@ -30,6 +30,9 @@ NAME=""
 VERSION="${DT_LORA_VERSION:-ltx2.3}"
 SCALE_FACTOR="${DT_LORA_SCALE_FACTOR:-1.0}"
 FORCE=0
+NORMALIZE=0
+VERIFY_POST=0
+CONTRACT=""
 
 usage() { awk '/^#!/{next} /^#/{sub(/^# ?/,"");print;c=1;next} c{exit}' "$0"; }
 
@@ -39,6 +42,9 @@ while [[ $# -gt 0 ]]; do
     --version) VERSION="${2:-}"; shift 2 ;;
     --scale-factor) SCALE_FACTOR="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --normalize) NORMALIZE=1; shift ;;
+    --verify-post) VERIFY_POST=1; shift ;;
+    --contract) CONTRACT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "error: unknown option: $1" >&2; usage; exit 1 ;;
     *)
@@ -152,9 +158,18 @@ else
   CONVERTER_BIN="$(resolve_converter_bin)"
   TMP_SPEC="$(mktemp)"
 
+  CONVERT_INPUT="$SAFETENSORS"
+  if [[ "$NORMALIZE" == "1" ]]; then
+    NORMALIZED_SF="$MODELS_DIR/.${NAME}_normalized.safetensors"
+    echo "==> Normalizing community LoRA keys (dt_lora_universal_bridge.py)"
+    "$PYTHON_BIN" "$ROOT/tools/dt_lora_universal_bridge.py" normalize \
+      --input "$SAFETENSORS" --output "$NORMALIZED_SF" --profile "${VERSION//./_}"
+    CONVERT_INPUT="$NORMALIZED_SF"
+  fi
+
   CONVERT_CMD=(
     "$CONVERTER_BIN"
-    --file "$SAFETENSORS"
+    --file "$CONVERT_INPUT"
     --name "$NAME"
     --version "$VERSION"
     --scale-factor "$SCALE_FACTOR"
@@ -239,6 +254,14 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump(entries, f, indent=2)
 print(f"  custom_lora '{name}' -> {file_name} ({version})")
 PY
+
+if [[ "$VERIFY_POST" == "1" && -n "$CONTRACT" && -f "$CONTRACT" ]]; then
+  echo "==> Running §24 static LoRA audit (dt_lora_universal_bridge.py verify)"
+  "$PYTHON_BIN" "$ROOT/tools/dt_lora_universal_bridge.py" verify \
+    --source-safetensors "$SAFETENSORS" \
+    --converted-ckpt "$OUT_PATH" \
+    --contract "$CONTRACT"
+fi
 
 echo ""
 echo "OK: $OUT_PATH"

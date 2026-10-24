@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from tools.dt_direct_ckpt_builder import load_contract
 from tools.dt_weellm.seek_io import open_seeker
 from tools.dt_weellm.sqlite_store import DrawThingsCkptStore
 from tools.dt_weellm.transforms import (
@@ -118,7 +120,7 @@ def verify_block_parity(
     atol: float = 1e-2,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Verify all tensors matching `block_prefix` between `safetensors_path` and `ckpt_path`."""
-    contract = json.loads(Path(contract_path).read_text(encoding="utf-8"))
+    contract = load_contract(contract_path)
     rules: Dict[str, Dict[str, Any]] = contract.get("tensors", {})
     matching_rules = {k: v for k, v in rules.items() if k.startswith(block_prefix)}
     if not matching_rules:
@@ -232,20 +234,125 @@ def cmd_generate_qwen35_fixtures(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_verify_block(args: argparse.Namespace) -> int:
-    ok, report = verify_block_parity(
-        safetensors_path=args.safetensors,
-        ckpt_path=args.ckpt,
-        contract_path=args.contract,
-        block_prefix=args.block_prefix,
-        atol=args.atol,
-    )
-    print("== Single-Block Weight & Transform Parity Check ==")
-    print(f"block_prefix={report['block_prefix']} tensors_checked={report['tensors_checked']}")
-    print(f"max_observed_diff={report['max_observed_diff']:.6g}")
+def inspect_ckpt_health(
+    ckpt_path: str | Path,
+    contract_path: Optional[str | Path] = None,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Scan every tensor in a Draw Things .ckpt (including sidecars) for finiteness, datatypes, and rank-3 norm policy."""
+    p = Path(ckpt_path).expanduser().resolve()
+    contract: Optional[Dict[str, Any]] = load_contract(contract_path) if contract_path else None
+
+    failures: List[str] = []
+    total_tensors = 0
+    external_tensors = 0
+    finite_checked = 0
+    f32_count = 0
+    f16_count = 0
+    bf16_count = 0
+
+    with DrawThingsCkptStore(p, writable=False) as store:
+        keys = store.list_keys()
+        total_tensors = len(keys)
+        for name in keys:
+            meta = store.read_metadata(name)
+            if meta is None:
+                failures.append(f"{name}: unreadable SQLite metadata")
+                continue
+            if meta.is_external:
+                external_tensors += 1
+
+            dt = meta.datatype
+            if dt == DT_FLOAT32:
+                f32_count += 1
+            elif dt == 131072:
+                f16_count += 1
+            elif dt == 524288:
+                bf16_count += 1
+
+            if dt in (DT_FLOAT32, 131072, 524288):
+                try:
+                    res = store.read_f32(name)
+                    if res is not None:
+                        _, arr = res
+                        if not np.all(np.isfinite(arr)):
+                            nan_c = int(np.isnan(arr).sum())
+                            inf_c = int(np.isinf(arr).sum())
+                            failures.append(f"{name}: non-finite values (NaN={nan_c}, Inf={inf_c})")
+                        finite_checked += 1
+                except Exception as exc:
+                    failures.append(f"{name}: read_f32 failed: {exc}")
+
+            if contract:
+                patterns = contract.get("restore_patterns", {})
+                ada_ln_re = re.compile(patterns.get("f32_ada_ln_regex", r"ada_ln"))
+                qk_norm_re = re.compile(patterns.get("f32_qk_norm_regex", r"(norm_q|norm_k)-\d+-0\]$"))
+
+                if ada_ln_re.search(name) or qk_norm_re.search(name):
+                    if len(meta.shape) != 3 or meta.shape[0] != 1 or meta.shape[1] != 1:
+                        failures.append(
+                            f"{name}: rank-3 policy violation, got shape {meta.shape} (expected [1, 1, N])"
+                        )
+
+    summary = {
+        "file": str(p),
+        "total_tensors": total_tensors,
+        "external_tensors": external_tensors,
+        "finite_checked": finite_checked,
+        "f32_tensors": f32_count,
+        "f16_tensors": f16_count,
+        "bf16_tensors": bf16_count,
+        "failures": failures,
+    }
+    return len(failures) == 0, summary
+
+
+def cmd_inspect_health(args: argparse.Namespace) -> int:
+    ok, report = inspect_ckpt_health(args.ckpt, contract_path=args.contract or None)
+    print("== Draw Things Checkpoint Health Audit ==")
+    print(f"file={report['file']} total_tensors={report['total_tensors']}")
+    print(f"external_tensors={report['external_tensors']} finite_checked={report['finite_checked']}")
+    print(f"datatype_counts: F32={report['f32_tensors']}, F16={report['f16_tensors']}, BF16={report['bf16_tensors']}")
     if not ok:
-        for f in report["failures"][:15]:
+        print(f"failures_count={len(report['failures'])}")
+        for f in report["failures"][:20]:
             print(f"  FAIL: {f}")
+        print("RESULT=FAIL")
+        return 1
+    print("RESULT=PASS")
+    return 0
+
+
+def cmd_verify_block(args: argparse.Namespace) -> int:
+    contract = load_contract(args.contract)
+    block_prefixes = [args.block_prefix]
+    if args.all_blocks:
+        max_layer = int(contract.get("architecture", {}).get("layers", 48))
+        block_prefixes = [f"transformer_blocks.{i}." for i in range(max_layer)]
+
+    total_failures = 0
+    total_checked = 0
+    for bp in block_prefixes:
+        try:
+            ok, report = verify_block_parity(
+                safetensors_path=args.safetensors,
+                ckpt_path=args.ckpt,
+                contract_path=args.contract,
+                block_prefix=bp,
+                atol=args.atol,
+            )
+            total_checked += report["tensors_checked"]
+            if not ok:
+                total_failures += len(report["failures"])
+                print(f"FAIL [{bp}]: max_diff={report['max_observed_diff']:.6g}")
+                for f in report["failures"][:5]:
+                    print(f"  {f}")
+        except Exception as exc:
+            total_failures += 1
+            print(f"ERROR [{bp}]: {exc}")
+
+    print("== Single/Multi-Block Weight & Transform Parity Check ==")
+    print(f"blocks_tested={len(block_prefixes)} tensors_checked={total_checked} failures={total_failures}")
+    if total_failures > 0:
         print("RESULT=FAIL")
         return 1
     print("RESULT=PASS")
@@ -271,13 +378,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_blk.add_argument("--ckpt", required=True)
     p_blk.add_argument("--contract", required=True)
     p_blk.add_argument("--block-prefix", default="transformer_blocks.0.")
+    p_blk.add_argument("--all-blocks", action="store_true", help="Verify all transformer blocks 0..N")
     p_blk.add_argument("--atol", type=float, default=1e-2)
+
+    p_chk = sub.add_parser("inspect-ckpt-health", help="Audit .ckpt for NaNs, Infs, and rank-3 norm policy")
+    p_chk.add_argument("--ckpt", required=True)
+    p_chk.add_argument("--contract", default="", help="Optional contract to enforce norm rank-3 and F32 policy")
 
     args = parser.parse_args(argv)
     if args.subcommand == "qwen35-linear-attn-fixture":
         return cmd_generate_qwen35_fixtures(args)
     if args.subcommand == "verify-block":
         return cmd_verify_block(args)
+    if args.subcommand == "inspect-ckpt-health":
+        return cmd_inspect_health(args)
     return 2
 
 

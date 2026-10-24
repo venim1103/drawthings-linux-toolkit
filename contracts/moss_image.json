@@ -38,5 +38,7 @@
   "restore_patterns": {
     "f32_ada_ln_regex": "(ada_ln|t_embedder|time_embed|modulation)",
     "f32_qk_norm_regex": "(norm_q|norm_k)-\\d+-0\\]$"
-  }
+  },
+  "dynamic_compiler": "tools.dt_keymap_compiler:build_moss_image_contract",
+  "tensors": {}
 }

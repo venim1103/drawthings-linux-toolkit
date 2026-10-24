@@ -437,11 +437,143 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
     num_heads = 24
     head_dim = 128
 
-    # 2-block Text Refiner + 42-layer Main DiT
+    # 1. Embedders, Output Projections, Time Embedders
+    tensors["patchify_proj.weight"] = {
+        "dt_names": ["__dit__[t-x_embedder-0-0]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F16",
+        "quant_restore_policy": "none",
+        "dim_rank_policy": "preserve",
+    }
+    tensors["patchify_proj.bias"] = {
+        "dt_names": ["__dit__[t-x_embedder-0-1]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F16",
+        "quant_restore_policy": "none",
+        "dim_rank_policy": "preserve",
+    }
+    tensors["timestep_embedder.linear_1.weight"] = {
+        "dt_names": ["__dit__[t-t_embedder_0-0-0]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F16",
+        "quant_restore_policy": "none",
+        "dim_rank_policy": "preserve",
+    }
+    tensors["timestep_embedder.linear_1.bias"] = {
+        "dt_names": ["__dit__[t-t_embedder_0-0-1]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F16",
+        "quant_restore_policy": "none",
+        "dim_rank_policy": "preserve",
+    }
+    # Second timestep projection is FP32-sensitive in Draw Things (MOSS M3 requirement)
+    tensors["timestep_embedder.linear_2.weight"] = {
+        "dt_names": ["__dit__[t-t_embedder_1-0-0]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F32",
+        "quant_restore_policy": "f32_from_source",
+        "dim_rank_policy": "preserve",
+    }
+    tensors["timestep_embedder.linear_2.bias"] = {
+        "dt_names": ["__dit__[t-t_embedder_1-0-1]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F32",
+        "quant_restore_policy": "f32_from_source",
+        "dim_rank_policy": "preserve",
+    }
+    tensors["norm_out.weight"] = {
+        "dt_names": ["__dit__[t-norm_out-0-0]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F32",
+        "quant_restore_policy": "f32_from_source",
+        "dim_rank_policy": "norm_1_1_n",
+    }
+    tensors["norm_out.bias"] = {
+        "dt_names": ["__dit__[t-norm_out-0-1]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F32",
+        "quant_restore_policy": "f32_from_source",
+        "dim_rank_policy": "norm_1_1_n",
+    }
+    tensors["proj_out.weight"] = {
+        "dt_names": ["__dit__[t-proj_out-0-0]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F16",
+        "quant_restore_policy": "none",
+        "dim_rank_policy": "preserve",
+    }
+    tensors["proj_out.bias"] = {
+        "dt_names": ["__dit__[t-proj_out-0-1]"],
+        "rotary_interleaved": False,
+        "f16_store_datatype": "F16",
+        "quant_restore_policy": "none",
+        "dim_rank_policy": "preserve",
+    }
+
+    # 2. Context Refiner Blocks (2 layers)
+    for i in range(2):
+        p = f"text_refiner_blocks.{i}"
+        tensors[f"{p}.attn.to_q.weight"] = {
+            "dt_names": [f"__dit__[t-refiner_q-{i}-0]"],
+            "rotary_interleaved": True,
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_k.weight"] = {
+            "dt_names": [f"__dit__[t-refiner_k-{i}-0]"],
+            "rotary_interleaved": True,
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_v.weight"] = {
+            "dt_names": [f"__dit__[t-refiner_v-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_out.0.weight"] = {
+            "dt_names": [f"__dit__[t-refiner_o-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.ff.net.0.proj.weight"] = {
+            "dt_names": [f"__dit__[t-refiner_ff1-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.ff.net.2.weight"] = {
+            "dt_names": [f"__dit__[t-refiner_ff2-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+
+    # 3. 42 Main DiT Blocks
     for i in range(42):
         p = f"transformer_blocks.{i}"
         tensors[f"{p}.attn.to_q.weight"] = {
             "dt_names": [f"__dit__[t-x_q-{i}-0]"],
+            "rotary_interleaved": True,
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_q.bias"] = {
+            "dt_names": [f"__dit__[t-x_q-{i}-1]"],
             "rotary_interleaved": True,
             "num_heads": num_heads,
             "head_dim": head_dim,
@@ -458,11 +590,41 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
             "quant_restore_policy": "none",
             "dim_rank_policy": "preserve",
         }
+        tensors[f"{p}.attn.to_k.bias"] = {
+            "dt_names": [f"__dit__[t-x_k-{i}-1]"],
+            "rotary_interleaved": True,
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
         tensors[f"{p}.attn.to_v.weight"] = {
             "dt_names": [f"__dit__[t-x_v-{i}-0]"],
             "rotary_interleaved": False,
             "num_heads": 0,
             "head_dim": 0,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_v.bias"] = {
+            "dt_names": [f"__dit__[t-x_v-{i}-1]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_out.0.weight"] = {
+            "dt_names": [f"__dit__[t-x_o-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.attn.to_out.0.bias"] = {
+            "dt_names": [f"__dit__[t-x_o-{i}-1]"],
+            "rotary_interleaved": False,
             "f16_store_datatype": "F16",
             "quant_restore_policy": "none",
             "dim_rank_policy": "preserve",
@@ -481,6 +643,41 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
             "rotary_interleaved": True,
             "num_heads": num_heads,
             "head_dim": head_dim,
+            "f16_store_datatype": "F32",
+            "quant_restore_policy": "f32_from_source",
+            "dim_rank_policy": "norm_1_1_n",
+        }
+        tensors[f"{p}.ff.net.0.proj.weight"] = {
+            "dt_names": [f"__dit__[t-x_linear1-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.ff.net.0.proj.bias"] = {
+            "dt_names": [f"__dit__[t-x_linear1-{i}-1]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.ff.net.2.weight"] = {
+            "dt_names": [f"__dit__[t-x_out_proj-{i}-0]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.ff.net.2.bias"] = {
+            "dt_names": [f"__dit__[t-x_out_proj-{i}-1]"],
+            "rotary_interleaved": False,
+            "f16_store_datatype": "F16",
+            "quant_restore_policy": "none",
+            "dim_rank_policy": "preserve",
+        }
+        tensors[f"{p}.scale_shift_table"] = {
+            "dt_names": [f"__dit__[t-attn1_ada_ln_{c}-{i}-0]" for c in range(6)],
+            "rotary_interleaved": False,
             "f16_store_datatype": "F32",
             "quant_restore_policy": "f32_from_source",
             "dim_rank_policy": "norm_1_1_n",
@@ -642,6 +839,25 @@ def audit_swift_mapper_source(
                                 ),
                             )
                         )
+
+    # Rule 2 (§3a): Aggregate embedding tensors in ModelImporter.swift must specify `isBF16: true`
+    for func_name, entries in func_mappings.items():
+        for line_no, key_pat, rhs in entries:
+            if "aggregate_embed" in key_pat and "isBF16: true" not in rhs:
+                findings.append(
+                    SwiftAuditFinding(
+                        rule_id="DT-CONV-003A",
+                        severity="ERROR",
+                        file_path=file_label,
+                        line_number=line_no,
+                        function_name=func_name,
+                        key_pattern=key_pat,
+                        message=(
+                            f"Aggregate embedding {key_pat!r} is mapped without `isBF16: true`; "
+                            "downcasting to Float16 causes ccv_nnc_tensor_read SIGSEGV at model load (§3a)."
+                        ),
+                    )
+                )
 
     return findings
 

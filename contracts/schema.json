@@ -1,0 +1,101 @@
+{
+  "title": "DrawThingsModelContract",
+  "description": "Declarative conversion, serialization, and validation contract for Draw Things models",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "profile",
+    "model_version",
+    "companions",
+    "geometry_guards",
+    "source_required_keys",
+    "ckpt_required_prefixes",
+    "restore_patterns",
+    "tensors"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "enum": [1] },
+    "profile": { "type": "string" },
+    "model_version": { "type": "string" },
+    "expected_ckpt_tensor_count": { "type": "integer" },
+    "expected_counts_summary": {
+      "type": "object",
+      "properties": {
+        "total_ckpt_tensors": { "type": "integer" },
+        "f32_ada_ln_tensors": { "type": "integer" },
+        "qk_norm_tensors": { "type": "integer" },
+        "bf16_aggregate_embed_tensors": { "type": "integer" }
+      }
+    },
+    "companions": {
+      "type": "object",
+      "required": ["autoencoder", "text_encoder", "modifier", "default_scale", "objective"],
+      "properties": {
+        "autoencoder": { "type": "string" },
+        "text_encoder": { "type": "string" },
+        "clip_encoder": { "type": "string" },
+        "modifier": { "type": "string" },
+        "default_scale": { "type": "number" },
+        "hires_fix_scale": { "type": "number" },
+        "objective": { "type": "object" }
+      }
+    },
+    "geometry_guards": {
+      "type": "object",
+      "required": ["latent_unit_pixels", "temporal_frame_rule", "min_video_frames"],
+      "properties": {
+        "latent_unit_pixels": { "type": "integer" },
+        "temporal_frame_rule": { "type": "string" },
+        "min_video_frames": { "type": "integer" }
+      }
+    },
+    "source_required_keys": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "ckpt_required_prefixes": {
+      "type": "object",
+      "additionalProperties": { "type": "integer" }
+    },
+    "restore_patterns": {
+      "type": "object",
+      "required": ["f32_ada_ln_regex", "f32_qk_norm_regex"],
+      "properties": {
+        "f32_ada_ln_regex": { "type": "string" },
+        "f32_qk_norm_regex": { "type": "string" },
+        "bf16_embed_regex": { "type": "string" }
+      }
+    },
+    "tensors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["dt_names"],
+        "properties": {
+          "dt_names": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "rotary_interleaved": { "type": "boolean" },
+          "num_heads": { "type": "integer" },
+          "head_dim": { "type": "integer" },
+          "rotary_interleaved_slices": {
+            "type": "array",
+            "items": { "type": "boolean" }
+          },
+          "f16_store_datatype": { "type": "string", "enum": ["F16", "F32", "BF16"] },
+          "quant_restore_policy": { "type": "string", "enum": ["none", "f32_from_source", "bf16_from_source"] },
+          "dim_rank_policy": { "type": "string", "enum": ["preserve", "norm_1_1_n"] },
+          "split_axis": { "type": "integer" },
+          "split_policy": { "type": "string" },
+          "offsets": {
+            "type": "array",
+            "items": { "type": "integer" }
+          },
+          "squeeze_unit_dims": { "type": "boolean" },
+          "scale": { "type": "number" }
+        }
+      }
+    }
+  }
+}

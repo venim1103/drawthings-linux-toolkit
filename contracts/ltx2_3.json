@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "profile": "ltx2_3",
+  "model_version": "ltx2.3",
+  "expected_ckpt_tensor_count": 5746,
+  "expected_counts_summary": {
+    "total_ckpt_tensors": 5746,
+    "f32_ada_ln_tensors": 1540,
+    "qk_norm_tensors": 608,
+    "bf16_aggregate_embed_tensors": 4
+  },
+  "companions": {
+    "autoencoder": "ltx_2.3_audio_video_vae_f16.ckpt",
+    "text_encoder": "gemma_3_12b_it_qat_q8p.ckpt",
+    "modifier": "kontext",
+    "default_scale": 12,
+    "hires_fix_scale": 24,
+    "objective": {
+      "u": {
+        "condition_scale": 1000
+      }
+    }
+  },
+  "geometry_guards": {
+    "latent_unit_pixels": 64,
+    "temporal_frame_rule": "8k+1",
+    "min_video_frames": 9
+  },
+  "source_required_keys": [
+    "transformer_blocks.47.attn1.to_q.weight",
+    "audio_patchify_proj.weight",
+    "video_embeddings_connector.learnable_registers",
+    "audio_embeddings_connector.learnable_registers",
+    "video_embeddings_connector.transformer_1d_blocks.7.attn1.to_q.weight",
+    "audio_embeddings_connector.transformer_1d_blocks.7.attn1.to_q.weight"
+  ],
+  "ckpt_required_prefixes": {
+    "__dit__[t-a_embedder-": 1,
+    "__dit__[t-x_embedder-": 1,
+    "__text_audio_connector__[t-down_proj-": 1,
+    "__text_video_connector__[t-down_proj-": 1
+  },
+  "restore_patterns": {
+    "f32_ada_ln_regex": "ada_ln",
+    "f32_qk_norm_regex": "(norm_q|norm_k)-\\d+-0\\]$",
+    "bf16_embed_regex": "_aggregate_embed-"
+  },
+  "dynamic_compiler": "tools.dt_keymap_compiler:build_ltx23_contract",
+  "tensors": {}
+}

@@ -39,6 +39,7 @@ NO_RESTORE=0
 RESTORE_ONLY=0
 REF_Q6P="$MODELS_DIR/ltx_2.3_22b_distilled_1.1_q6p.ckpt"
 MODEL_VERSION="ltx2.3"
+CONTRACT=""
 
 # ltx2.3 inference companions (defaults matching the proven-working alias)
 AUTOENCODER="ltx_2.3_audio_video_vae_f16.ckpt"
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --no-restore) NO_RESTORE=1; shift ;;
     --ref-q6p) REF_Q6P="${2:-}"; shift 2 ;;
     --model-version) MODEL_VERSION="${2:-}"; shift 2 ;;
+    --contract) CONTRACT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "error: unknown option: $1" >&2; usage; exit 1 ;;
     *)
@@ -137,6 +139,10 @@ fi
 # --- restore full-precision norms (the step that makes it render coherently) ---
 if [[ "$NO_RESTORE" == "1" ]]; then
   echo "==> [2/4] + [3/4] Norm restores SKIPPED (--no-restore)"
+elif [[ -n "$CONTRACT" && -f "$CONTRACT" ]]; then
+  echo "==> [2/4] + [3/4] Contract-Driven Norm Restore ($CONTRACT)"
+  "$PYTHON_BIN" "$ROOT/tools/dt_direct_ckpt_builder.py" restore-norms \
+    --quantized-ckpt "$QOUT" --f16-source "$F16" --contract "$CONTRACT"
 else
   echo "==> [2/4] Restore F32 ada_ln/modulation norms (own values, widened)"
   "$PYTHON_BIN" "$ROOT/tools/dt_q6p_restore_f32_norms.py" \

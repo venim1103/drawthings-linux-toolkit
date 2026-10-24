@@ -34,6 +34,7 @@ from tools.dt_weellm.transforms import (
     DT_FLOAT32,
     DT_FORMAT_NHWC,
     DT_TYPE_CPU,
+    apply_contract_rule_to_tensor,
     decode_dim_blob,
     encode_dim_blob,
     rotary_deinterleave,
@@ -45,7 +46,19 @@ def load_contract(contract_path: str | Path) -> Dict[str, Any]:
     path = Path(contract_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Contract file not found: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    contract = json.loads(path.read_text(encoding="utf-8"))
+    # Hydrate full tensor rules if contract uses dynamic_compiler shorthand
+    if not contract.get("tensors") and contract.get("dynamic_compiler"):
+        from tools.dt_keymap_compiler import build_ltx23_contract, build_moss_image_contract
+
+        prof = contract.get("profile")
+        if prof == "ltx2_3":
+            compiled = build_ltx23_contract()
+            contract["tensors"] = compiled["tensors"]
+        elif prof == "moss_image":
+            compiled = build_moss_image_contract()
+            contract["tensors"] = compiled["tensors"]
+    return contract
 
 
 def convert_source_to_ckpt(
@@ -94,25 +107,17 @@ def convert_source_to_ckpt(
                 if not np.all(np.isfinite(arr_f32)):
                     raise ValueError(f"Source tensor {resolved_key!r} contains NaN or Inf values")
 
-                if rule.get("rotary_interleaved", False):
-                    heads = int(rule["num_heads"])
-                    head_dim = int(rule["head_dim"])
-                    arr_f32 = rotary_deinterleave(arr_f32, num_heads=heads, head_dim=head_dim)
+                if rule.get("rotary_interleaved", False) or any(rule.get("rotary_interleaved_slices", [])):
                     stats["rotary_deinterleaved"] += 1
-
-                dt_names: List[str] = rule["dt_names"]
-                split_axis = int(rule.get("split_axis", 0))
-                if len(dt_names) > 1:
-                    chunks = split_tensor_chunks(arr_f32, count=len(dt_names), axis=split_axis)
+                if len(rule["dt_names"]) > 1:
                     stats["split_groups"] += 1
-                else:
-                    chunks = [arr_f32]
 
+                named_chunks = apply_contract_rule_to_tensor(arr_f32, rule)
                 dtype_str = str(rule.get("f16_store_datatype", "F16")).upper()
                 dt_code = DATATYPE_NAME_TO_CODE[dtype_str]
                 rank_policy = str(rule.get("dim_rank_policy", "preserve"))
 
-                for target_name, chunk in zip(dt_names, chunks):
+                for target_name, chunk in named_chunks:
                     store.write_tensor(
                         name=target_name,
                         arr_f32=chunk,
@@ -254,6 +259,87 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def diff_ckpt_stores(
+    candidate_path: str | Path,
+    reference_path: str | Path,
+    contract_path: Optional[str | Path] = None,
+    atol: float = 1e-2,
+    report_limit: int = 15,
+) -> Dict[str, Any]:
+    """Compare two Draw Things .ckpt stores for key coverage, serialization metadata, and value parity."""
+    c_path = Path(candidate_path).expanduser().resolve()
+    r_path = Path(reference_path).expanduser().resolve()
+
+    with DrawThingsCkptStore(c_path, writable=False) as c_store, DrawThingsCkptStore(r_path, writable=False) as r_store:
+        c_keys = set(c_store.list_keys())
+        r_keys = set(r_store.list_keys())
+
+        missing_in_candidate = sorted(r_keys - c_keys)
+        extra_in_candidate = sorted(c_keys - r_keys)
+        shared_keys = sorted(c_keys & r_keys)
+
+        metadata_mismatches: List[str] = []
+        value_mismatches: List[Tuple[str, float]] = []
+        exact_value_matches = 0
+        max_diff = 0.0
+
+        for key in shared_keys:
+            c_meta = c_store.read_metadata(key)
+            r_meta = r_store.read_metadata(key)
+            if c_meta is None or r_meta is None:
+                metadata_mismatches.append(f"{key}: unreadable metadata")
+                continue
+
+            if c_meta.datatype != r_meta.datatype:
+                metadata_mismatches.append(
+                    f"{key} datatype mismatch: cand={c_meta.datatype} ref={r_meta.datatype}"
+                )
+            if c_meta.shape != r_meta.shape:
+                metadata_mismatches.append(
+                    f"{key} shape mismatch: cand={c_meta.shape} ref={r_meta.shape}"
+                )
+            if c_meta.tensor_format != r_meta.tensor_format:
+                metadata_mismatches.append(
+                    f"{key} format mismatch: cand={c_meta.tensor_format} ref={r_meta.tensor_format}"
+                )
+
+            try:
+                c_res = c_store.read_f32(key)
+                r_res = r_store.read_f32(key)
+                if c_res is not None and r_res is not None:
+                    _, c_arr = c_res
+                    _, r_arr = r_res
+                    diff = float(np.max(np.abs(c_arr.reshape(-1) - r_arr.reshape(-1))))
+                    max_diff = max(max_diff, diff)
+                    if diff > atol:
+                        value_mismatches.append((key, diff))
+                    else:
+                        exact_value_matches += 1
+            except Exception:
+                pass
+
+    return {
+        "candidate": str(c_path),
+        "reference": str(r_path),
+        "candidate_tensor_count": len(c_keys),
+        "reference_tensor_count": len(r_keys),
+        "shared_tensor_count": len(shared_keys),
+        "missing_in_candidate": missing_in_candidate,
+        "extra_in_candidate": extra_in_candidate,
+        "metadata_mismatch_count": len(metadata_mismatches),
+        "metadata_mismatches": metadata_mismatches[:report_limit],
+        "value_mismatch_count": len(value_mismatches),
+        "value_mismatches": value_mismatches[:report_limit],
+        "exact_value_matches": exact_value_matches,
+        "max_observed_diff": max_diff,
+        "is_equivalent": (
+            len(missing_in_candidate) == 0
+            and len(metadata_mismatches) == 0
+            and len(value_mismatches) == 0
+        ),
+    }
+
+
 def cmd_restore_norms(args: argparse.Namespace) -> int:
     stats = restore_norms_from_contract(
         quantized_ckpt=args.quantized_ckpt,
@@ -265,6 +351,31 @@ def cmd_restore_norms(args: argparse.Namespace) -> int:
     for k, v in stats.items():
         print(f"  {k}={v}")
     print("RESULT=PASS" + (" (dry-run)" if args.dry_run else ""))
+    return 0
+
+
+def cmd_diff_ckpt(args: argparse.Namespace) -> int:
+    report = diff_ckpt_stores(
+        candidate_path=args.candidate,
+        reference_path=args.reference,
+        contract_path=args.contract or None,
+        atol=args.atol,
+        report_limit=args.report_limit,
+    )
+    print("== Checkpoint Diff Report ==")
+    print(f"candidate={report['candidate']} ({report['candidate_tensor_count']} tensors)")
+    print(f"reference={report['reference']} ({report['reference_tensor_count']} tensors)")
+    print(f"shared_tensors={report['shared_tensor_count']}")
+    print(f"missing_in_candidate={len(report['missing_in_candidate'])}")
+    print(f"extra_in_candidate={len(report['extra_in_candidate'])}")
+    print(f"metadata_mismatch_count={report['metadata_mismatch_count']}")
+    print(f"value_mismatch_count={report['value_mismatch_count']}")
+    print(f"exact_value_matches={report['exact_value_matches']}")
+    print(f"max_observed_diff={report['max_observed_diff']:.6g}")
+    if not report["is_equivalent"]:
+        print("RESULT=FAIL")
+        return 1
+    print("RESULT=PASS")
     return 0
 
 
@@ -284,11 +395,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_rest.add_argument("--contract", required=True, help="Path to contracts/<profile>.json")
     p_rest.add_argument("--dry-run", action="store_true")
 
+    p_diff = sub.add_parser("diff-ckpt", help="Compare two Draw Things .ckpt stores for parity")
+    p_diff.add_argument("--candidate", required=True, help="Candidate .ckpt to verify")
+    p_diff.add_argument("--reference", required=True, help="Reference .ckpt template")
+    p_diff.add_argument("--contract", default="", help="Optional contract path")
+    p_diff.add_argument("--atol", type=float, default=1e-2, help="Absolute tolerance for value parity")
+    p_diff.add_argument("--report-limit", type=int, default=15, help="Max reported mismatch entries")
+
     args = parser.parse_args(argv)
     if args.subcommand == "convert":
         return cmd_convert(args)
     if args.subcommand == "restore-norms":
         return cmd_restore_norms(args)
+    if args.subcommand == "diff-ckpt":
+        return cmd_diff_ckpt(args)
     return 2
 
 

@@ -21,9 +21,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from tools.dt_direct_ckpt_builder import load_contract
+from tools.dt_weellm.keymaps import canonicalize_lora_key
 from tools.dt_weellm.seek_io import SafetensorsSeeker
 from tools.dt_weellm.sqlite_store import DrawThingsCkptStore
-from tools.dt_weellm.transforms import rotary_deinterleave
+from tools.dt_weellm.transforms import rotary_deinterleave, write_safetensors_file
 
 LORA_SOURCE_PREFIXES = (
     "",
@@ -60,6 +62,59 @@ def dt_base_name_to_lora_names(dt_base_name: str) -> Tuple[str, str]:
     return f"{dt_base_name}__up__", f"{dt_base_name}__down__"
 
 
+def normalize_lora_safetensors(
+    input_path: str | Path,
+    output_path: str | Path,
+    profile: str = "ltx2_3",
+) -> Dict[str, Any]:
+    """Inspect and normalize any Kohya, LyCORIS, ComfyUI, or Diffusers LoRA into canonical Diffusers format."""
+    in_p = Path(input_path).expanduser().resolve()
+    out_p = Path(output_path).expanduser().resolve()
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+
+    normalized_tensors: Dict[str, Tuple[str, Sequence[int], bytes]] = {}
+    stats = {
+        "input_tensors": 0,
+        "normalized_up_tensors": 0,
+        "normalized_down_tensors": 0,
+        "normalized_alpha_tensors": 0,
+        "skipped_unrecognized": 0,
+    }
+
+    with SafetensorsSeeker(in_p) as seeker:
+        for key in seeker.keys():
+            stats["input_tensors"] += 1
+            info, raw = seeker.read_raw_bytes(key)
+            parsed = canonicalize_lora_key(key, profile=profile)
+            if parsed is None:
+                stats["skipped_unrecognized"] += 1
+                normalized_tensors[key] = (info.dtype, info.shape, raw)
+                continue
+
+            canonical_weight, kind = parsed
+            stem = (
+                canonical_weight[: -len(".weight")]
+                if canonical_weight.endswith(".weight")
+                else canonical_weight
+            )
+            if kind == "down":
+                target_key = f"diffusion_model.{stem}.lora_A.weight"
+                stats["normalized_down_tensors"] += 1
+            elif kind == "up":
+                target_key = f"diffusion_model.{stem}.lora_B.weight"
+                stats["normalized_up_tensors"] += 1
+            elif kind == "alpha":
+                target_key = f"diffusion_model.{stem}.alpha"
+                stats["normalized_alpha_tensors"] += 1
+            else:
+                target_key = key
+
+            normalized_tensors[target_key] = (info.dtype, info.shape, raw)
+
+    write_safetensors_file(out_p, normalized_tensors)
+    return stats
+
+
 def verify_converted_lora(
     source_safetensors: str | Path,
     converted_ckpt: str | Path,
@@ -67,7 +122,7 @@ def verify_converted_lora(
     atol: float = 1e-2,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Run the §24 static LoRA verification across all mapped projections."""
-    contract = json.loads(Path(contract_path).read_text(encoding="utf-8"))
+    contract = load_contract(contract_path)
     tensor_rules: Dict[str, Dict[str, Any]] = contract.get("tensors", {})
 
     paired_source: Dict[str, Dict[str, str]] = {}
@@ -169,6 +224,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_ver.add_argument("--contract", required=True)
     p_ver.add_argument("--atol", type=float, default=1e-2)
 
+    p_norm = sub.add_parser("normalize", help="Normalize community LoRA keys (Kohya/LyCORIS/ComfyUI -> Diffusers)")
+    p_norm.add_argument("--input", required=True, help="Input raw LoRA .safetensors")
+    p_norm.add_argument("--output", required=True, help="Output normalized LoRA .safetensors")
+    p_norm.add_argument("--profile", default="ltx2_3", choices=["ltx2_3", "moss_image", "flux2"])
+
     args = parser.parse_args(argv)
     if args.subcommand == "verify":
         ok, report = verify_converted_lora(
@@ -186,6 +246,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  FAIL: {f}")
             print("RESULT=FAIL")
             return 1
+        print("RESULT=PASS")
+        return 0
+    if args.subcommand == "normalize":
+        stats = normalize_lora_safetensors(args.input, args.output, profile=args.profile)
+        print("== Universal LoRA Normalizer ==")
+        for k, v in stats.items():
+            print(f"  {k}={v}")
         print("RESULT=PASS")
         return 0
     return 2
