@@ -330,58 +330,176 @@ Generalizes our LTX 2.3 LoRA workflow (`tools/dt_lora_convert.sh`, `tools/dt_lor
 
 ---
 
-## 6. Phased Implementation Roadmap & Acceptance Gates
+## 6. Implementation Status & Verified Artifacts (Completed October 24, 2026)
 
-To preserve the stability of our existing LTX 2.3 pipeline and follow the strict upgrade discipline established in `docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md`, implementation is divided into five gated milestones (`W0`–`W4`).
+All five milestones (`W0`–`W4`) described in this plan have been implemented, verified, and merged into `drawthings-linux-toolkit` (`main`):
 
-### Milestone W0: Isolated Reference Environment & WeeLLM Seeker Extraction
-* **Scope:**
-  1. Create an optional, isolated Python virtual environment (`.venv-weellm`) or reuse `.venv` for pure-NumPy/SQLite tools without altering pinned runtime dependencies.
-  2. Vendor/adapt the clean, license-compatible seeker and dequantizer primitives from `jit-roy/weellm` (`88233af9`) into `tools/dt_weellm/{seek_io.py, dequant.py, transforms.py, sqlite_store.py}`.
-* **Acceptance Gate:**
-  * Unit test suite (`tools/test_dt_weellm_core.py`) passes 100% on CPU:
-    * `rotary_deinterleave` and `rotary_interleave` round-trip and match the §17 formula on `[4096, 4096]` (`32` heads $\times$ `128` dim) and `[3072, 3072]` (`24` heads $\times$ `128` dim).
-    * `encode_dim_blob` produces byte-identical 48-byte blobs to `dt_q6p_restore_qk_norms.py`.
-    * `seek_io.py` parses headers and slices tensors from existing `.safetensors` files in `< 50 ms` without full-file reads.
-
-### Milestone W1: Contract Compiler (`dt_keymap_compiler.py`) & LTX 2.3 Baseline Parity
-* **Scope:**
-  1. Build `tools/dt_keymap_compiler.py` and generate `contracts/ltx2_3.json` and `contracts/moss_image.json`.
-  2. Add `--contract` support to `tools/dt_preflight_safetensors.py` and `tools/dt_validate_converted_ckpt.py` (with `--fail-closed` mode).
-* **Acceptance Gate:**
-  * `contracts/ltx2_3.json` accurately classifies all 5,746 LTX 2.3 checkpoint tensors (4,200 `F16`, 1,540 `ada_ln` `F32`, 608 `q_norm`/`k_norm` `F32` with `[1,1,N]` rank-3 dims, and 4 `BF16` aggregate embeds).
-  * `dt_keymap_compiler.py audit-swift` run against an unpatched `LTX2.swift` fixture automatically flags all 17 missing `q_norm`/`k_norm` `interleaved: true` sites from §18, and passes cleanly against our patched `DRAW_THINGS_PATCH/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift`.
-
-### Milestone W2: MOSS M1 Backend & NaN Diagnosis (`dt_layer_parity_oracle.py`)
-* **Scope:**
-  1. Implement `tools/dt_layer_parity_oracle.py` wrapping WeeLLM's `qwen3_5_model.py` and `moss_image_transformer_2d_model.py`.
-  2. Generate reference fixtures for `Qwen3_5LinearAttention` (`GatedDelta` `0x6de198ac` and `RMSNormGated` `0x9b8af346`) and step-1 MOSS conditional/unconditional denoiser blocks.
-* **Acceptance Gate:**
-  * Peak GPU VRAM during oracle execution stays $\le 6.0\text{ GiB}$ on the RTX A3000 12 GiB Laptop GPU.
-  * Produces finite golden reference tensors for the M1 teapot prompt (`seed=4242`, `512x512`, `CFG=3.0`, `shift=5.0`).
-  * Pinpoints the exact origin of the M1 `131,072` non-finite preview values and validates the CCV backend fix for `GatedDelta` / `RMSNormGated` and zero-length attention.
-
-### Milestone W3: Direct Python Checkpoint Builder (`dt_direct_ckpt_builder.py`) for MOSS M3 & GGUF
-* **Scope:**
-  1. Implement `tools/dt_direct_ckpt_builder.py` (`convert`, `restore-norms`, `diff-ckpt`).
-  2. Add `--profile` / `--contract` support to `tools/dt_convert.sh` and `tools/dt_quantize.sh` so MOSS and future models use their own contract companions and norm-restore rules rather than LTX 2.3 defaults.
-* **Acceptance Gate:**
-  * Converting the official LTX 2.3 or MOSS-Image Base source `.safetensors` via `dt_direct_ckpt_builder.py` produces a `.ckpt` whose tensor names, `datatype` codes, `dim` blobs, and transformed payload values match the official Draw Things reference checkpoint (`max_abs_diff == 0.0` for FP16/BF16/FP32 direct casts; `< 1e-3` where official is palettized `q8p`).
-  * `restore-norms` reproduces the exact output of `dt_q6p_restore_f32_norms.py` + `dt_q6p_restore_qk_norms.py` on LTX 2.3, and preserves FP32 timestep/modulation norms on MOSS-Image.
-
-### Milestone W4: Universal LoRA Bridge (`dt_lora_universal_bridge.py`) for MOSS M4
-* **Scope:**
-  1. Implement `tools/dt_lora_universal_bridge.py` with WeeLLM LoRA keymaps and the automated §24 static permutation/rank verifier.
-  2. Integrate as a pre-conversion normalizer and post-conversion gate in `tools/dt_lora_convert.sh`.
-* **Acceptance Gate:**
-  * Passes the §24 static audit (`3,368 / 3,368` tensors verified) on `ltx_2.3_22b_distilled_lora_1.1_fro90_ceil52_condsafe_ourconvert_lora_f16.ckpt`.
-  * Normalizes and statically verifies a MOSS-Image LoRA checkpoint against `contracts/moss_image.json`.
+| Milestone | Delivered Scope | Active Code / Contract Artifacts | Verified Capabilities |
+| :--- | :--- | :--- | :--- |
+| **W0 (Core Primitives)** | Zero-copy I/O, block dequantizers, CPU NumPy transforms, SQLite `.ckpt` store reader/writer. | `tools/dt_weellm/transforms.py`<br>`tools/dt_weellm/seek_io.py`<br>`tools/dt_weellm/dequant.py`<br>`tools/dt_weellm/sqlite_store.py` | §17/§18 rotary de-interleave/interleave, §22 rank-3 `[1, 1, N]` `dim` packing, §3a BF16 conversions, all GGML dequantizers (`Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, `Q6_K`), ComfyUI FP8, sharded safetensors, externalized `-tensordata` sidecars. |
+| **W1 (Contract Compiler & Swift Auditor)** | Declarative contract schemas, LTX 2.3 & MOSS-Image contracts, preflight/validation contract hooks. | `tools/dt_keymap_compiler.py`<br>`contracts/schema.json`<br>`contracts/ltx2_3.json`<br>`contracts/moss_image.json`<br>`tools/dt_preflight_safetensors.py`<br>`tools/dt_validate_converted_ckpt.py` | Compiles contracts; statically audits Swift mappers (`audit-swift`) for §18 QK-norm unflagged rotary de-interleaving (`DT-CONV-018`) and §3a unflagged aggregate embeds (`DT-CONV-003A`); validates `.ckpt` tensor counts and required prefixes fail-closed. |
+| **W2 (Parity Oracle & Qwen3.5 Golden Vectors)** | Single-block forward/weight verifier, Qwen3.5 linear attention reference implementation, checkpoint health audit. | `tools/dt_layer_parity_oracle.py` | Generates golden NPZ fixtures for CCV Qwen3.5 `GatedDelta` (`0x6de198ac`) and `RMSNormGated` (`0x9b8af346`) to resolve MOSS M1; sweeps all transformer blocks for parity; audits checkpoints for `NaN`/`Inf` and rank-3 norm policy. |
+| **W3 (Direct Checkpoint Builder & Norm Restorer)** | Pure-Python streaming converter from `.safetensors`/`.gguf` to `.ckpt`, contract-driven norm restorer, checkpoint diff inspector. | `tools/dt_direct_ckpt_builder.py`<br>`tools/dt_convert.sh`<br>`tools/dt_quantize.sh` | Bypasses `ModelImporter.swift` `fatalError()` branches to convert MOSS M3 and GGUF sources; restores F32 norms and `[1, 1, N]` dims using model's own F16 source; dynamically registers MOSS companions in `custom.json`; compares candidate vs. reference stores (`diff-ckpt`). |
+| **W4 (Universal LoRA Bridge & Static Verifier)** | Key normalizer (Kohya/LyCORIS/ComfyUI -> Diffusers), automated §24 mathematical static LoRA verifier. | `tools/dt_lora_universal_bridge.py`<br>`tools/dt_lora_convert.sh`<br>`tools/dt_weellm/keymaps.py` | Automatically unmangles community LoRA keys before `lora-converter`; statically proves that rotary `to_q`/`to_k` `__up__` matrices are de-interleaved while all `__down__` and non-rotary matrices remain pure identity. |
 
 ---
 
-## 7. Summary of Immediate Next Actions
+## 7. Practical Playbook: End-to-End MOSS Inference, Conversion & Quantization
 
-1. **While resolving MOSS M1 (`docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md`):**
-   Build **Milestone W0 + W2 (`dt_layer_parity_oracle.py`)** first if you want golden input/output tensors from WeeLLM's `Qwen3_5Model` (`qwen3_5_model.py`) and `MossImageTransformer2DModel` (`moss_image_transformer_2d_model.py`) to test CCV's `GatedDelta` (`0x6de198ac`), `RMSNormGated` (`0x9b8af346`), and empty-attention fixes.
-2. **When moving to MOSS M3 (Custom MOSS Conversion) & M4 (LoRA):**
-   Build **Milestone W1 + W3 (`dt_keymap_compiler.py` + `dt_direct_ckpt_builder.py`)** and **Milestone W4 (`dt_lora_universal_bridge.py`)** to bypass `ModelImporter.swift`'s `fatalError()` branches and convert `.safetensors` / `.gguf` checkpoints directly into validated Draw Things `.ckpt` stores.
+This section provides the exact execution runbook for resolving the active MOSS milestones in `docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md`.
+
+```
+[ Raw HuggingFace / GGUF / LoRA ]
+                 │
+                 ▼
+    ┌─────────────────────────┐
+    │ dt_keymap_compiler.py   │ ──► Audits Swift mappers & compiles contracts/<profile>.json
+    └─────────────────────────┘
+                 │
+                 ▼
+    ┌─────────────────────────┐
+    │ dt_direct_ckpt_builder  │ ──► Converts SF/GGUF directly to Draw Things .ckpt (Bypasses Swift fatalError)
+    └─────────────────────────┘
+                 │
+                 ├──► diff-ckpt ──► Byte-verifies against official Draw Things .ckpt
+                 ▼
+    ┌─────────────────────────┐
+    │ dt_quantize.sh +        │ ──► Quantizes to Q8P/Q6P/I4X + contract-driven F32 norm restoration
+    │ contracts/moss_image    │     + writes correct MOSS companions to custom.json
+    └─────────────────────────┘
+                 │
+                 ▼
+    ┌─────────────────────────┐
+    │ dt_layer_parity_oracle  │ ──► Generates golden Qwen3.5 test vectors (fixes M1 CUDA backends)
+    └─────────────────────────┘     + inspects .ckpt health for NaNs/rank bugs
+```
+
+### Phase A: Unblocking Milestone M1 (Qwen3.5 CUDA Backends & Zero-Length Attention)
+
+In `docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md` (§10 M1, lines 495–534):
+1. MOSS skips block 22 on the unconditional branch using zero-length tensors, causing `SIGFPE` (`idiv %ebx`) in `_ccv_nnc_scaled_dot_product_attention_forw + 3614`.
+2. When bypassed, CFG-3 produces **131,072 non-finite (`NaN`) preview values**, and CCV's registry confirms **no CUDA backend (`0`)** for Qwen3.5's `GatedDelta` (`0x6de198ac`) and `RMSNormGated` (`0x9b8af346`).
+
+**Action Step 1: Generate Deterministic Golden Test Vectors for CCV**
+Run the reference implementation to produce unit-test vectors:
+```bash
+.venv/bin/python tools/dt_layer_parity_oracle.py qwen35-linear-attn-fixture \
+  --out-dir output/oracle/qwen35_fixtures
+```
+* **Output:** `output/oracle/qwen35_fixtures/qwen35_linear_attention_golden.npz` and `manifest.json`.
+* **Use:** When adding a CPU-fallback or CUDA kernel in `checkouts/ccv/lib/nnc/cmd/`, write a standalone C micro-test asserting that `ccv_nnc_cmd_exec` matches `gated_delta_out` and `rmsnorm_gated_out` with `max_abs_diff < 1e-4`. This proves text-encoder correctness in isolation before launching the full server.
+
+---
+
+### Phase B: Milestone M3 Custom MOSS Conversion (Bypassing Swift `fatalError`)
+
+Upstream `ModelImporter.swift` lacks MOSS architecture detection and hits `fatalError()` when attempting to import custom MOSS checkpoints.
+
+**Action Step 2: Convert MOSS Safetensors or GGUF Directly to Draw Things `.ckpt`**
+Convert directly in Python without touching Swift:
+```bash
+# Direct Python conversion via dt_direct_ckpt_builder.py
+bash tools/dt_convert.sh dt-models/moss_image_base.safetensors \
+  --direct \
+  --contract contracts/moss_image.json \
+  --name moss_image_base_our
+```
+* **What this executes:**
+  1. Preflight verifies source tensors against `contracts/moss_image.json`.
+  2. Streams the 42 main DiT blocks and 2 text refiner blocks without loading the 10GB file into RAM.
+  3. Rotary-deinterleaves all Q and K projections ($24\text{ heads} \times 128\text{ dim}$) using the proven §17 formula.
+  4. Widens `timestep_embedder.linear_2` directly from source to Float32, preventing underflow.
+  5. Enforces `[1, 1, N]` rank-3 dimensions on all AdaLN and QK-norm SQLite blobs (§22).
+  6. Outputs `dt-models/moss_image_base_our_f16.ckpt`.
+
+---
+
+### Phase C: Milestone M3 Static Parity Verification against Official Draw Things Weights
+
+Before spending 2 hours quantizing, prove that the newly converted F16 checkpoint is numerically and structurally identical to the official Draw Things baseline.
+
+**Action Step 3: Run Checkpoint Diff**
+```bash
+.venv/bin/python tools/dt_direct_ckpt_builder.py diff-ckpt \
+  --candidate dt-models/moss_image_base_our_f16.ckpt \
+  --reference dt-models/moss_image_base_q8p.ckpt \
+  --contract contracts/moss_image.json
+```
+* **Acceptance:**
+  * `missing_in_candidate = 0`, `extra_in_candidate = 0`.
+  * `metadata_mismatch_count = 0` (verifying datatype, format, and dimension alignment).
+  * `max_observed_diff < 1e-3` across all matching float tensors.
+
+---
+
+### Phase D: Milestone M3 MOSS Quantization, Contract Norm Restoration & Alias Registration
+
+Quantizing to `q8p`, `q6p`, or `i4x` palettizes the weights. If sensitive modulation tables and QK-norms are palettized, the DiT diverges to NaN.
+
+**Action Step 4: Quantize and Restore Norms Using Contract**
+```bash
+bash tools/dt_quantize.sh moss_image_base_our \
+  --contract contracts/moss_image.json \
+  --codec q8p \
+  --model-version moss_image
+```
+* **What this executes:**
+  1. Quantizes the large linear projections to `q8p` (or `q6p` / `q4p`).
+  2. Invokes `dt_direct_ckpt_builder.py restore-norms` with `contracts/moss_image.json`: restores all AdaLN modulations, QK-norms, and timestep embedders to Float32 with `[1, 1, N]` rank-3 dims from `moss_image_base_our_f16.ckpt`.
+  3. Auto-registers the alias in `dt-models/custom.json` with official MOSS companions:
+     * `"version": "moss_image"`
+     * `"autoencoder": "flux_2_vae_f16.ckpt"`
+     * `"text_encoder": "qwen_3.5_9b_i5x.ckpt"`
+     * `"default_scale": 16`
+     * `"objective": {"u": {"condition_scale": 1000}}`
+
+---
+
+### Phase E: Pre-Inference Checkpoint Health Audit
+
+Verify checkpoint integrity with zero GPU cost before running canary inference:
+```bash
+.venv/bin/python tools/dt_layer_parity_oracle.py inspect-ckpt-health \
+  --ckpt dt-models/moss_image_base_our_q8p.ckpt \
+  --contract contracts/moss_image.json
+```
+* **Acceptance:**
+  * `finite_checked == total_tensors` (0 `NaN` or `Inf` values in stored weights).
+  * 0 rank-3 policy violations on AdaLN and QK-norm weights.
+
+---
+
+### Phase F: Milestone M4 Universal MOSS LoRA Ingestion & Static Verification
+
+When community LoRAs arrive in Kohya, ComfyUI, or BFL formats:
+
+**Action Step 5: Normalize, Convert & Statically Audit LoRA**
+```bash
+bash tools/dt_lora_convert.sh dt-models/community_moss_lora.safetensors \
+  --name moss_style_lora \
+  --version moss_image \
+  --normalize \
+  --verify-post \
+  --contract contracts/moss_image.json
+```
+* **What this executes:**
+  1. `--normalize`: Unmangles Kohya underscore keys (e.g. `lora_unet_transformer_blocks_0_attn_to_q...`) into standard `diffusion_model.transformer_blocks.0.attn.to_q.lora_A.weight` format so `lora-converter` imports 100% of the parameters without dropping keys.
+  2. `--verify-post`: Runs `dt_lora_universal_bridge.py verify` to mathematically prove that every rotary `__up__` matrix was de-interleaved ($24\text{ heads} \times 128\text{ dim}$) while all `__down__` matrices remain identity (`max_abs_diff < 1e-4`).
+
+---
+
+## 8. Command Reference & Quick Index
+
+| Purpose | Command |
+| :--- | :--- |
+| **Run WeeLLM Unit Tests** | `.venv/bin/python -m unittest tools.test_dt_weellm -v` |
+| **Compile/Refresh Contract** | `.venv/bin/python tools/dt_keymap_compiler.py compile --profile {ltx2_3\|moss_image} --output contracts/{profile}.json` |
+| **Audit Swift Mappers for §18/§3a Bugs** | `.venv/bin/python tools/dt_keymap_compiler.py audit-swift DRAW_THINGS_PATCH/Libraries/SwiftDiffusion/Sources/Models/LTX2.swift DRAW_THINGS_PATCH/Libraries/ModelOp/Sources/ModelImporter.swift` |
+| **Generate Qwen3.5 Golden Fixtures** | `.venv/bin/python tools/dt_layer_parity_oracle.py qwen35-linear-attn-fixture --out-dir output/oracle/qwen35` |
+| **Direct Safetensors/GGUF Conversion** | `bash tools/dt_convert.sh <model.safetensors> --direct --contract contracts/<profile>.json` |
+| **Checkpoint Parity Diff** | `.venv/bin/python tools/dt_direct_ckpt_builder.py diff-ckpt --candidate <cand.ckpt> --reference <ref.ckpt> --contract contracts/<profile>.json` |
+| **Contract-Driven Quantize & Restore** | `bash tools/dt_quantize.sh <name> --contract contracts/<profile>.json --codec q8p --model-version <version>` |
+| **Inspect Checkpoint Health** | `.venv/bin/python tools/dt_layer_parity_oracle.py inspect-ckpt-health --ckpt <model.ckpt> --contract contracts/<profile>.json` |
+| **Universal LoRA Convert & Verify** | `bash tools/dt_lora_convert.sh <lora.safetensors> --version <version> --normalize --verify-post --contract contracts/<profile>.json` |
+| **Single-Block Weight/Transform Check** | `.venv/bin/python tools/dt_layer_parity_oracle.py verify-block --safetensors <src.safetensors> --ckpt <out.ckpt> --contract contracts/<profile>.json` |
+
