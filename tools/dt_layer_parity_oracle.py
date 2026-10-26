@@ -16,13 +16,22 @@ and converter transform bugs on a 12 GiB GPU:
 from __future__ import annotations
 
 import argparse
+import ctypes
+import hashlib
 import json
+import math
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.dt_direct_ckpt_builder import load_contract
 from tools.dt_weellm.seek_io import open_seeker
@@ -30,6 +39,9 @@ from tools.dt_weellm.sqlite_store import DrawThingsCkptStore
 from tools.dt_weellm.transforms import (
     DATATYPE_CODE_TO_NAME,
     DT_FLOAT32,
+    apply_contract_rule_to_tensor,
+    decode_dim_blob,
+    encode_dim_blob,
     rotary_deinterleave,
     split_tensor_chunks,
 )
@@ -69,47 +81,51 @@ def reference_gated_delta_rule(
     v: np.ndarray,
     beta: np.ndarray,
     decay: np.ndarray,
+    initial_state: Optional[np.ndarray] = None,
+    log_decay: bool = False,
+    state_checkpoint_count: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Reference recurrent implementation of Qwen3.5 `GatedDelta` (CCV command ID `0x6de198ac`).
-
-    Shapes:
-      - `q`, `k`: `[batch, seq_len, num_heads, head_k_dim]`
-      - `v`:      `[batch, seq_len, num_heads, head_v_dim]`
-      - `beta`:   `[batch, seq_len, num_heads]` (writing gate in (0, 1))
-      - `decay`:  `[batch, seq_len, num_heads]` (log-decay or exp-decay factor in (0, 1])
-
-    State update per step `t`:
-      1. `state = decay[t] * state`
-      2. `v_pred = einsum('bhk,bhkv->bhv', k[t], state)`
-      3. `delta = beta[t] * (v[t] - v_pred)`
-      4. `state = state + einsum('bhk,bhv->bhkv', k[t], delta)`
-      5. `out[t] = einsum('bhk,bhkv->bhv', q[t], state)`
-    """
-    b, seq_len, h, d_k = q.shape
-    d_v = v.shape[-1]
-    state = np.zeros((b, h, d_k, d_v), dtype=np.float32)
-    outputs = np.zeros((b, seq_len, h, d_v), dtype=np.float32)
-
-    q_f = q.astype(np.float32)
-    k_f = k.astype(np.float32)
+    """Grouped recurrence with native [B,Hv,Dv,Dk] state and explicit decay mode."""
+    if q.ndim != 4 or k.shape != q.shape or v.ndim != 4:
+        raise ValueError("Q/K must share [B,T,Hk,Dk]; V must be [B,T,Hv,Dv]")
+    batch, sequence, key_heads, key_dim = q.shape
+    value_heads, value_dim = v.shape[2:]
+    if min(q.shape + v.shape) < 1 or v.shape[:2] != q.shape[:2] or value_heads % key_heads:
+        raise ValueError("Invalid grouped attention dimensions")
+    gate_shape = (batch, sequence, value_heads)
+    if beta.shape != gate_shape or decay.shape not in (gate_shape, gate_shape + (key_dim,)):
+        raise ValueError("Decay/beta shape does not match grouped value heads")
+    if not 0 <= state_checkpoint_count < sequence:
+        raise ValueError("Invalid state checkpoint count")
+    if any(not np.isfinite(values).all() for values in (q, k, v, beta, decay)):
+        raise ValueError("Attention inputs must be finite")
+    state_shape = (batch, value_heads, value_dim, key_dim)
+    if initial_state is not None and (initial_state.shape != state_shape or not np.isfinite(initial_state).all()):
+        raise ValueError("Initial state must be finite [B,Hv,Dv,Dk]")
+    state = np.zeros(state_shape, dtype=np.float32) if initial_state is None else initial_state.astype(np.float32).copy()
+    outputs = np.zeros((batch, sequence, value_heads, value_dim), dtype=np.float32)
+    groups = np.arange(value_heads) // (value_heads // key_heads)
+    q_f = np.take(q.astype(np.float32), groups, axis=2)
+    k_f = np.take(k.astype(np.float32), groups, axis=2)
     v_f = v.astype(np.float32)
     beta_f = beta.astype(np.float32)
     decay_f = decay.astype(np.float32)
-
-    for t in range(seq_len):
-        g_t = decay_f[:, t, :, None, None]  # [b, h, 1, 1]
-        beta_t = beta_f[:, t, :, None]      # [b, h, 1]
-        k_t = k_f[:, t, :, :]               # [b, h, d_k]
-        q_t = q_f[:, t, :, :]               # [b, h, d_k]
-        v_t = v_f[:, t, :, :]               # [b, h, d_v]
-
-        state = state * g_t
-        v_pred = np.einsum("bhk,bhkv->bhv", k_t, state)
-        delta = beta_t * (v_t - v_pred)
-        state = state + np.einsum("bhk,bhv->bhkv", k_t, delta)
-        outputs[:, t, :, :] = np.einsum("bhk,bhkv->bhv", q_t, state)
-
-    return outputs, state
+    checkpoints = {}
+    for timestep in range(sequence):
+        gate = decay_f[:, timestep]
+        if log_decay:
+            gate = np.exp(gate)
+        state *= gate[:, :, None, None] if decay.ndim == 3 else gate[:, :, None, :]
+        keys = k_f[:, timestep]
+        prediction = np.einsum("bhvk,bhk->bhv", state, keys)
+        delta = beta_f[:, timestep, :, None] * (v_f[:, timestep] - prediction)
+        state += delta[:, :, :, None] * keys[:, :, None, :]
+        outputs[:, timestep] = np.einsum("bhvk,bhk->bhv", state, q_f[:, timestep])
+        history_index = sequence - 1 - timestep
+        if 0 < history_index <= state_checkpoint_count:
+            checkpoints[history_index] = state.copy()
+    history = [state] + [checkpoints[index] for index in range(1, state_checkpoint_count + 1)]
+    return outputs, np.concatenate(history, axis=1)
 
 
 def verify_block_parity(
@@ -120,6 +136,8 @@ def verify_block_parity(
     atol: float = 1e-2,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Verify all tensors matching `block_prefix` between `safetensors_path` and `ckpt_path`."""
+    if not math.isfinite(atol) or atol < 0:
+        raise ValueError("Tolerance must be finite and nonnegative")
     contract = load_contract(contract_path)
     rules: Dict[str, Dict[str, Any]] = contract.get("tensors", {})
     matching_rules = {k: v for k, v in rules.items() if k.startswith(block_prefix)}
@@ -132,39 +150,32 @@ def verify_block_parity(
 
     with open_seeker(safetensors_path) as seeker, DrawThingsCkptStore(ckpt_path, writable=False) as ckpt:
         for src_key, rule in sorted(matching_rules.items()):
-            resolved = seeker.resolve_key(src_key) if hasattr(seeker, "resolve_key") else src_key
+            resolved = seeker.resolve_key(
+                src_key, aliases=rule.get("aliases"), profile=contract["profile"]
+            ) if hasattr(seeker, "resolve_key") else src_key
             if resolved is None or resolved not in seeker.keys():
                 failures.append(f"Missing source key: {src_key}")
                 continue
 
             src_arr = seeker.read_f32(resolved)
-            if rule.get("rotary_interleaved", False):
-                src_arr = rotary_deinterleave(
-                    src_arr,
-                    num_heads=int(rule["num_heads"]),
-                    head_dim=int(rule["head_dim"]),
-                )
-
-            dt_names = rule["dt_names"]
-            chunks = (
-                split_tensor_chunks(src_arr, count=len(dt_names), axis=int(rule.get("split_axis", 0)))
-                if len(dt_names) > 1
-                else [src_arr]
-            )
-
-            for dt_name, expected_chunk in zip(dt_names, chunks):
+            if not np.isfinite(src_arr).all():
+                failures.append(f"Non-finite source tensor: {src_key}")
+                continue
+            for dt_name, expected_chunk in apply_contract_rule_to_tensor(src_arr, rule):
                 res = ckpt.read_f32(dt_name)
                 if res is None:
                     failures.append(f"Missing ckpt tensor: {dt_name}")
                     continue
                 meta, ckpt_arr = res
-                if rule.get("dim_rank_policy") == "norm_1_1_n":
-                    n_elem = int(np.prod(expected_chunk.shape))
-                    if meta.shape != [1, 1, n_elem]:
-                        failures.append(
-                            f"Rank-3 norm policy violation on {dt_name}: got shape {meta.shape}, expected [1, 1, {n_elem}]"
-                        )
-                diff = float(np.max(np.abs(expected_chunk.reshape(-1) - ckpt_arr.reshape(-1))))
+                expected_shape, _ = decode_dim_blob(encode_dim_blob(
+                    expected_chunk.shape, rank_policy=rule.get("dim_rank_policy", "preserve")))
+                if meta.shape != expected_shape:
+                    failures.append(f"Shape mismatch on {dt_name}: {meta.shape} != {expected_shape}")
+                    continue
+                if not np.isfinite(ckpt_arr).all() or not np.isfinite(expected_chunk).all():
+                    failures.append(f"Non-finite values on {dt_name}")
+                    continue
+                diff = float(np.max(np.abs(expected_chunk.reshape(-1).astype(np.float64) - ckpt_arr.reshape(-1).astype(np.float64))))
                 max_observed_diff = max(max_observed_diff, diff)
                 if diff > atol:
                     failures.append(
@@ -178,7 +189,52 @@ def verify_block_parity(
         "max_observed_diff": max_observed_diff,
         "failures": failures,
     }
-    return len(failures) == 0, report
+    return bool(checked) and len(failures) == 0, report
+
+
+def validate_qwen35_native_fixture(fixture: Path, source_dir: Path) -> Dict[str, Any]:
+    compiler = shutil.which("cc")
+    native_sources = [source_dir / "lib/nnc/cmd" / relative for relative in (
+        "gated_delta/ccv_nnc_gated_delta_cpu_ref.c",
+        "rmsnorm_gated/ccv_nnc_rmsnorm_gated_cpu_ref.c")]
+    if not compiler or not all(path.is_file() for path in native_sources):
+        raise ValueError("Native fixture validation requires a C compiler and CCV operator sources")
+    with tempfile.TemporaryDirectory() as temporary:
+        library_path = Path(temporary) / "qwen35.so"
+        probe_source = Path(__file__).with_name("dt_qwen35_cpu_probe.c")
+        subprocess.run([compiler, "-shared", "-fPIC", "-O2", "-I", str(source_dir / "lib"),
+                        str(probe_source), "-lm", "-o", str(library_path)], check=True,
+                       capture_output=True, text=True, timeout=60)
+        library = ctypes.CDLL(str(library_path))
+        pointer = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+        library.dt_probe_gated_delta.argtypes = [np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),
+                                               *([pointer] * 8), ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        library.dt_probe_rmsnorm.argtypes = [ctypes.c_int, ctypes.c_int, *([pointer] * 4)]
+        with np.load(fixture, allow_pickle=False) as arrays:
+            queries, values = arrays["q"], arrays["v"]
+            dimensions = np.array([queries.shape[0], queries.shape[1], queries.shape[2],
+                                   values.shape[2], queries.shape[3], values.shape[3]], dtype=np.int32)
+            actual = np.empty_like(arrays["gated_delta_out"])
+            state = np.empty_like(arrays["gated_delta_final_state"])
+            status = library.dt_probe_gated_delta(dimensions, queries, arrays["k"], values,
+                                                 arrays["decay"], arrays["beta"], arrays["initial_state"],
+                                                 actual, state, 1, 2, 0)
+            if status != 0:
+                raise ValueError(f"Native gated delta failed with status {status}")
+            np.testing.assert_allclose(actual, arrays["gated_delta_out"], atol=2e-6, rtol=2e-5)
+            np.testing.assert_allclose(state, arrays["gated_delta_final_state"], atol=2e-6, rtol=2e-5)
+            norm_input = arrays["x_norm"]
+            norm_actual = np.empty_like(norm_input)
+            status = library.dt_probe_rmsnorm(*norm_input.shape, norm_input, arrays["gate"], arrays["weight"], norm_actual)
+            if status != 0:
+                raise ValueError(f"Native gated RMSNorm failed with status {status}")
+            np.testing.assert_allclose(norm_actual, arrays["rmsnorm_gated_out"], atol=2e-6, rtol=2e-5)
+            return {"result": "PASS", "atol": 2e-6, "rtol": 2e-5,
+                    "gated_delta_max_abs": float(np.max(np.abs(actual - arrays["gated_delta_out"]))),
+                    "state_max_abs": float(np.max(np.abs(state - arrays["gated_delta_final_state"]))),
+                    "rmsnorm_max_abs": float(np.max(np.abs(norm_actual - arrays["rmsnorm_gated_out"]))),
+                    "source_sha256": {str(path.relative_to(source_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                      for path in native_sources}}
 
 
 def cmd_generate_qwen35_fixtures(args: argparse.Namespace) -> int:
@@ -186,18 +242,19 @@ def cmd_generate_qwen35_fixtures(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
 
-    b, seq_len, h, d_k, d_v = 1, 8, 4, 16, 16
-    q = rng.standard_normal((b, seq_len, h, d_k)).astype(np.float32) * 0.25
-    k = rng.standard_normal((b, seq_len, h, d_k)).astype(np.float32) * 0.25
-    v = rng.standard_normal((b, seq_len, h, d_v)).astype(np.float32) * 0.25
-    beta = 1.0 / (1.0 + np.exp(-rng.standard_normal((b, seq_len, h)).astype(np.float32)))
-    decay = np.exp(-np.abs(rng.standard_normal((b, seq_len, h)).astype(np.float32)) * 0.1)
+    batch, sequence, key_heads, value_heads, key_dim, value_dim = 1, 8, 16, 32, 128, 128
+    q = rng.standard_normal((batch, sequence, key_heads, key_dim)).astype(np.float32) * 0.025
+    k = rng.standard_normal(q.shape).astype(np.float32) * 0.025
+    v = rng.standard_normal((batch, sequence, value_heads, value_dim)).astype(np.float32) * 0.25
+    beta = 1.0 / (1.0 + np.exp(-rng.standard_normal((batch, sequence, value_heads)).astype(np.float32)))
+    decay = -np.abs(rng.standard_normal(beta.shape).astype(np.float32)) * 0.1
+    initial_state = rng.standard_normal((batch, value_heads, value_dim, key_dim)).astype(np.float32) * 0.01
+    delta_out, final_state = reference_gated_delta_rule(
+        q, k, v, beta, decay, initial_state=initial_state, log_decay=True, state_checkpoint_count=2)
 
-    delta_out, final_state = reference_gated_delta_rule(q, k, v, beta, decay)
-
-    x_norm = rng.standard_normal((b, seq_len, h * d_v)).astype(np.float32)
-    gate = rng.standard_normal((b, seq_len, h * d_v)).astype(np.float32)
-    weight = np.ones((h * d_v,), dtype=np.float32) + rng.standard_normal((h * d_v,)).astype(np.float32) * 0.05
+    x_norm = rng.standard_normal((batch * sequence * value_heads, value_dim)).astype(np.float32)
+    gate = rng.standard_normal(x_norm.shape).astype(np.float32)
+    weight = np.ones((value_dim,), dtype=np.float32) + rng.standard_normal((value_dim,)).astype(np.float32) * 0.05
     rmsnorm_gated_out = reference_rmsnorm_gated(x_norm, gate, weight)
 
     np.savez(
@@ -207,6 +264,7 @@ def cmd_generate_qwen35_fixtures(args: argparse.Namespace) -> int:
         v=v,
         beta=beta,
         decay=decay,
+        initial_state=initial_state,
         gated_delta_out=delta_out,
         gated_delta_final_state=final_state,
         x_norm=x_norm,
@@ -216,6 +274,16 @@ def cmd_generate_qwen35_fixtures(args: argparse.Namespace) -> int:
     )
 
     manifest = {
+        "schema_version": 1,
+        "dtype": "float32",
+        "state_layout": "B,Hv,Dv,Dk",
+        "key_heads": key_heads,
+        "value_heads": value_heads,
+        "log_decay": True,
+        "state_checkpoint_count": 2,
+        "rmsnorm_axis": 1,
+        "rmsnorm_epsilon": 1e-6,
+        "validation": "numpy_reference_only",
         "seed": args.seed,
         "commands_covered": {
             "GatedDelta": "0x6de198ac",
@@ -226,6 +294,11 @@ def cmd_generate_qwen35_fixtures(args: argparse.Namespace) -> int:
         "rmsnorm_gated_out_finite": bool(np.all(np.isfinite(rmsnorm_gated_out))),
         "rmsnorm_gated_out_std": float(np.std(rmsnorm_gated_out)),
     }
+    fixture = out_dir / "qwen35_linear_attention_golden.npz"
+    manifest["fixture_sha256"] = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    if args.native_ccv_source:
+        manifest["native_cpu"] = validate_qwen35_native_fixture(fixture, Path(args.native_ccv_source).resolve())
+        manifest["validation"] = "native_cpu_verified"
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print("== Qwen3.5 Linear Attention Golden Fixtures Generated ==")
     print(f"output={out_dir / 'qwen35_linear_attention_golden.npz'}")
@@ -253,6 +326,13 @@ def inspect_ckpt_health(
     with DrawThingsCkptStore(p, writable=False) as store:
         keys = store.list_keys()
         total_tensors = len(keys)
+        contract_rules = {
+            name: (rule, index)
+            for rule in contract["tensors"].values()
+            for index, name in enumerate(rule["dt_names"])
+        } if contract else {}
+        if contract and set(keys) != set(contract_rules):
+            failures.append("Checkpoint keyset does not match the contract")
         for name in keys:
             meta = store.read_metadata(name)
             if meta is None:
@@ -281,17 +361,18 @@ def inspect_ckpt_health(
                         finite_checked += 1
                 except Exception as exc:
                     failures.append(f"{name}: read_f32 failed: {exc}")
+            else:
+                failures.append(f"{name}: unsupported datatype {dt}")
 
-            if contract:
-                patterns = contract.get("restore_patterns", {})
-                ada_ln_re = re.compile(patterns.get("f32_ada_ln_regex", r"ada_ln"))
-                qk_norm_re = re.compile(patterns.get("f32_qk_norm_regex", r"(norm_q|norm_k)-\d+-0\]$"))
+            if name in contract_rules:
+                rule, index = contract_rules[name]
+                if "target_shapes" in rule and meta.shape != rule["target_shapes"][index]:
+                    failures.append(f"{name}: target shape mismatch")
+                if rule.get("dim_rank_policy") == "norm_1_1_n" and (len(meta.shape) != 3 or meta.shape[:2] != [1, 1]):
+                    failures.append(f"{name}: rank-3 policy violation")
 
-                if ada_ln_re.search(name) or qk_norm_re.search(name):
-                    if len(meta.shape) != 3 or meta.shape[0] != 1 or meta.shape[1] != 1:
-                        failures.append(
-                            f"{name}: rank-3 policy violation, got shape {meta.shape} (expected [1, 1, N])"
-                        )
+    if not total_tensors or finite_checked != total_tensors:
+        failures.append("Finiteness validation did not cover every tensor")
 
     summary = {
         "file": str(p),
@@ -369,6 +450,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     p_fix.add_argument("--out-dir", required=True)
     p_fix.add_argument("--seed", type=int, default=4242)
+    p_fix.add_argument("--native-ccv-source", default="", help="Compile pinned CCV CPU operators and validate the generated fixtures")
 
     p_blk = sub.add_parser(
         "verify-block",

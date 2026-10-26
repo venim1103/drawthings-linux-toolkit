@@ -209,8 +209,25 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.contract:
-        contract_obj = json.loads(open(args.contract, "r", encoding="utf-8").read())
-        required = list(contract_obj.get("source_required_keys", []))
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from tools.dt_direct_ckpt_builder import load_contract
+        from tools.dt_weellm.seek_io import open_seeker
+        try:
+            contract_obj = load_contract(args.contract)
+            with open_seeker(args.file) as seeker:
+                for source, rule in contract_obj["tensors"].items():
+                    resolved = seeker.resolve_key(source, aliases=rule.get("aliases"), profile=contract_obj["profile"])
+                    if resolved is None:
+                        raise ValueError(f"Missing required source tensor: {source}")
+                    if "source_shape" in rule and list(seeker.tensors[resolved].shape) != rule["source_shape"]:
+                        raise ValueError(f"Source shape mismatch: {source}")
+            print("RESULT=PASS contract source metadata validated")
+            return 0
+        except (ValueError, OSError, KeyError) as error:
+            print(f"RESULT=FAIL {error}")
+            return 1
     elif args.profile == "ltx2_3":
         required = LTX23_REQUIRED_KEYS
     elif args.profile == "moss_image":

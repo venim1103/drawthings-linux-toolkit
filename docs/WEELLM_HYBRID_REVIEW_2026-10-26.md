@@ -4,6 +4,8 @@ Review date: 2026-10-26. Local baseline: `cf8baab`. Reviewed range: `ef88d54..cf
 
 This is a review, not an implementation change. Findings distinguish executed reproductions from source inspection and outstanding validation. Tests used Python 3.10.12, tiny temporary fixtures, and read-only metadata queries on existing models. No full model conversion, quantization, GPU inference, native rebuild, active-catalog write, or installed-runtime change was performed.
 
+Implementation follow-up: the subsequent [October 26 hardening status](WEELLM_HYBRID_TOOLING_PLAN_2026-10-24.md#october-26-hardening-status) records repairs and independently executed native CPU/storage checks. Findings below describe the reviewed `cf8baab` baseline, not a claim that every defect remains present. Full-model/CUDA acceptance remains separate.
+
 ## Findings
 
 ### F01. The MOSS Contract Does Not Describe The Actual MOSS Model [High]

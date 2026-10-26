@@ -50,8 +50,16 @@ if [[ -z "$SAFETENSORS" ]]; then
   echo "error: <model.safetensors> is required" >&2; usage; exit 1
 fi
 [[ "$SAFETENSORS" != /* ]] && SAFETENSORS="$ROOT/$SAFETENSORS"
-if [[ ! -f "$SAFETENSORS" ]]; then
+if [[ ! -f "$SAFETENSORS" && ! ( "$DIRECT" == "1" && -d "$SAFETENSORS" ) ]]; then
   echo "error: safetensors not found: $SAFETENSORS" >&2; exit 1
+fi
+
+if [[ -n "$CONTRACT" && ! -f "$CONTRACT" ]]; then
+  echo "error: contract not found: $CONTRACT" >&2
+  exit 1
+fi
+if [[ "$DIRECT" == "1" && -z "$CONTRACT" ]]; then
+  CONTRACT="$ROOT/contracts/ltx2_3.json"
 fi
 
 if [[ -z "$NAME" ]]; then
@@ -114,18 +122,21 @@ PREFLIGHT_ARGS=(--file "$SAFETENSORS")
 if [[ -n "$CONTRACT" && -f "$CONTRACT" ]]; then
   PREFLIGHT_ARGS+=(--contract "$CONTRACT")
 fi
-"$PYTHON_BIN" "$ROOT/tools/dt_preflight_safetensors.py" "${PREFLIGHT_ARGS[@]}" || {
-  echo "warn: preflight reported issues (continuing)" >&2; }
+if [[ "$DIRECT" == "1" || -n "$CONTRACT" ]]; then
+  "$PYTHON_BIN" "$ROOT/tools/dt_preflight_safetensors.py" "${PREFLIGHT_ARGS[@]}"
+else
+  "$PYTHON_BIN" "$ROOT/tools/dt_preflight_safetensors.py" "${PREFLIGHT_ARGS[@]}" || {
+    echo "warn: preflight reported issues (continuing)" >&2; }
+fi
 
 if [[ "$DIRECT" == "1" ]]; then
-  if [[ -z "$CONTRACT" || ! -f "$CONTRACT" ]]; then
-    CONTRACT="$ROOT/contracts/ltx2_3.json"
-  fi
   echo "==> [2/3] Direct Python Conversion (dt_direct_ckpt_builder.py)"
+  DIRECT_ARGS=()
+  if [[ "$FORCE" == "1" ]]; then DIRECT_ARGS+=(--force); fi
   "$PYTHON_BIN" "$ROOT/tools/dt_direct_ckpt_builder.py" convert \
     --input "$SAFETENSORS" \
     --contract "$CONTRACT" \
-    --output "$F16"
+    --output "$F16" "${DIRECT_ARGS[@]}"
 else
   echo "==> [2/3] Convert (raw, no align-to-official)"
   DRAWTHINGS_CONVERTER_VALIDATE_SERIALIZATION_GUARD=0 \
@@ -146,8 +157,12 @@ if [[ ! -f "$F16" ]]; then
 fi
 
 echo "==> [3/3] Validate converted checkpoint"
-"$PYTHON_BIN" "$ROOT/tools/dt_validate_converted_ckpt.py" --file "$F16" || {
-  echo "warn: validation reported issues (continuing)" >&2; }
+if [[ -n "$CONTRACT" ]]; then
+  "$PYTHON_BIN" "$ROOT/tools/dt_validate_converted_ckpt.py" --file "$F16" --contract "$CONTRACT"
+else
+  "$PYTHON_BIN" "$ROOT/tools/dt_validate_converted_ckpt.py" --file "$F16" || {
+    echo "warn: validation reported issues (continuing)" >&2; }
+fi
 
 echo ""
 echo "OK: $F16"

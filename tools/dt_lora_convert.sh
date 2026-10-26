@@ -85,6 +85,29 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+if [[ -n "$CONTRACT" && ! -f "$CONTRACT" ]]; then
+  echo "error: contract not found: $CONTRACT" >&2
+  exit 1
+fi
+if [[ "$VERIFY_POST" == "1" && -z "$CONTRACT" ]]; then
+  echo "error: --verify-post requires an explicit --contract" >&2
+  exit 1
+fi
+if [[ -n "$CONTRACT" ]]; then
+  CONTRACT_VERSION="$($PYTHON_BIN - "$ROOT" "$CONTRACT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from tools.dt_direct_ckpt_builder import load_contract
+contract = load_contract(sys.argv[2])
+print(contract["model_version"])
+PY
+)"
+  if [[ "$VERSION" != "$CONTRACT_VERSION" ]]; then
+    echo "error: LoRA version differs from contract version" >&2
+    exit 1
+  fi
+fi
+
 sanitize_name() {
   "$PYTHON_BIN" - "$1" <<'PY'
 import sys
@@ -161,9 +184,11 @@ else
   CONVERT_INPUT="$SAFETENSORS"
   if [[ "$NORMALIZE" == "1" ]]; then
     NORMALIZED_SF="$MODELS_DIR/.${NAME}_normalized.safetensors"
+    NORMALIZE_ARGS=()
+    if [[ "$FORCE" == "1" ]]; then NORMALIZE_ARGS+=(--force); fi
     echo "==> Normalizing community LoRA keys (dt_lora_universal_bridge.py)"
     "$PYTHON_BIN" "$ROOT/tools/dt_lora_universal_bridge.py" normalize \
-      --input "$SAFETENSORS" --output "$NORMALIZED_SF" --profile "${VERSION//./_}"
+      --input "$SAFETENSORS" --output "$NORMALIZED_SF" --profile "${VERSION//./_}" "${NORMALIZE_ARGS[@]}"
     CONVERT_INPUT="$NORMALIZED_SF"
   fi
 
@@ -201,6 +226,13 @@ if [[ ! -f "$OUT_PATH" ]]; then
   exit 1
 fi
 
+if [[ "$VERIFY_POST" == "1" ]]; then
+  VERIFY_INPUT="${CONVERT_INPUT:-$SAFETENSORS}"
+  "$PYTHON_BIN" "$ROOT/tools/dt_lora_universal_bridge.py" verify \
+    --source-safetensors "$VERIFY_INPUT" --converted-ckpt "$OUT_PATH" \
+    --contract "$CONTRACT" --scale-factor "$SCALE_FACTOR"
+fi
+
 if [[ -f "$CUSTOM_LORA_JSON" ]]; then
   cp -f "$CUSTOM_LORA_JSON" "$CUSTOM_LORA_JSON.bak_$(date +%Y%m%d_%H%M%S)"
 fi
@@ -209,6 +241,7 @@ fi
 import json
 import os
 import sys
+import tempfile
 
 path, fallback_name, fallback_file, fallback_version, spec_path = sys.argv[1:6]
 
@@ -250,18 +283,18 @@ entries = [
 ]
 entries.append(entry)
 
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(entries, f, indent=2)
+descriptor, staged_path = tempfile.mkstemp(prefix=".custom_lora.", dir=os.path.dirname(path))
+try:
+  with os.fdopen(descriptor, "w", encoding="utf-8") as staged:
+    json.dump(entries, staged, indent=2)
+    staged.flush()
+    os.fsync(staged.fileno())
+  os.replace(staged_path, path)
+finally:
+  if os.path.exists(staged_path):
+    os.unlink(staged_path)
 print(f"  custom_lora '{name}' -> {file_name} ({version})")
 PY
-
-if [[ "$VERIFY_POST" == "1" && -n "$CONTRACT" && -f "$CONTRACT" ]]; then
-  echo "==> Running §24 static LoRA audit (dt_lora_universal_bridge.py verify)"
-  "$PYTHON_BIN" "$ROOT/tools/dt_lora_universal_bridge.py" verify \
-    --source-safetensors "$SAFETENSORS" \
-    --converted-ckpt "$OUT_PATH" \
-    --contract "$CONTRACT"
-fi
 
 echo ""
 echo "OK: $OUT_PATH"

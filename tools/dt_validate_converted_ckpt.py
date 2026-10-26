@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 
 LTX23_SOURCE_REQUIRED_KEYS: Sequence[str] = (
     "transformer_blocks.47.attn1.to_q.weight",
@@ -326,8 +329,41 @@ def validate_ckpt(
     if placeholder_hits:
         failures.append(f"invalid placeholder keys found: {placeholder_hits}")
 
-    if contract_path is not None and contract_path.is_file():
-        contract_obj = json.loads(contract_path.read_text(encoding="utf-8"))
+    if contract_path is not None:
+        from tools.dt_direct_ckpt_builder import load_contract
+        from tools.dt_weellm.sqlite_store import DrawThingsCkptStore
+        from tools.dt_weellm.transforms import DATATYPE_NAME_TO_CODE
+
+        try:
+            contract_obj = load_contract(contract_path)
+            target_rules = {
+                name: (rule, index) for rule in contract_obj["tensors"].values()
+                for index, name in enumerate(rule["dt_names"])
+            }
+            if key_set != set(target_rules):
+                failures.append("checkpoint keyset differs from complete contract targets")
+            with DrawThingsCkptStore(ckpt_path) as store:
+                for name in key_set & set(target_rules):
+                    rule, index = target_rules[name]
+                    metadata = store.read_metadata(name)
+                    if metadata is None:
+                        failures.append(f"unreadable contract metadata: {name}")
+                        continue
+                    allowed_types = {DATATYPE_NAME_TO_CODE[rule.get("f16_store_datatype", "F16")]}
+                    policy = rule.get("quant_restore_policy")
+                    if policy in ("f32_from_source", "bf16_from_source"):
+                        allowed_types.add(DATATYPE_NAME_TO_CODE["F32" if policy == "f32_from_source" else "BF16"])
+                    if metadata.datatype not in allowed_types:
+                        failures.append(f"contract datatype mismatch: {name}")
+                    if "target_shapes" in rule and metadata.shape != rule["target_shapes"][index]:
+                        failures.append(f"contract shape mismatch: {name}")
+                    if rule.get("dim_rank_policy") == "norm_1_1_n" and (
+                        len(metadata.shape) != 3 or metadata.shape[:2] != [1, 1]
+                    ):
+                        failures.append(f"contract norm rank mismatch: {name}")
+        except (ValueError, OSError, sqlite3.Error) as error:
+            print(f"RESULT=FAIL invalid contract/checkpoint: {error}")
+            return 1
         req_prefixes = contract_obj.get("ckpt_required_prefixes", {})
         print(f"== Contract Required Prefix Checks ({contract_path.name}) ==")
         for prefix, min_count in req_prefixes.items():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import struct
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -195,6 +196,8 @@ def apply_contract_rule_to_tensor(
          `[True, True, False]`), where Q and K slices are rotary-deinterleaved after splitting
          while V remains in identity order.
     """
+    if "source_shape" in rule and list(arr_f32.shape) != rule["source_shape"]:
+        raise ValueError(f"Source shape mismatch: {list(arr_f32.shape)} != {rule['source_shape']}")
     work = np.ascontiguousarray(arr_f32, dtype=np.float32)
     scale = float(rule.get("scale", 1.0))
     if scale != 1.0:
@@ -240,6 +243,15 @@ def apply_contract_rule_to_tensor(
                 processed_chunks.append(chunk)
         chunks = processed_chunks
 
+    if "target_shapes" in rule:
+        reshaped_chunks = []
+        for chunk, shape in zip(chunks, rule["target_shapes"]):
+            if chunk.size != math.prod(shape):
+                raise ValueError(f"Target shape {shape} cannot hold chunk {chunk.shape}")
+            reshaped_chunks.append(chunk.reshape(shape))
+        chunks = reshaped_chunks
+    if len(chunks) != len(dt_names):
+        raise ValueError("Contract target count differs from transformed chunks")
     return list(zip(dt_names, chunks))
 
 

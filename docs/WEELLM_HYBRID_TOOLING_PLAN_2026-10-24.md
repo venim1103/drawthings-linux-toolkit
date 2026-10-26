@@ -2,6 +2,50 @@
 
 Assessment date: 2026-10-24. Reference WeeLLM commit inspected: `88233af976568bfb134f082b62434c1b3f849b28` (`jit-roy/weellm`).
 
+## October 26 Hardening Status
+
+This section supersedes the original completion claims and unexecuted recipes below. The [October 26 review](WEELLM_HYBRID_REVIEW_2026-10-26.md) remains the historical defect baseline. The hybrid tooling is now substantially hardened, but native end-to-end MOSS inference is **not** certified.
+
+### Implemented And Checked
+
+- Standalone compiler/builder/oracle/LoRA entrypoints work from outside the repository without a `PYTHONPATH` workaround.
+- Contracts are schema-validated and checked for globally unique target keys, coherent counts, and valid transform/shape lists. `jsonschema>=4.18,<5` is declared in the tools requirements.
+- MOSS was rebuilt from the pinned native mapping: all **524** target keys, shapes, and stored datatypes match the official checkpoint metadata. The independent native-layout SHA-256 is frozen in the test suite. The two F32 tensors are the second time projection, not blanket LTX-style norm/modulation restoration.
+- All **4,448** LTX source rules have shape checks against the existing safetensors header; all **5,746** target names match the existing trusted converted checkpoint. The two learnable-register names are corrected. Bundled VAE/audio-VAE/vocoder weights are explicitly excluded, not silently discarded.
+- Conversion resolves a complete mapping before materialization, rejects unmapped/ambiguous/duplicate sources and target collisions, honors source/target shapes, checks serialized F16/BF16 values for overflow, and checks/fsyncs staged SQLite output before replacement. Existing output requires `--force`; existing sidecar destinations are not silently replaced.
+- Raw inline, native `tensor_splits`, and raw external descriptors are understood. Codec identifiers are read from the high bits of `type`. Missing or truncated sidecars and unsupported encoded payloads fail explicitly. Read-only inspection cannot create missing files. Native acceptance of a tiny Python-written split tensor was verified through the unchanged candidate's actual reader under LLDB.
+- Restoration stages an SQLite backup, preserves per-rule matrix/norm rank, restores BF16/F32 from the model's own source, clears replaced codec metadata, validates required coverage and source finiteness, and atomically replaces only on success. Failure leaves original checkpoint bytes unchanged.
+- Diff/health/structural gates reject NaNs, unchecked data, wrong shape/key coverage, unknown datatypes, malformed payloads, and empty checks. Packed/palettized codecs are not claimed to have been numerically validated when the Python decoder does not support them.
+- Kohya tokenization, profile-aware aliases, FP8 output-channel scaling, shard ownership/duplicate detection, and scaled/fused LoRA output verification have regression coverage. Unsupported LoRA input/diagonal split variants fail instead of reporting zero-pair success.
+- Contract-driven shell failures are fatal. LoRA verification runs before catalog registration. Catalog writes are staged and atomic. Contract quantization/restoration uses private staging and does not replace an existing inline model after a failed check; externalized output publication is explicitly rejected until paired-store publication is implemented. Temporary-workspace tests cover these failures plus valid single-file/indexed-directory direct conversion.
+- Qwen fixtures now use real 16-key/32-value grouped heads, native `[B,Hv,Dv,Dk]` state, explicit log-decay, nonzero initial state, backward state checkpoints, and per-head gated RMSNorm. A C probe compiles the pinned unchanged CPU implementations and independently agrees on grouped, batched, non-square, channel-decay, checkpoint, and real-head-size cases.
+- Ten GGML dequantizers have frozen three-block reference hashes independently obtained from `gguf==0.13.0`; no GGUF package install is needed to run those regression vectors.
+- The Swift auditor recognizes generic/interleaved-index syntax and head mismatches and can flag unsupported MOSS importer branches, but reports its scope as heuristic rather than runtime acceptance.
+
+### Commands
+
+```bash
+.venv/bin/python -m pip install -r requirements-drawthings-tools.txt
+.venv/bin/python -m unittest tools.test_dt_weellm tools.test_dt_make_config tools.test_dt_tensor_to_playable -v
+
+# The explicit native source path must be the pinned CCV checkout.
+.venv/bin/python tools/dt_layer_parity_oracle.py qwen35-linear-attn-fixture \
+  --out-dir output/oracle/qwen35_verified \
+  --native-ccv-source /path/to/pinned/ccv
+```
+
+Native tests can use `DT_CCV_SOURCE_DIR` and `DT_GRPC_CANDIDATE`. Without the compiler, pinned sources, or candidate/debugger, relevant native tests explicitly skip; CPU-only success must not be presented as native acceptance. Fixture manifests record whether validation is `numpy_reference_only` or `native_cpu_verified`, input/output conventions, fixture hash, native source hashes, tolerances, and observed errors.
+
+### Remaining Acceptance Gates
+
+1. Implement and test missing CUDA operations and empty-attention handling in a separately scoped, pinned `DRAW_THINGS_PATCH` bundle, preserving the legacy CPU patches and installed runtime.
+2. Add full reference/native text-encoder and denoiser activation capture. `verify-block` is a serialization/weight check, not a forward execution oracle. Native CPU operation parity is now independently verified; full WeeLLM/native model parity is not.
+3. Convert a complete real model into private staging, verify native load and finite final generation, and measure actual peak memory/time before publication. No full-size conversion or GPU inference was performed in this hardening pass.
+4. Add explicit native decoding or a validated bridge for ezm7/palettized/packed/trailer variants before numerical diff/health checks on those artifacts. Unsupported codecs currently fail closed.
+5. Validate full artifact/catalog publication under concurrency and paired external storage, broader LoRA families/input/diagonal splits, and model/tokenizer/reference-environment pins and third-party notices before calling the workbench production-complete.
+
+No canonical checkpoint payloads, active catalogs, native source files, installed binaries, or patch bundles were changed by these CPU/native-probe checks. The candidate binary still has SHA-256 `fd9f2d82119e6d79172a70b4230f79c75933958b78a36b2cd8e4799cfb265b5a`.
+
 ---
 
 ## 1. Executive Summary
@@ -332,7 +376,7 @@ Generalizes our LTX 2.3 LoRA workflow (`tools/dt_lora_convert.sh`, `tools/dt_lor
 
 ## 6. Implementation Status & Verified Artifacts (Completed October 24, 2026)
 
-All five milestones (`W0`–`W4`) described in this plan have been implemented, verified, and merged into `drawthings-linux-toolkit` (`main`):
+The following is the original October 24 prototype inventory, not evidence that all five milestones (`W0`-`W4`) passed native acceptance. See the October 26 hardening status above for implemented fixes, executed checks, and remaining gates:
 
 | Milestone | Delivered Scope | Active Code / Contract Artifacts | Verified Capabilities |
 | :--- | :--- | :--- | :--- |

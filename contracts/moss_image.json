@@ -2,6 +2,7 @@
   "schema_version": 1,
   "profile": "moss_image",
   "model_version": "moss_image",
+  "expected_ckpt_tensor_count": 524,
   "architecture": {
     "layers": 42,
     "text_refiner_layers": 2,
@@ -30,14 +31,16 @@
     "min_video_frames": 1
   },
   "source_required_keys": [
-    "transformer_blocks.41.attn.to_q.weight"
+    "layers.41.proj.q.weight",
+    "text_embedder.proj.weight",
+    "shared_block_modulation.weight"
   ],
   "ckpt_required_prefixes": {
     "__dit__[": 1
   },
   "restore_patterns": {
-    "f32_ada_ln_regex": "(ada_ln|t_embedder|time_embed|modulation)",
-    "f32_qk_norm_regex": "(norm_q|norm_k)-\\d+-0\\]$"
+    "f32_ada_ln_regex": "(?!)",
+    "f32_qk_norm_regex": "(?!)"
   },
   "dynamic_compiler": "tools.dt_keymap_compiler:build_moss_image_contract",
   "tensors": {}

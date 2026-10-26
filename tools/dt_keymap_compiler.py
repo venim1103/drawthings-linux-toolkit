@@ -31,6 +31,59 @@ class SwiftAuditFinding:
     message: str
 
 
+def _ltx23_source_shape(key: str) -> List[int]:
+    block = re.match(r"(?:transformer_blocks\.\d+|(?:video|audio)_embeddings_connector\.transformer_1d_blocks\.\d+)\.(.+)", key)
+    if block:
+        suffix = block.group(1)
+        width = 2048 if key.startswith("audio_embeddings_connector") or suffix.startswith(("audio_attn", "audio_ff", "video_to_audio_attn")) else 4096
+        tables = {"scale_shift_table": (9, 4096), "audio_scale_shift_table": (9, 2048),
+                  "prompt_scale_shift_table": (2, 4096), "audio_prompt_scale_shift_table": (2, 2048),
+                  "scale_shift_table_a2v_ca_audio": (5, 2048), "scale_shift_table_a2v_ca_video": (5, 4096)}
+        if suffix in tables:
+            return list(tables[suffix])
+        bias = suffix.endswith(".bias")
+        if suffix.startswith(("ff.", "audio_ff.")):
+            rows, columns = (width * 4, width) if ".net.0." in suffix else (width, width * 4)
+        else:
+            attention, operation = suffix.split(".", 1)
+            attention_width = 2048 if attention in ("audio_attn1", "audio_attn2", "audio_to_video_attn", "video_to_audio_attn") else width
+            if operation in ("q_norm.weight", "k_norm.weight"):
+                return [attention_width]
+            context_width = {"audio_to_video_attn": 2048, "video_to_audio_attn": 4096}.get(attention, width)
+            if operation.startswith("to_out."):
+                rows, columns = width, attention_width
+            elif operation.startswith("to_gate_logits."):
+                rows, columns = 32, width
+            else:
+                rows = attention_width
+                columns = width if operation.startswith("to_q.") else context_width
+        return [rows] if bias else [rows, columns]
+    if key.endswith("learnable_registers"):
+        return [128, 2048 if key.startswith("audio_") else 4096]
+    if key in ("scale_shift_table", "audio_scale_shift_table"):
+        return [2, 2048 if key.startswith("audio_") else 4096]
+    module, parameter = key.rsplit(".", 1)
+    projections = {"patchify_proj": (4096, 128), "audio_patchify_proj": (2048, 128),
+                   "proj_out": (128, 4096), "audio_proj_out": (128, 2048),
+                   "text_embedding_projection.video_aggregate_embed": (4096, 188160),
+                   "text_embedding_projection.audio_aggregate_embed": (2048, 188160)}
+    if module in projections:
+        rows, columns = projections[module]
+    else:
+        prefix = key.split(".", 1)[0]
+        width = 2048 if prefix in ("audio_adaln_single", "audio_prompt_adaln_single",
+                                  "av_ca_audio_scale_shift_adaln_single", "av_ca_v2a_gate_adaln_single") else 4096
+        counts = {"adaln_single": 9, "audio_adaln_single": 9, "prompt_adaln_single": 2,
+                  "audio_prompt_adaln_single": 2, "av_ca_video_scale_shift_adaln_single": 4,
+                  "av_ca_audio_scale_shift_adaln_single": 4, "av_ca_a2v_gate_adaln_single": 1,
+                  "av_ca_v2a_gate_adaln_single": 1}
+        if prefix not in counts:
+            raise ValueError(f"No native LTX shape rule: {key}")
+        rows = width * counts[prefix] if module.endswith(".linear") else width
+        columns = 256 if ".linear_1." in key else width
+    return [rows] if parameter == "bias" else [rows, columns]
+
+
 def build_ltx23_contract() -> Dict[str, Any]:
     """Generate the declarative 5,746-tensor contract for LTX 2.3 (`ltx2_3`).
 
@@ -59,6 +112,7 @@ def build_ltx23_contract() -> Dict[str, Any]:
     ) -> None:
         tensors[src_key] = {
             "dt_names": dt_names,
+            "source_shape": _ltx23_source_shape(src_key),
             "rotary_interleaved": rotary,
             "num_heads": heads,
             "head_dim": head_dim,
@@ -168,7 +222,7 @@ def build_ltx23_contract() -> Dict[str, Any]:
     for src_conn, dt_conn, heads, hd in connectors:
         add_entry(
             f"{src_conn}.learnable_registers",
-            [f"{dt_conn}[t-learnable_registers-0-0]"],
+            [f"text_{'video' if src_conn.startswith('video') else 'audio'}_connector_learnable_registers"],
         )
         for i in range(8):
             base = f"{src_conn}.transformer_1d_blocks.{i}"
@@ -382,6 +436,8 @@ def build_ltx23_contract() -> Dict[str, Any]:
         "schema_version": 1,
         "profile": "ltx2_3",
         "model_version": "ltx2.3",
+        "architecture": {"layers": 48, "video_width": 4096, "audio_width": 2048},
+        "ignored_source_patterns": [r"^(?:vae|audio_vae|vocoder)\."],
         "expected_ckpt_tensor_count": total_dt_tensors,
         "expected_counts_summary": {
             "total_ckpt_tensors": total_dt_tensors,
@@ -434,254 +490,89 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
     exact SQLite tensor keyset and F32 preservation list from the official checkpoint.
     """
     tensors: Dict[str, Dict[str, Any]] = {}
-    num_heads = 24
-    head_dim = 128
 
-    # 1. Embedders, Output Projections, Time Embedders
-    tensors["patchify_proj.weight"] = {
-        "dt_names": ["__dit__[t-x_embedder-0-0]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F16",
-        "quant_restore_policy": "none",
-        "dim_rank_policy": "preserve",
-    }
-    tensors["patchify_proj.bias"] = {
-        "dt_names": ["__dit__[t-x_embedder-0-1]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F16",
-        "quant_restore_policy": "none",
-        "dim_rank_policy": "preserve",
-    }
-    tensors["timestep_embedder.linear_1.weight"] = {
-        "dt_names": ["__dit__[t-t_embedder_0-0-0]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F16",
-        "quant_restore_policy": "none",
-        "dim_rank_policy": "preserve",
-    }
-    tensors["timestep_embedder.linear_1.bias"] = {
-        "dt_names": ["__dit__[t-t_embedder_0-0-1]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F16",
-        "quant_restore_policy": "none",
-        "dim_rank_policy": "preserve",
-    }
-    # Second timestep projection is FP32-sensitive in Draw Things (MOSS M3 requirement)
-    tensors["timestep_embedder.linear_2.weight"] = {
-        "dt_names": ["__dit__[t-t_embedder_1-0-0]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F32",
-        "quant_restore_policy": "f32_from_source",
-        "dim_rank_policy": "preserve",
-    }
-    tensors["timestep_embedder.linear_2.bias"] = {
-        "dt_names": ["__dit__[t-t_embedder_1-0-1]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F32",
-        "quant_restore_policy": "f32_from_source",
-        "dim_rank_policy": "preserve",
-    }
-    tensors["norm_out.weight"] = {
-        "dt_names": ["__dit__[t-norm_out-0-0]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F32",
-        "quant_restore_policy": "f32_from_source",
-        "dim_rank_policy": "norm_1_1_n",
-    }
-    tensors["norm_out.bias"] = {
-        "dt_names": ["__dit__[t-norm_out-0-1]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F32",
-        "quant_restore_policy": "f32_from_source",
-        "dim_rank_policy": "norm_1_1_n",
-    }
-    tensors["proj_out.weight"] = {
-        "dt_names": ["__dit__[t-proj_out-0-0]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F16",
-        "quant_restore_policy": "none",
-        "dim_rank_policy": "preserve",
-    }
-    tensors["proj_out.bias"] = {
-        "dt_names": ["__dit__[t-proj_out-0-1]"],
-        "rotary_interleaved": False,
-        "f16_store_datatype": "F16",
-        "quant_restore_policy": "none",
-        "dim_rank_policy": "preserve",
-    }
+    def add(source: str, names: List[str], source_shape: List[int],
+            target_shapes: List[List[int]], *, heads: int = 0,
+            rotary_slices: Optional[List[bool]] = None, dtype: str = "F16") -> None:
+        tensors[source] = {
+            "dt_names": [f"__dit__[t-{name}]" for name in names],
+            "source_shape": source_shape,
+            "target_shapes": target_shapes,
+            "rotary_interleaved": heads > 0 and rotary_slices is None,
+            "num_heads": heads,
+            "head_dim": 128 if heads else 0,
+            "f16_store_datatype": dtype,
+            "quant_restore_policy": "f32_from_source" if dtype == "F32" else "none",
+            "dim_rank_policy": "preserve",
+        }
+        if rotary_slices is not None:
+            tensors[source]["rotary_interleaved_slices"] = rotary_slices
 
-    # 2. Context Refiner Blocks (2 layers)
-    for i in range(2):
-        p = f"text_refiner_blocks.{i}"
-        tensors[f"{p}.attn.to_q.weight"] = {
-            "dt_names": [f"__dit__[t-refiner_q-{i}-0]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_k.weight"] = {
-            "dt_names": [f"__dit__[t-refiner_k-{i}-0]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_v.weight"] = {
-            "dt_names": [f"__dit__[t-refiner_v-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_out.0.weight"] = {
-            "dt_names": [f"__dit__[t-refiner_o-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.ff.net.0.proj.weight"] = {
-            "dt_names": [f"__dit__[t-refiner_ff1-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.ff.net.2.weight"] = {
-            "dt_names": [f"__dit__[t-refiner_ff2-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
+    for source, target, shape, output_shape in (
+        ("video_embedder.weight", "x_embedder-0-0", [3072, 128], [3072, 128]),
+        ("video_embedder.bias", "x_embedder-0-1", [3072], [3072]),
+        ("final_norm_video.weight", "final_norm-0-0", [3072], [1, 3072]),
+        ("final_linear_video.weight", "final_linear-0-0", [128, 3072], [128, 3072]),
+        ("text_embedder.proj.weight", "context_embedder-0-0", [3072, 4096], [3072, 4096]),
+        ("text_embedder.proj.bias", "context_embedder-0-1", [3072], [3072]),
+    ):
+        add(source, [target], shape, [output_shape])
 
-    # 3. 42 Main DiT Blocks
-    for i in range(42):
-        p = f"transformer_blocks.{i}"
-        tensors[f"{p}.attn.to_q.weight"] = {
-            "dt_names": [f"__dit__[t-x_q-{i}-0]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_q.bias"] = {
-            "dt_names": [f"__dit__[t-x_q-{i}-1]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_k.weight"] = {
-            "dt_names": [f"__dit__[t-x_k-{i}-0]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_k.bias"] = {
-            "dt_names": [f"__dit__[t-x_k-{i}-1]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_v.weight"] = {
-            "dt_names": [f"__dit__[t-x_v-{i}-0]"],
-            "rotary_interleaved": False,
-            "num_heads": 0,
-            "head_dim": 0,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_v.bias"] = {
-            "dt_names": [f"__dit__[t-x_v-{i}-1]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_out.0.weight"] = {
-            "dt_names": [f"__dit__[t-x_o-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.to_out.0.bias"] = {
-            "dt_names": [f"__dit__[t-x_o-{i}-1]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.attn.norm_q.weight"] = {
-            "dt_names": [f"__dit__[t-norm_q-{i}-0]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F32",
-            "quant_restore_policy": "f32_from_source",
-            "dim_rank_policy": "norm_1_1_n",
-        }
-        tensors[f"{p}.attn.norm_k.weight"] = {
-            "dt_names": [f"__dit__[t-norm_k-{i}-0]"],
-            "rotary_interleaved": True,
-            "num_heads": num_heads,
-            "head_dim": head_dim,
-            "f16_store_datatype": "F32",
-            "quant_restore_policy": "f32_from_source",
-            "dim_rank_policy": "norm_1_1_n",
-        }
-        tensors[f"{p}.ff.net.0.proj.weight"] = {
-            "dt_names": [f"__dit__[t-x_linear1-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.ff.net.0.proj.bias"] = {
-            "dt_names": [f"__dit__[t-x_linear1-{i}-1]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.ff.net.2.weight"] = {
-            "dt_names": [f"__dit__[t-x_out_proj-{i}-0]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.ff.net.2.bias"] = {
-            "dt_names": [f"__dit__[t-x_out_proj-{i}-1]"],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F16",
-            "quant_restore_policy": "none",
-            "dim_rank_policy": "preserve",
-        }
-        tensors[f"{p}.scale_shift_table"] = {
-            "dt_names": [f"__dit__[t-attn1_ada_ln_{c}-{i}-0]" for c in range(6)],
-            "rotary_interleaved": False,
-            "f16_store_datatype": "F32",
-            "quant_restore_policy": "f32_from_source",
-            "dim_rank_policy": "norm_1_1_n",
-        }
+    for projection in (0, 2):
+        for suffix, parameter in (("weight", 0), ("bias", 1)):
+            shape = [3072, 256 if projection == 0 else 3072] if parameter == 0 else [3072]
+            add(f"time_embedding.{projection}.{suffix}",
+                [f"time_embedder_{projection}-0-{parameter}"], shape, [shape],
+                dtype="F32" if projection == 2 else "F16")
+    for suffix, parameter in (("weight", 0), ("bias", 1)):
+        tail = [3072] if parameter == 0 else []
+        add(f"shared_block_modulation.{suffix}",
+            [f"x_ada_ln_{chunk}-0-{parameter}" for chunk in range(6)],
+            [6 * 3072] + tail, [[3072] + tail for _ in range(6)])
+        add(f"video_head_modulation.{suffix}",
+            [f"ada_ln_{chunk}-0-{parameter}" for chunk in (1, 0)],
+            [2 * 3072] + tail, [[3072] + tail for _ in range(2)])
+
+    for layer in range(2):
+        prefix = f"text_embedder.blocks.{layer}"
+        for norm in ("norm1", "norm2", "q_norm", "k_norm"):
+            per_head = norm in ("q_norm", "k_norm")
+            target = {"q_norm": "norm_q", "k_norm": "norm_k"}.get(norm, norm)
+            add(f"{prefix}.{norm}.weight", [f"context_{target}-{layer}-0"],
+                [128 if per_head else 3072],
+                [[1, 1, 1, 128] if per_head else [1, 3072]], heads=1 if per_head else 0)
+        for suffix, parameter in (("weight", 0), ("bias", 1)):
+            tail = [3072] if parameter == 0 else []
+            add(f"{prefix}.qkv.{suffix}",
+                [f"context_{projection}-{layer}-{parameter}" for projection in ("q", "k", "v")],
+                [9216] + tail, [[3072] + tail for _ in range(3)],
+                heads=24, rotary_slices=[True, True, False])
+            for source, target, rows, columns in (
+                ("proj", "o", 3072, 3072),
+                ("ffn_gate", "ffn_gate_proj", 8192, 3072),
+                ("ffn_up", "ffn_up_proj", 8192, 3072),
+                ("ffn_down", "ffn_down_proj", 3072, 8192),
+            ):
+                shape = [rows, columns] if parameter == 0 else [rows]
+                add(f"{prefix}.{source}.{suffix}",
+                    [f"context_{target}-{layer}-{parameter}"], shape, [shape])
+
+    for layer in range(42):
+        prefix = f"layers.{layer}"
+        for norm in ("norm1", "norm2", "q_norm", "k_norm"):
+            per_head = norm in ("q_norm", "k_norm")
+            target = {"q_norm": "norm_q", "k_norm": "norm_k"}.get(norm, norm)
+            add(f"{prefix}.{norm}.weight", [f"x_{target}-{layer}-0"],
+                [128 if per_head else 3072],
+                [[1, 1, 1, 128] if per_head else [1, 3072]], heads=1 if per_head else 0)
+        for projection in ("q", "k", "v", "o"):
+            add(f"{prefix}.proj.{projection}.weight", [f"x_{projection}-{layer}-0"],
+                [3072, 3072], [[3072, 3072]], heads=24 if projection in ("q", "k") else 0)
+        add(f"{prefix}.proj.ffn_up_gate.weight",
+            [f"ffn_up_proj-{layer}-0", f"ffn_gate_proj-{layer}-0"],
+            [16384, 3072], [[8192, 3072], [8192, 3072]])
+        add(f"{prefix}.proj.ffn_down.weight", [f"ffn_down_proj-{layer}-0"],
+            [3072, 8192], [[3072, 8192]])
 
     ref_f32_keys: List[str] = []
     ref_total_keys = 0
@@ -701,6 +592,7 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
         "schema_version": 1,
         "profile": "moss_image",
         "model_version": "moss_image",
+        "expected_ckpt_tensor_count": 524,
         "architecture": {
             "layers": 42,
             "text_refiner_layers": 2,
@@ -725,14 +617,16 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
             "min_video_frames": 1,
         },
         "source_required_keys": [
-            "transformer_blocks.41.attn.to_q.weight",
+            "layers.41.proj.q.weight",
+            "text_embedder.proj.weight",
+            "shared_block_modulation.weight",
         ],
         "ckpt_required_prefixes": {
             "__dit__[": 1,
         },
         "restore_patterns": {
-            "f32_ada_ln_regex": r"(ada_ln|t_embedder|time_embed|modulation)",
-            "f32_qk_norm_regex": r"(norm_q|norm_k)-\d+-0\]$",
+            "f32_ada_ln_regex": r"(?!)",
+            "f32_qk_norm_regex": r"(?!)",
         },
         "reference_ckpt_snapshot": {
             "source_file": str(ref_ckpt) if ref_ckpt else None,
@@ -745,7 +639,7 @@ def build_moss_image_contract(ref_ckpt: Optional[Path] = None) -> Dict[str, Any]
 
 # --- Static Swift Mapper Auditor (`audit-swift`) ---
 
-_FUNC_DECL_RE = re.compile(r"^\s*(?:public\s+|private\s+|internal\s+)?func\s+([A-Za-z0-9_]+)\s*\(")
+_FUNC_DECL_RE = re.compile(r"^\s*(?:public\s+|private\s+|internal\s+)?func\s+([A-Za-z0-9_]+)\s*(?:<[^>]+>)?\s*\(")
 _MAPPING_ASSIGN_RE = re.compile(
     r'mapping\[\s*"([^"]+)"\s*\]\s*=\s*(.+)'
 )
@@ -755,6 +649,7 @@ def audit_swift_mapper_source(
     swift_text: str,
     file_label: str = "<swift>",
     include_lora_and_unused_1d: bool = False,
+    profile: Optional[str] = None,
 ) -> List[SwiftAuditFinding]:
     """Scan a Draw Things Swift model file for §18 QK-norm interleave omissions.
 
@@ -806,8 +701,8 @@ def audit_swift_mapper_source(
 
         interleaved_qk_heads: Optional[Tuple[str, str]] = None
         for _, key_pat, rhs in entries:
-            if any(tok in key_pat for tok in ("to_q.weight", "to_k.weight", "to_qkv.weight")):
-                if "interleaved: true" in rhs:
+            if any(tok in key_pat for tok in ("to_q.weight", "to_k.weight", "to_qkv.weight", "proj.q.weight", "proj.k.weight", "qkv.weight")):
+                if "interleaved: true" in rhs or "interleavedIndices:" in rhs:
                     m_h = re.search(r"numberOfHeads:\s*([A-Za-z0-9_.]+)", rhs)
                     m_d = re.search(r"headDimension:\s*([A-Za-z0-9_.]+)", rhs)
                     interleaved_qk_heads = (
@@ -823,7 +718,12 @@ def audit_swift_mapper_source(
                     norm_tok in key_pat
                     for norm_tok in ("q_norm.weight", "k_norm.weight", "norm_q.weight", "norm_k.weight")
                 ):
-                    if "interleaved: true" not in rhs:
+                    norm_heads = re.search(r"numberOfHeads:\s*([A-Za-z0-9_.]+)", rhs)
+                    norm_dim = re.search(r"headDimension:\s*([A-Za-z0-9_.]+)", rhs)
+                    mismatched = (
+                        norm_heads is not None and norm_heads.group(1) not in (exp_h, "1")
+                    ) or (norm_dim is not None and norm_dim.group(1) != exp_d)
+                    if ("interleaved: true" not in rhs and "interleavedIndices:" not in rhs) or mismatched:
                         findings.append(
                             SwiftAuditFinding(
                                 rule_id="DT-CONV-018",
@@ -859,6 +759,13 @@ def audit_swift_mapper_source(
                     )
                 )
 
+    if profile == "moss_image" and "Importer" in file_label:
+        moss_branch = re.search(r"case\s+[^:]*\.mossImage[^:]*:(.*?)(?=\bcase\b|\bdefault\b|$)", swift_text, re.S)
+        if moss_branch is None or "fatalError(" in moss_branch.group(1):
+            findings.append(SwiftAuditFinding(
+                rule_id="DT-CONV-MOSS-IMPORT", severity="ERROR", file_path=file_label,
+                line_number=1, function_name="importer", key_pattern="mossImage",
+                message="MOSS importer branch is missing or contains fatalError; use the validated direct path."))
     return findings
 
 
@@ -896,6 +803,7 @@ def cmd_audit_swift(args: argparse.Namespace) -> int:
             text,
             file_label=str(p),
             include_lora_and_unused_1d=args.include_unused_mappers,
+            profile=args.profile,
         )
         all_findings.extend(findings)
 
@@ -909,7 +817,7 @@ def cmd_audit_swift(args: argparse.Namespace) -> int:
     if any(f.severity == "ERROR" for f in all_findings):
         print("RESULT=FAIL")
         return 1
-    print("RESULT=PASS")
+    print("RESULT=PASS (heuristic mapper checks only; not runtime/importer acceptance)")
     return 0
 
 
@@ -924,6 +832,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     p_audit = sub.add_parser("audit-swift", help="Audit Swift model/importer files for §18/§3a bugs")
     p_audit.add_argument("swift_files", nargs="+", help="Swift source files to audit")
+    p_audit.add_argument("--profile", choices=["ltx2_3", "moss_image"])
     p_audit.add_argument(
         "--include-unused-mappers",
         action="store_true",

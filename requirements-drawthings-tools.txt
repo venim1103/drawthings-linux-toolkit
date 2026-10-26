@@ -3,6 +3,7 @@ grpcio-tools
 protobuf
 flatbuffers
 numpy
+jsonschema>=4.18,<5
 pillow
 opencv-python-headless
 fpzip

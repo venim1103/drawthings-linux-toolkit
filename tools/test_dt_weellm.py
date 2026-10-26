@@ -1,5 +1,11 @@
 import json
+import hashlib
+import ctypes
+import os
+import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,13 +30,15 @@ from tools.dt_layer_parity_oracle import (
     verify_block_parity,
 )
 from tools.dt_lora_universal_bridge import normalize_lora_safetensors, verify_converted_lora
+from tools.dt_validate_converted_ckpt import validate_ckpt
 from tools.dt_weellm.dequant import (
     dequantize_fp8_e4m3,
     dequantize_fp8_e5m2,
     dequantize_gguf_q4_0,
     dequantize_gguf_q8_0,
+    dequantize_gguf_tensor,
 )
-from tools.dt_weellm.seek_io import GGUFSeeker, SafetensorsSeeker
+from tools.dt_weellm.seek_io import GGUFSeeker, SafetensorsSeeker, GGML_BLOCK_INFO
 from tools.dt_weellm.sqlite_store import DrawThingsCkptStore
 from tools.dt_weellm.transforms import (
     DT_BFLOAT16,
@@ -66,6 +74,377 @@ def write_mock_safetensors(path: Path, tensors: dict) -> None:
         f.write(header_bytes)
         for b in blobs:
             f.write(b)
+
+
+class CheckpointSafetyTests(unittest.TestCase):
+    def test_comparison_enforces_explicit_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = root / "c.json"
+            contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "tensors": {
+                "source": {"dt_names": ["expected"]}}}))
+            paths = [root / name for name in ("candidate.ckpt", "reference.ckpt")]
+            for path in paths:
+                with DrawThingsCkptStore(path, writable=True) as store:
+                    store.write_tensor("different", np.ones(2))
+            self.assertTrue(diff_ckpt_stores(*paths)["is_equivalent"])
+            self.assertFalse(diff_ckpt_stores(*paths, contract_path=contract)["is_equivalent"])
+
+    def test_writer_rejects_bfloat16_overflow_and_empty_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with DrawThingsCkptStore(Path(temporary) / "values.ckpt", writable=True) as store:
+                with np.errstate(over="ignore"), self.assertRaisesRegex(ValueError, "overflow"):
+                    store.write_tensor("huge", np.array([np.finfo(np.float32).max]), datatype=DT_BFLOAT16)
+                with self.assertRaises(ValueError):
+                    store.write_tensor("empty", np.array([], dtype=np.float32))
+
+    def test_shell_contract_failures_leave_catalogs_unchanged(self):
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".venv").symlink_to(repository / ".venv", target_is_directory=True)
+            tools = root / "tools"
+            tools.mkdir()
+            models = root / "dt-models"
+            models.mkdir()
+            for path in (repository / "tools").glob("*.py"):
+                (tools / path.name).symlink_to(path)
+            (tools / "dt_weellm").symlink_to(repository / "tools" / "dt_weellm", target_is_directory=True)
+            for name in ("dt_convert.sh", "dt_quantize.sh", "dt_lora_convert.sh"):
+                shutil.copyfile(repository / "tools" / name, tools / name)
+            source = root / "lora.safetensors"
+            values = np.ones((2, 2), dtype="<f4")
+            write_mock_safetensors(source, {
+                "module.lora_A.weight": ("F32", values.shape, values.tobytes()),
+                "module.lora_B.weight": ("F32", values.shape, values.tobytes())})
+            contract = root / "contract.json"
+            contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "model_version": "ltx2.3",
+                                           "tensors": {"module.weight": {"dt_names": ["__dit__[module]"]}}}))
+            with DrawThingsCkptStore(models / "style_lora_f16.ckpt", writable=True):
+                pass
+            original = '[{"name":"preserve-me"}]\n'
+            for name in ("custom.json", "custom_lora.json"):
+                (models / name).write_text(original)
+            commands = [
+                ["dt_convert.sh", str(source), "--direct", "--contract", str(root / "missing.json")],
+                ["dt_quantize.sh", "missing", "--contract", str(root / "missing.json")],
+                ["dt_lora_convert.sh", str(source), "--name", "style", "--verify-post"],
+                ["dt_lora_convert.sh", str(source), "--name", "style", "--verify-post", "--contract", str(contract)],
+            ]
+            for command in commands:
+                result = subprocess.run(["bash", str(tools / command[0]), *command[1:]],
+                                        cwd=root, capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                if command[-1] == str(contract):
+                    self.assertIn("Missing converted LoRA tensors", result.stdout)
+                for name in ("custom.json", "custom_lora.json"):
+                    self.assertEqual((models / name).read_text(), original)
+            model_source = root / "model.safetensors"
+            write_mock_safetensors(model_source, {"module.weight": ("F32", values.shape, values.tobytes())})
+            shards = root / "shards"
+            shards.mkdir()
+            shutil.copyfile(model_source, shards / "part.safetensors")
+            (shards / "model.safetensors.index.json").write_text(json.dumps({
+                "weight_map": {"module.weight": "part.safetensors"}}))
+            for name, input_path in (("single", model_source), ("sharded", shards)):
+                result = subprocess.run(
+                    ["bash", str(tools / "dt_convert.sh"), str(input_path), "--direct", "--contract", str(contract), "--name", name],
+                    cwd=root, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue((models / f"{name}_f16.ckpt").exists())
+                self.assertEqual((models / "custom.json").read_text(), original)
+            quant_contract = root / "quant_contract.json"
+            quant_contract.write_text(json.dumps({
+                "schema_version": 1, "profile": "test", "model_version": "ltx2.3",
+                "companions": {"autoencoder": "vae.ckpt", "text_encoder": "text.ckpt", "modifier": "none",
+                               "default_scale": 1, "objective": {"u": {"condition_scale": 1000}}},
+                "tensors": {"module.weight": {"dt_names": ["__dit__[module]"], "quant_restore_policy": "f32_from_source"}}}))
+            with DrawThingsCkptStore(models / "preserved_f16.ckpt", writable=True) as store:
+                store.write_tensor("__dit__[module]", values)
+            quantized = models / "preserved_q6p.ckpt"
+            with DrawThingsCkptStore(quantized, writable=True) as store:
+                store.write_tensor("wrong_target", values)
+            original_checkpoint = quantized.read_bytes()
+            result = subprocess.run(["bash", str(tools / "dt_quantize.sh"), "preserved", "--restore-only",
+                                     "--contract", str(quant_contract)], cwd=root,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Required restoration tensors are missing", result.stderr)
+            self.assertEqual(quantized.read_bytes(), original_checkpoint)
+            self.assertEqual((models / "custom.json").read_text(), original)
+            self.assertFalse(list(models.glob(".quant.*")))
+
+    def test_structural_validation_requires_complete_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, contract = root / "w.ckpt", root / "c.json"
+            contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "tensors": {
+                "source": {"dt_names": ["__dit__[expected]"], "target_shapes": [[2]]}}}))
+            with DrawThingsCkptStore(path, writable=True) as store:
+                store.write_tensor("__dit__[arbitrary]", np.ones(2))
+            self.assertEqual(validate_ckpt(path, "none", None, None, "any", 10, contract), 1)
+            with DrawThingsCkptStore(path, writable=True) as store:
+                store.con.execute("DELETE FROM tensors")
+                store.write_tensor("__dit__[expected]", np.ones(2))
+            self.assertEqual(validate_ckpt(path, "none", None, None, "any", 10, contract), 0)
+
+    def test_health_rejects_empty_unknown_and_missing_contract_keys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "health.ckpt"
+            with DrawThingsCkptStore(path, writable=True):
+                pass
+            self.assertFalse(inspect_ckpt_health(path)[0])
+            with DrawThingsCkptStore(path, writable=True) as store:
+                store.write_tensor("weight", np.ones(2))
+                store.con.execute("UPDATE tensors SET datatype=123456")
+            self.assertFalse(inspect_ckpt_health(path)[0])
+
+    def test_mixed_fused_conversion_and_weight_check_agree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, contract, output = root / "s.safetensors", root / "c.json", root / "o.ckpt"
+            rule = {"dt_names": ["q", "k", "v"], "rotary_interleaved_slices": [True, True, False],
+                    "num_heads": 1, "head_dim": 4}
+            contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "tensors": {"block.qkv": rule}}))
+            values = np.arange(24, dtype="<f4").reshape(12, 2)
+            write_mock_safetensors(source, {"block.qkv": ("F32", values.shape, values.tobytes())})
+            convert_source_to_ckpt(source, contract, output)
+            passed, report = verify_block_parity(source, output, contract, block_prefix="block.")
+            self.assertTrue(passed, report)
+
+    def test_restore_preserves_matrix_rank_restores_bf16_and_clears_codec(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, quantized, contract = root / "s.ckpt", root / "q.ckpt", root / "c.json"
+            contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "tensors": {
+                "matrix": {"dt_names": ["matrix"], "quant_restore_policy": "f32_from_source", "dim_rank_policy": "preserve"},
+                "embed": {"dt_names": ["embed"], "quant_restore_policy": "bf16_from_source"}}}))
+            for path in (source, quantized):
+                with DrawThingsCkptStore(path, writable=True) as store:
+                    store.write_tensor("matrix", np.arange(6, dtype=np.float32).reshape(2, 3), datatype=DT_FLOAT32)
+                    store.write_tensor("embed", np.ones(2), datatype=DT_BFLOAT16 if path == source else DT_FLOAT16)
+                    if path == quantized:
+                        store.con.execute("UPDATE tensors SET type=? WHERE name='matrix'", ((0x8a1e8b << 32) | 1,))
+            restore_norms_from_contract(quantized, source, contract)
+            with DrawThingsCkptStore(quantized) as store:
+                self.assertEqual(store.read_metadata("matrix").shape, [2, 3])
+                self.assertEqual(store.read_metadata("matrix").codec_identifier, 0)
+                self.assertEqual(store.read_metadata("embed").datatype, DT_BFLOAT16)
+            before = quantized.read_bytes()
+            with DrawThingsCkptStore(source, writable=True) as store:
+                store.con.execute("DELETE FROM tensors WHERE name='embed'")
+            with self.assertRaisesRegex(ValueError, "missing"):
+                restore_norms_from_contract(quantized, source, contract)
+            self.assertEqual(quantized.read_bytes(), before)
+
+    def test_conversion_rejects_unmapped_shapes_overflow_and_existing_output(self):
+        for case in ("unmapped", "shape", "overflow", "existing"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, output, contract = root / "source.safetensors", root / "out.ckpt", root / "c.json"
+                rule = {"dt_names": ["weight"], "source_shape": [2], "f16_store_datatype": "F16"}
+                contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "tensors": {"w": rule}}))
+                values = np.array([1e10, 2.0] if case == "overflow" else [1.0, 2.0], dtype="<f4")
+                tensors = {"w": ("F32", (1, 2) if case == "shape" else (2,), values.tobytes())}
+                if case == "unmapped":
+                    tensors["extra"] = ("F32", (2,), values.tobytes())
+                write_mock_safetensors(source, tensors)
+                if case == "existing":
+                    output.write_bytes(b"preserve existing output")
+                with np.errstate(over="ignore"), self.assertRaises((ValueError, FileExistsError)):
+                    convert_source_to_ckpt(source, contract, output)
+                if case == "existing":
+                    self.assertEqual(output.read_bytes(), b"preserve existing output")
+                else:
+                    self.assertFalse(output.exists())
+                self.assertFalse(list(root.glob(".out.ckpt.tmp.*")))
+
+    def test_contract_rejects_duplicate_targets_and_invalid_rules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "contract.json"
+            base = {"schema_version": 1, "profile": "test", "tensors": {
+                "a": {"dt_names": ["same"]}, "b": {"dt_names": ["same"]}}}
+            path.write_text(json.dumps(base))
+            with self.assertRaisesRegex(ValueError, "globally unique"):
+                load_contract(path)
+            base["tensors"] = {"a": {"dt_names": ["a"], "source_shape": [-1]}}
+            path.write_text(json.dumps(base))
+            with self.assertRaisesRegex(ValueError, "Invalid contract"):
+                load_contract(path)
+
+    def test_native_external_marker_and_split_roundtrip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "store.ckpt"
+            expected = np.arange(12, dtype=np.float32)
+            with DrawThingsCkptStore(path, writable=True, chunk_bytes=8) as store:
+                store.write_tensor("split", expected, datatype=DT_FLOAT32)
+                store.write_tensor("external", np.zeros(4))
+                store.con.execute(
+                    "UPDATE tensors SET type=?, data=? WHERE name='external'",
+                    ((0x10000000 << 32) | 1, struct.pack("<QQQ", 0, 16, 8)),
+                )
+            Path(str(path) + "-tensordata").write_bytes(
+                bytes(16) + np.arange(4, dtype="<f2").tobytes()
+            )
+            with DrawThingsCkptStore(path) as store:
+                self.assertTrue(store.read_metadata("split").has_splits)
+                np.testing.assert_array_equal(store.read_f32("split")[1], expected)
+                self.assertTrue(store.read_metadata("external").is_external)
+                np.testing.assert_array_equal(store.read_f32("external")[1], np.arange(4))
+            Path(str(path) + "-tensordata").unlink()
+            with DrawThingsCkptStore(path) as store:
+                with self.assertRaisesRegex(ValueError, "Missing sidecar"):
+                    store.read_f32("external")
+
+    def test_readonly_open_cannot_create_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "missing.ckpt"
+            with self.assertRaises(Exception):
+                DrawThingsCkptStore(path)
+            self.assertFalse(path.exists())
+
+    def test_cli_help_from_outside_repository(self):
+        root = Path(__file__).resolve().parents[1]
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        for name in ("dt_keymap_compiler.py", "dt_direct_ckpt_builder.py",
+                     "dt_layer_parity_oracle.py", "dt_lora_universal_bridge.py"):
+            with self.subTest(script=name), tempfile.TemporaryDirectory() as temporary:
+                result = subprocess.run(
+                    [sys.executable, str(root / "tools" / name), "--help"],
+                    cwd=temporary, env=environment, capture_output=True, text=True,
+                    timeout=20,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("usage:", result.stdout.lower())
+
+    def test_comparison_rejects_unchecked_or_incomplete_data(self):
+        for case in ("empty", "malformed", "nan", "extra", "shape"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                candidate = Path(temporary) / "candidate.ckpt"
+                reference = Path(temporary) / "reference.ckpt"
+                for path in (candidate, reference):
+                    with DrawThingsCkptStore(path, writable=True) as store:
+                        if case != "empty":
+                            store.write_tensor("weight", np.array([1.0, 2.0]))
+                        if case == "malformed":
+                            store.con.execute("UPDATE tensors SET data=?", (b"\x00",))
+                        if path == candidate and case == "nan":
+                            store.con.execute(
+                                "UPDATE tensors SET data=?",
+                                (np.array([np.nan, np.nan], dtype="<f2").tobytes(),),
+                            )
+                        if path == candidate and case == "extra":
+                            store.write_tensor("extra", np.array([1.0]))
+                        if path == candidate and case == "shape":
+                            store.write_tensor("weight", np.array([[1.0, 2.0]]))
+                self.assertFalse(diff_ckpt_stores(candidate, reference)["is_equivalent"])
+
+    def test_comparison_requires_full_finite_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = [Path(temporary) / name for name in ("candidate.ckpt", "reference.ckpt")]
+            for path in paths:
+                with DrawThingsCkptStore(path, writable=True) as store:
+                    store.write_tensor("weight", np.array([1.0, 2.0]))
+            report = diff_ckpt_stores(*paths)
+            self.assertTrue(report["is_equivalent"])
+            self.assertEqual(report["value_comparison_count"], 1)
+            self.assertEqual(report["unreadable_tensor_count"], 0)
+
+
+class NativeQwenReferenceTests(unittest.TestCase):
+    def test_fixture_cli_records_native_validation(self):
+        root = Path(__file__).resolve().parents[1]
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("cc") or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("Native fixture generation requires pinned CCV sources")
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(
+                [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "qwen35-linear-attn-fixture",
+                 "--out-dir", temporary, "--native-ccv-source", str(source)],
+                capture_output=True, text=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads((Path(temporary) / "manifest.json").read_text())
+            self.assertEqual(manifest["validation"], "native_cpu_verified")
+            self.assertEqual(manifest["native_cpu"]["result"], "PASS")
+
+    def test_python_split_store_is_readable_by_native_candidate(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = Path(os.environ.get("DT_GRPC_CANDIDATE", str(root / "output/upgrades/community-0621d819/bazel-bin/Apps/gRPCServerCLI")))
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        debugger, compiler = shutil.which("lldb"), shutil.which("cc")
+        if not debugger or not compiler or not candidate.is_file() or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("Native split-store probe requires LLDB, a C compiler, and the pinned candidate/source")
+        with tempfile.TemporaryDirectory() as temporary:
+            library_path, checkpoint = Path(temporary) / "probe.so", Path(temporary) / "split.ckpt"
+            with DrawThingsCkptStore(checkpoint, writable=True, chunk_bytes=8) as store:
+                store.write_tensor("split_matrix", np.arange(12, dtype=np.float32).reshape(3, 4), datatype=DT_FLOAT32)
+            build = subprocess.run([compiler, "-shared", "-fPIC", "-g", "-O2", "-I", str(source / "lib"),
+                                    str(root / "tools/dt_qwen35_cpu_probe.c"), "-lm", "-o", str(library_path)],
+                                   capture_output=True, text=True, timeout=60)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            symbols = ["ccv_nnc_init", "sqlite3_open_v2", "ccv_nnc_tensor_read", "sqlite3_close", "ccv_nnc_tensor_free"]
+            commands = ["settings set target.disable-aslr false", "breakpoint set --name main", "run",
+                        f'expression -- ((void *(*)(const char *, int))dlopen)({json.dumps(str(library_path))}, 2)',
+                        f'script addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in {symbols!r}]',
+                        'script assert all(address != lldb.LLDB_INVALID_ADDRESS for address in addresses), "Native probe symbol missing"',
+                        'script expression = "dt_probe_native_store(" + ",".join("(void*)%d" % address for address in addresses) + "," + ' + repr(json.dumps(str(checkpoint))) + ' + ")"',
+                        'script result = lldb.frame.EvaluateExpression(expression); print("DT_NATIVE_STORE_RESULT=" + str(result.GetValueAsSigned(-99))); print(result.GetError())',
+                        "process kill"]
+            invocation = [debugger, "--batch"]
+            for command in commands:
+                invocation.extend(["-o", command])
+            invocation.extend(["--", str(candidate), "--help"])
+            result = subprocess.run(invocation, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("DT_NATIVE_STORE_RESULT=0", result.stdout)
+
+    def test_numpy_matches_pinned_native_cpu_operations(self):
+        root = Path(__file__).resolve().parents[1]
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        compiler = shutil.which("cc")
+        if not compiler or not (source / "lib/nnc/cmd/gated_delta/ccv_nnc_gated_delta_cpu_ref.c").exists():
+            self.skipTest("Set DT_CCV_SOURCE_DIR to the pinned CCV checkout and install a C compiler")
+        with tempfile.TemporaryDirectory() as temporary:
+            library_path = Path(temporary) / "probe.so"
+            build = subprocess.run(
+                [compiler, "-shared", "-fPIC", "-O2", "-I", str(source / "lib"),
+                 str(root / "tools/dt_qwen35_cpu_probe.c"), "-lm", "-o", str(library_path)],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            library = ctypes.CDLL(str(library_path))
+            pointer = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+            library.dt_probe_gated_delta.argtypes = [
+                np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),
+                *([pointer] * 8), ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            library.dt_probe_gated_delta.restype = ctypes.c_int
+            library.dt_probe_rmsnorm.argtypes = [ctypes.c_int, ctypes.c_int, *([pointer] * 4)]
+            library.dt_probe_rmsnorm.restype = ctypes.c_int
+            rng = np.random.default_rng(4242)
+            for dimensions in ((1, 5, 2, 4, 3, 5), (2, 3, 1, 2, 4, 2), (1, 3, 16, 32, 128, 128)):
+                batch, sequence, key_heads, value_heads, key_dim, value_dim = dimensions
+                for channel_decay in (False, True):
+                    queries = rng.normal(size=(batch, sequence, key_heads, key_dim)).astype(np.float32) * 0.025
+                    keys = rng.normal(size=queries.shape).astype(np.float32) * 0.025
+                    values = rng.normal(size=(batch, sequence, value_heads, value_dim)).astype(np.float32)
+                    beta = np.full((batch, sequence, value_heads), 0.5, dtype=np.float32)
+                    gate_shape = beta.shape + ((key_dim,) if channel_decay else ())
+                    decay = -np.abs(rng.normal(size=gate_shape)).astype(np.float32) * 0.1
+                    initial = rng.normal(size=(batch, value_heads, value_dim, key_dim)).astype(np.float32) * 0.01
+                    expected, state = reference_gated_delta_rule(
+                        queries, keys, values, beta, decay, initial, True, state_checkpoint_count=2)
+                    output, final = np.empty_like(expected), np.empty_like(state)
+                    result = library.dt_probe_gated_delta(np.array(dimensions, dtype=np.int32), queries, keys, values,
+                                                         decay, beta, initial, output, final, 1, 2, int(channel_decay))
+                    self.assertEqual(result, 0)
+                    np.testing.assert_allclose(output, expected, atol=2e-6, rtol=2e-5)
+                    np.testing.assert_allclose(final, state, atol=2e-6, rtol=2e-5)
+            values = rng.normal(size=(8, 128)).astype(np.float32)
+            gate = rng.normal(size=values.shape).astype(np.float32)
+            weight = rng.normal(size=(128,)).astype(np.float32)
+            actual = np.empty_like(values)
+            self.assertEqual(library.dt_probe_rmsnorm(8, 128, values, gate, weight, actual), 0)
+            np.testing.assert_allclose(actual, reference_rmsnorm_gated(values, gate, weight), atol=2e-6, rtol=2e-5)
 
 
 class WeeLLMTransformsTests(unittest.TestCase):
@@ -124,6 +503,48 @@ class WeeLLMTransformsTests(unittest.TestCase):
 
 
 class SeekerAndDequantTests(unittest.TestCase):
+    def test_all_ggml_decoders_match_frozen_gguf_013_vectors(self):
+        expected = {
+            2: "ec9cb8593ecd8177026e031e548fd775c2ad0aa7b1e7f92119fcb8c885124d93",
+            3: "bb609678e017f7e0be0a87e36e9a16490e73256c745327009d54b47167ad516f",
+            6: "5b177880341f486159d48c556c40f14289b8fa09a54160e05d5b7520c9ae5e61",
+            7: "3f2612f7d7ce89b07a94c522dfcf6dce551cae98e08e1a6e6e07ed80fedeb8a6",
+            8: "c833ffe5f5760892ae5fc6adcc87513d73d62927fc072a62a4cfc2cfd0266ac5",
+            10: "ec570ef297c609e4d874a57cbb9bdee95f91e8f950df47b318699d877150d8f1",
+            11: "d05cb4cd7873aef0ea9e38469dde407e35a1877940c60589751a419786ba8530",
+            12: "dff728086f02a8636b1acf515707e5fce74a4e8207d4e537c753a080bac575a6",
+            13: "6160baeaa7490d409cf08af6a163a63f84406fdbb969d472cc614b859968e9cc",
+            14: "20d0d5ae2cd8706e06a50f239bfd1c13df3d854e5aea9d26b831f50f75cb4f5b",
+        }
+        rng = np.random.default_rng(4242)
+        for code, digest in expected.items():
+            with self.subTest(ggml_type=code):
+                elements, size, _ = GGML_BLOCK_INFO[code]
+                raw = rng.integers(0, 256, size=(3, size), dtype=np.uint8)
+                offset = {10: 80, 11: 108, 14: 208}.get(code, 0)
+                raw[:, offset:offset + 2] = np.frombuffer(np.float16(0.25).tobytes(), dtype=np.uint8)
+                if code in (3, 7, 12, 13):
+                    raw[:, 2:4] = np.frombuffer(np.float16(0.125).tobytes(), dtype=np.uint8)
+                if code == 10:
+                    raw[:, 82:84] = np.frombuffer(np.float16(0.125).tobytes(), dtype=np.uint8)
+                actual = dequantize_gguf_tensor(raw.tobytes(), code, (3, elements))
+                self.assertEqual(hashlib.sha256(actual.astype("<f4").tobytes()).hexdigest(), digest)
+
+    def test_fp8_row_scales_and_duplicate_shards(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first, second = root / "a.safetensors", root / "b.safetensors"
+            write_mock_safetensors(first, {
+                "linear.weight": ("F8_E4M3", (2, 2), bytes([0x38] * 4)),
+                "linear.weight_scale": ("F32", (2,), np.array([2, 3], dtype="<f4").tobytes())})
+            with SafetensorsSeeker(first) as seeker:
+                np.testing.assert_array_equal(seeker.read_f32("linear.weight"), [[2, 2], [3, 3]])
+            write_mock_safetensors(second, {"linear.weight": ("F32", (1,), np.ones(1, dtype="<f4").tobytes())})
+            index = root / "model.safetensors.index.json"
+            index.write_text(json.dumps({"weight_map": {"linear.weight": first.name, "linear.weight_scale": second.name}}))
+            with self.assertRaisesRegex(ValueError, "Duplicate"):
+                SafetensorsSeeker(index)
+
     def test_single_and_sharded_safetensors_seeker(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
@@ -192,8 +613,36 @@ class SeekerAndDequantTests(unittest.TestCase):
 
 
 class ContractAndAuditorTests(unittest.TestCase):
+    def test_auditor_checks_generic_head_parameters_and_importer_support(self):
+        text = (
+            "func Block<T: Numeric>() {\n"
+            'mapping["proj.q.weight"] = ModelWeightElement([q], interleavedIndices: [0], numberOfHeads: 24, headDimension: 128)\n'
+            'mapping["q_norm.weight"] = ModelWeightElement([n], interleavedIndices: [0], numberOfHeads: 999, headDimension: 2)\n'
+            "}\n"
+        )
+        self.assertTrue(audit_swift_mapper_source(text))
+        self.assertTrue(audit_swift_mapper_source(
+            "case .mossImage: fatalError()", "ModelImporter.swift", profile="moss_image"))
+
+    def test_moss_contract_uses_native_layout(self):
+        contract = build_moss_image_contract()
+        rules = contract["tensors"]
+        names = [name for rule in rules.values() for name in rule["dt_names"]]
+        self.assertEqual(len(names), 524)
+        self.assertEqual(len(set(names)), 524)
+        self.assertEqual(rules["layers.0.q_norm.weight"]["source_shape"], [128])
+        self.assertEqual(rules["layers.0.q_norm.weight"]["target_shapes"], [[1, 1, 1, 128]])
+        self.assertEqual(rules["time_embedding.2.weight"]["f16_store_datatype"], "F32")
+        self.assertNotIn("layers.0.proj.q.bias", rules)
+        metadata = {name: (2, {"F16": DT_FLOAT16, "F32": DT_FLOAT32}[rule["f16_store_datatype"]], rule["target_shapes"][index])
+                for rule in rules.values() for index, name in enumerate(rule["dt_names"])}
+        digest = hashlib.sha256(json.dumps(sorted(metadata.items()), separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(digest, "15df82ca64fb5a9469be36868e502f00fd0b0957aad242bb7af43aec9085931d")
+
     def test_ltx23_contract_matches_exact_verified_counts(self):
         contract = build_ltx23_contract()
+        self.assertEqual(contract["tensors"]["transformer_blocks.0.audio_to_video_attn.to_q.weight"]["source_shape"], [2048, 4096])
+        self.assertEqual(contract["tensors"]["transformer_blocks.0.video_to_audio_attn.to_k.weight"]["source_shape"], [2048, 4096])
         summary = contract["expected_counts_summary"]
         self.assertEqual(summary["total_ckpt_tensors"], 5746)
         self.assertEqual(summary["f32_ada_ln_tensors"], 1540)
@@ -237,6 +686,45 @@ class ContractAndAuditorTests(unittest.TestCase):
 
 
 class DirectBuilderAndLoRABridgeTests(unittest.TestCase):
+    def test_grouped_delta_native_layout_and_chunked_initial_state(self):
+        rng = np.random.default_rng(42)
+        queries = rng.normal(size=(1, 4, 2, 3)).astype(np.float32) * 0.1
+        keys = rng.normal(size=queries.shape).astype(np.float32) * 0.1
+        values = rng.normal(size=(1, 4, 4, 5)).astype(np.float32)
+        beta = np.full((1, 4, 4), 0.5, dtype=np.float32)
+        decay = np.full(beta.shape, -0.2, dtype=np.float32)
+        initial = rng.normal(size=(1, 4, 5, 3)).astype(np.float32)
+        output, state = reference_gated_delta_rule(queries, keys, values, beta, decay, initial, True)
+        first, intermediate = reference_gated_delta_rule(
+            queries[:, :2], keys[:, :2], values[:, :2], beta[:, :2], decay[:, :2], initial, True)
+        second, final = reference_gated_delta_rule(
+            queries[:, 2:], keys[:, 2:], values[:, 2:], beta[:, 2:], decay[:, 2:], intermediate, True)
+        self.assertEqual(state.shape, (1, 4, 5, 3))
+        np.testing.assert_allclose(output, np.concatenate([first, second], axis=1), atol=1e-6)
+        np.testing.assert_allclose(state, final, atol=1e-6)
+
+    def test_lora_fused_scaled_coverage_and_empty_rejection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, contract, output = root / "l.safetensors", root / "c.json", root / "o.ckpt"
+            contract.write_text(json.dumps({"schema_version": 1, "profile": "test", "tensors": {
+                "fused.weight": {"dt_names": ["q", "k", "v"]}}}))
+            up = np.arange(12, dtype="<f4").reshape(6, 2)
+            down = np.ones((2, 3), dtype="<f4")
+            write_mock_safetensors(source, {
+                "fused.lora_A.weight": ("F32", down.shape, down.tobytes()),
+                "fused.lora_B.weight": ("F32", up.shape, up.tobytes()),
+                "fused.alpha": ("F32", (1,), np.array([4.0], dtype="<f4").tobytes())})
+            with DrawThingsCkptStore(output, writable=True):
+                pass
+            self.assertFalse(verify_converted_lora(source, output, contract)[0])
+            with DrawThingsCkptStore(output, writable=True) as store:
+                for name, chunk in zip(("q", "k", "v"), np.split(up * 2, 3)):
+                    store.write_tensor(name + "__up__", chunk)
+                    store.write_tensor(name + "__down__", down)
+            passed, report = verify_converted_lora(source, output, contract)
+            self.assertTrue(passed, report)
+
     def test_end_to_end_convert_restore_and_lora_verify(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
@@ -447,7 +935,7 @@ class DirectBuilderAndLoRABridgeTests(unittest.TestCase):
     def test_lora_normalize_unmangles_kohya_keys_and_hydrates_contracts(self):
         repo_root = Path(__file__).resolve().parents[1]
         ltx_contract = load_contract(repo_root / "contracts/ltx2_3.json")
-        self.assertEqual(len(ltx_contract["tensors"]), 1252)
+        self.assertEqual(len(ltx_contract["tensors"]), 4448)
         moss_contract = load_contract(repo_root / "contracts/moss_image.json")
         self.assertGreater(len(moss_contract["tensors"]), 400)
 

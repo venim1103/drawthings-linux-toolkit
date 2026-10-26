@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import struct
 from dataclasses import dataclass
@@ -82,6 +83,15 @@ class TensorSliceInfo:
     ggml_type: Optional[int] = None
 
 
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 class SafetensorsSeeker:
     """Zero-copy seeker for single-file or sharded `.safetensors` checkpoints."""
 
@@ -108,7 +118,7 @@ class SafetensorsSeeker:
             self._load_single_file(self.root_path)
 
     def _load_sharded_index(self, index_path: Path) -> None:
-        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        payload = json.loads(index_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
         weight_map = payload.get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
             raise ValueError(f"Invalid or empty weight_map in sharded index: {index_path}")
@@ -117,6 +127,8 @@ class SafetensorsSeeker:
         shard_files = sorted(set(str(v) for v in weight_map.values()))
         for shard_rel in shard_files:
             shard_path = (base_dir / shard_rel).resolve()
+            if not shard_path.is_relative_to(base_dir.resolve()):
+                raise ValueError(f"Shard path escapes the index directory: {shard_rel}")
             if not shard_path.is_file():
                 raise FileNotFoundError(f"Missing safetensors shard referenced by index: {shard_path}")
             self._load_single_file(shard_path)
@@ -124,6 +136,9 @@ class SafetensorsSeeker:
         missing = [k for k in weight_map.keys() if k not in self.tensors]
         if missing:
             raise ValueError(f"Sharded index keys missing from shard headers: {missing[:5]}")
+        for key, info in self.tensors.items():
+            if key not in weight_map or info.file_path != (base_dir / weight_map[key]).resolve():
+                raise ValueError(f"Tensor does not belong to its indexed shard: {key}")
 
     def _load_single_file(self, file_path: Path) -> None:
         if not file_path.is_file():
@@ -136,7 +151,9 @@ class SafetensorsSeeker:
             header_len = struct.unpack("<Q", raw_len)[0]
             if header_len <= 0 or header_len + 8 > file_size:
                 raise ValueError(f"Invalid safetensors header length {header_len} in {file_path}")
-            header_obj = json.loads(f.read(header_len))
+            if header_len > 100 * 1024 * 1024:
+                raise ValueError("Safetensors header exceeds the supported size limit")
+            header_obj = json.loads(f.read(header_len), object_pairs_hook=_unique_json_object)
 
         if not isinstance(header_obj, dict):
             raise ValueError(f"Safetensors header is not a JSON object: {file_path}")
@@ -144,6 +161,7 @@ class SafetensorsSeeker:
         buffer_start = 8 + header_len
         data_bytes = file_size - buffer_start
 
+        intervals = []
         for key, info in header_obj.items():
             if key == "__metadata__":
                 if isinstance(info, dict):
@@ -154,6 +172,8 @@ class SafetensorsSeeker:
                 raise ValueError(f"Invalid tensor entry for {key!r} in {file_path}")
             dtype = str(info.get("dtype", "")).upper()
             shape = tuple(int(d) for d in info.get("shape", []))
+            if len(shape) > 12 or any(dimension < 0 for dimension in shape):
+                raise ValueError(f"Invalid tensor dimensions for {key}")
             offsets = info.get("data_offsets", [])
             if not (isinstance(offsets, list) and len(offsets) == 2):
                 raise ValueError(f"Invalid data_offsets for {key!r} in {file_path}")
@@ -164,12 +184,15 @@ class SafetensorsSeeker:
                 )
             if dtype not in SAFETENSORS_DTYPE_BYTES:
                 raise ValueError(f"Unsupported safetensors dtype {dtype!r} for {key!r}")
-            nelem = int(np.prod(shape)) if shape else 1
+            nelem = math.prod(shape) if shape else 1
             expected_bytes = nelem * SAFETENSORS_DTYPE_BYTES[dtype]
             if end - start != expected_bytes:
                 raise ValueError(
                     f"Byte length mismatch for {key!r}: expected {expected_bytes}, got {end - start}"
                 )
+            if key in self.tensors:
+                raise ValueError(f"Duplicate safetensors key across shards: {key}")
+            intervals.append((start, end))
             self.tensors[key] = TensorSliceInfo(
                 name=key,
                 dtype=dtype,
@@ -178,6 +201,11 @@ class SafetensorsSeeker:
                 byte_offset=buffer_start + start,
                 byte_length=end - start,
             )
+        end_of_previous = 0
+        for start, end in sorted(intervals):
+            if start < end_of_previous:
+                raise ValueError(f"Overlapping safetensors payloads in {file_path}")
+            end_of_previous = end
 
     def keys(self) -> List[str]:
         return list(self.tensors.keys())
@@ -200,10 +228,10 @@ class SafetensorsSeeker:
                         candidates.append(f"{p}{a}")
         for auto_alias in get_architecture_aliases(key, profile=profile):
             candidates.append(auto_alias)
-        for c in candidates:
-            if c in self.tensors:
-                return c
-        return None
+        matches = list(dict.fromkeys(candidate for candidate in candidates if candidate in self.tensors))
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous source aliases for {key}: {matches}")
+        return matches[0] if matches else None
 
     def read_raw_bytes(self, key: str) -> Tuple[TensorSliceInfo, bytes]:
         info = self.tensors[key]
@@ -252,6 +280,12 @@ class SafetensorsSeeker:
 
         if auto_scale_key and auto_scale_key in self.tensors:
             scale_arr = self.read_f32(auto_scale_key)
+            if scale_arr.size == 1:
+                scale_arr = scale_arr.reshape(())
+            elif arr.ndim >= 2 and scale_arr.size == arr.shape[0]:
+                scale_arr = scale_arr.reshape((arr.shape[0],) + (1,) * (arr.ndim - 1))
+            elif scale_arr.shape != arr.shape:
+                raise ValueError(f"Unsupported scale layout {scale_arr.shape} for {key} {arr.shape}")
             arr = arr * scale_arr
 
         return arr
@@ -378,7 +412,9 @@ class GGUFSeeker:
                 if ggml_type not in GGML_BLOCK_INFO:
                     raise ValueError(f"Unsupported GGML tensor type {ggml_type} for {name!r}")
                 block_elems, block_bytes, label = GGML_BLOCK_INFO[ggml_type]
-                nelem = int(np.prod(shape)) if shape else 1
+                if len(shape) > 12 or any(dimension <= 0 for dimension in shape):
+                    raise ValueError(f"Invalid GGUF dimensions for {name}")
+                nelem = math.prod(shape) if shape else 1
                 if nelem % block_elems != 0:
                     raise ValueError(
                         f"GGUF tensor {name!r} element count {nelem} not divisible by block size {block_elems}"
@@ -387,6 +423,8 @@ class GGUFSeeker:
                 abs_offset = data_start + rel_offset
                 if abs_offset + byte_length > file_size:
                     raise ValueError(f"GGUF tensor {name!r} exceeds file bounds in {self.file_path}")
+                if name in self.tensors:
+                    raise ValueError(f"Duplicate GGUF tensor name: {name}")
                 self.tensors[name] = TensorSliceInfo(
                     name=name,
                     dtype=label,
@@ -407,14 +445,14 @@ class GGUFSeeker:
         aliases: Optional[Sequence[str]] = None,
         profile: str = "ltx2_3",
     ) -> Optional[str]:
-        candidates: List[str] = [key]
+        candidates: List[str] = [f"{prefix}{key}" for prefix in prefixes]
         if aliases:
             candidates.extend(aliases)
         candidates.extend(get_architecture_aliases(key, profile=profile))
-        for c in candidates:
-            if c in self.tensors:
-                return c
-        return None
+        matches = list(dict.fromkeys(candidate for candidate in candidates if candidate in self.tensors))
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous GGUF aliases for {key}: {matches}")
+        return matches[0] if matches else None
 
     def read_f32(self, key: str) -> np.ndarray:
         info = self.tensors[key]

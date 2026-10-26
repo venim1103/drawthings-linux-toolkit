@@ -72,6 +72,20 @@ def get_architecture_aliases(canonical_key: str, profile: str = "ltx2_3") -> Lis
         aliases.append(f"{p}{canonical_key}")
 
     if profile == "moss_image":
+        native = re.match(r"^layers\.(\d+)\.(.+)$", canonical_key)
+        if native:
+            layer, suffix = native.groups()
+            native_aliases = {
+                "proj.q.weight": (f"blk.{layer}.attn_q.weight", f"layers.{layer}.attention.wq.weight"),
+                "proj.k.weight": (f"blk.{layer}.attn_k.weight", f"layers.{layer}.attention.wk.weight"),
+                "proj.v.weight": (f"blk.{layer}.attn_v.weight", f"layers.{layer}.attention.wv.weight"),
+                "proj.o.weight": (f"blk.{layer}.attn_output.weight", f"layers.{layer}.attention.wo.weight"),
+                "q_norm.weight": (f"blk.{layer}.attn_q_norm.weight",),
+                "k_norm.weight": (f"blk.{layer}.attn_k_norm.weight",),
+                "proj.ffn_up_gate.weight": (f"blk.{layer}.ffn_up.weight",),
+                "proj.ffn_down.weight": (f"blk.{layer}.ffn_down.weight",),
+            }
+            aliases.extend(native_aliases.get(suffix, ()))
         # Map transformer_blocks.{i}.* <-> layers.{i}.* and blk.{i}.*
         m = re.match(r"^transformer_blocks\.(\d+)\.(.+)$", canonical_key)
         if m:
@@ -149,12 +163,32 @@ def canonicalize_source_key(raw_key: str, profile: str = "ltx2_3") -> str:
 
     for pat, repl in GGUF_TO_DIFFUSERS_PATTERNS.get(profile, []):
         if pat.match(key):
-            return pat.sub(repl, key)
+            key = pat.sub(repl, key)
+            break
+    if profile == "moss_image":
+        match = re.match(r"^transformer_blocks\.(\d+)\.(.+)$", key)
+        if match:
+            layer, suffix = match.groups()
+            native = {"attn.to_q.weight": "proj.q.weight", "attn.to_k.weight": "proj.k.weight",
+                      "attn.to_v.weight": "proj.v.weight", "attn.to_out.0.weight": "proj.o.weight",
+                      "attn.norm_q.weight": "q_norm.weight", "attn.norm_k.weight": "k_norm.weight",
+                      "ff.w13.weight": "proj.ffn_up_gate.weight", "ff.w2.weight": "proj.ffn_down.weight"}
+            if suffix in native:
+                return f"layers.{layer}.{native[suffix]}"
     return key
 
 
 # Kohya / LyCORIS underscore-mangled module tokens
 _KOHYA_COMPOUND_TOKENS = (
+    "shared_block_modulation",
+    "video_head_modulation",
+    "text_embedder",
+    "video_embedder",
+    "time_embedding",
+    "ffn_up_gate",
+    "ffn_down",
+    "final_norm_video",
+    "final_linear_video",
     "transformer_blocks",
     "single_transformer_blocks",
     "text_refiner_blocks",
@@ -192,8 +226,10 @@ def _unmangle_kohya_stem(stem: str) -> str:
 
     # Protect compound tokens with placeholders before replacing `_` with `.`
     placeholders: Dict[str, str] = {}
-    for idx, tok in enumerate(_KOHYA_COMPOUND_TOKENS):
-        ph = f"__TOK{idx}__"
+    for idx, tok in enumerate(sorted(_KOHYA_COMPOUND_TOKENS, key=len, reverse=True)):
+        ph = f"!TOKEN{idx}!"
+        if ph in s:
+            raise ValueError("Reserved token in LoRA module name")
         placeholders[ph] = tok
         s = s.replace(tok, ph)
 

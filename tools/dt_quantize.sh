@@ -39,6 +39,7 @@ NO_RESTORE=0
 RESTORE_ONLY=0
 REF_Q6P="$MODELS_DIR/ltx_2.3_22b_distilled_1.1_q6p.ckpt"
 MODEL_VERSION="ltx2.3"
+MODEL_VERSION_EXPLICIT=0
 CONTRACT=""
 
 # ltx2.3 inference companions (defaults matching the proven-working alias)
@@ -55,7 +56,7 @@ while [[ $# -gt 0 ]]; do
     --restore-only) RESTORE_ONLY=1; shift ;;
     --no-restore) NO_RESTORE=1; shift ;;
     --ref-q6p) REF_Q6P="${2:-}"; shift 2 ;;
-    --model-version) MODEL_VERSION="${2:-}"; shift 2 ;;
+    --model-version) MODEL_VERSION="${2:-}"; MODEL_VERSION_EXPLICIT=1; shift 2 ;;
     --contract) CONTRACT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "error: unknown option: $1" >&2; usage; exit 1 ;;
@@ -66,6 +67,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$NAME" ]]; then echo "error: <NAME> is required" >&2; usage; exit 1; fi
+if [[ -n "$CONTRACT" ]]; then
+  if [[ ! -f "$CONTRACT" ]]; then echo "error: contract not found: $CONTRACT" >&2; exit 1; fi
+  CONTRACT_VERSION="$($PYTHON_BIN - "$ROOT" "$CONTRACT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from tools.dt_direct_ckpt_builder import load_contract
+contract = load_contract(sys.argv[2])
+for key in ("autoencoder", "text_encoder", "modifier", "default_scale", "objective"):
+    if key not in contract.get("companions", {}):
+        raise ValueError(f"Missing companion contract field: {key}")
+print(contract["model_version"])
+PY
+)"
+  if [[ "$MODEL_VERSION_EXPLICIT" == "1" && "$MODEL_VERSION" != "$CONTRACT_VERSION" ]]; then
+    echo "error: quantizer version differs from contract version" >&2; exit 1
+  fi
+  MODEL_VERSION="$CONTRACT_VERSION"
+fi
 # Accept either a bare name (10_e_v1_4) or a path to the f16 ckpt.
 NAME="$(basename "$NAME")"; NAME="${NAME%.ckpt}"; NAME="${NAME%_f16}"
 case "$CODEC" in q6p|q8p|q4p) ;; *) echo "error: --codec must be q6p, q8p, or q4p" >&2; exit 1 ;; esac
@@ -91,6 +110,23 @@ if [[ "$RESTORE_ONLY" == "1" && ! -f "$QOUT" ]]; then
   echo "error: --restore-only given but no quantized model exists: $QOUT" >&2
   echo "       Run without --restore-only to quantize first." >&2
   exit 1
+fi
+
+FINAL_QOUT="$QOUT"
+if [[ -n "$CONTRACT" ]]; then
+  if [[ -f "$QOUT-tensordata" || -f "$QOUT-wal" || -f "$QOUT-shm" || -f "$QOUT-journal" ]]; then
+    echo "error: strict publication requires an inactive inline destination checkpoint" >&2
+    exit 1
+  fi
+  STAGING_DIR="$(mktemp -d "$MODELS_DIR/.quant.${NAME}.XXXXXX")"
+  trap 'rm -rf -- "$STAGING_DIR"' EXIT
+  cp --reflink=auto -- "$F16" "$STAGING_DIR/source_f16.ckpt"
+  if [[ -f "$F16-tensordata" ]]; then
+    cp --reflink=auto -- "$F16-tensordata" "$STAGING_DIR/source_f16.ckpt-tensordata"
+  fi
+  F16="$STAGING_DIR/source_f16.ckpt"
+  QOUT="$STAGING_DIR/$QFILE"
+  if [[ "$WILL_QUANTIZE" == "0" ]]; then cp --reflink=auto -- "$FINAL_QOUT" "$QOUT"; fi
 fi
 
 # The norm restore is REFERENCE-FREE by default (it reconstructs the ada_ln F32
@@ -154,10 +190,25 @@ else
 fi
 
 # --- register custom.json alias ---
+if [[ -n "$CONTRACT" ]]; then
+  "$PYTHON_BIN" "$ROOT/tools/dt_validate_converted_ckpt.py" --file "$QOUT" --contract "$CONTRACT"
+  if [[ -f "$QOUT-tensordata" ]]; then
+    echo "error: externalized output requires explicit paired-store publication; original preserved" >&2
+    exit 1
+  fi
+  "$PYTHON_BIN" - "$QOUT" "$FINAL_QOUT" <<'PY'
+import os
+import sys
+with open(sys.argv[1], "rb") as staged:
+    os.fsync(staged.fileno())
+os.replace(sys.argv[1], sys.argv[2])
+PY
+  QOUT="$FINAL_QOUT"
+fi
 echo "==> [4/4] Upsert custom.json alias '$NAME' -> $QFILE"
 if [[ -f "$CUSTOM_JSON" ]]; then cp -f "$CUSTOM_JSON" "$CUSTOM_JSON.bak_$(date +%Y%m%d_%H%M%S)"; fi
 "$PYTHON_BIN" - "$CUSTOM_JSON" "$NAME" "$QFILE" "$AUTOENCODER" "$TEXT_ENCODER" "$MODIFIER" "$MODEL_VERSION" "${CONTRACT:-}" <<'PY'
-import json, os, sys
+import json, os, sys, tempfile
 path, name, qfile, ae, te, modifier, model_version, contract_path = sys.argv[1:9]
 default_scale = 12
 hires_fix_scale = 24
@@ -190,7 +241,16 @@ entry = {
 if include_clip_self:
     entry["clip_encoder"] = qfile
 entries.append(entry)
-json.dump(entries, open(path, "w"), indent=2)
+descriptor, staged_path = tempfile.mkstemp(prefix=".custom.", dir=os.path.dirname(path))
+try:
+  with os.fdopen(descriptor, "w", encoding="utf-8") as staged:
+    json.dump(entries, staged, indent=2)
+    staged.flush()
+    os.fsync(staged.fileno())
+  os.replace(staged_path, path)
+finally:
+  if os.path.exists(staged_path):
+    os.unlink(staged_path)
 print(f"  alias '{name}' -> {qfile} (version={model_version})")
 PY
 
