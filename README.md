@@ -20,6 +20,8 @@ Details and examples are in `PIPELINE.md`.
 - `DRAW_THINGS_PATCH/README.md` - patch workflow for Draw Things source updates.
 - `docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md` - CUDA runtime upgrade and MOSS-Image integration plan.
 - `docs/WEELLM_HYBRID_TOOLING_PLAN_2026-10-24.md` - WeeLLM comparison and hybrid conversion/oracle tooling recipe.
+- `docs/WEELLM_HYBRID_REVIEW_2026-10-26.md` - Historical defect review of the initial hybrid tooling baseline.
+- `docs/MOSS_QUALITY_AND_CUDA_REVIEW_2026-10-26.md` - Review of the hardened CUDA runtime (`cf8baab..acd9b26`) and MOSS image-quality diagnosis plan.
 
 ## Repository layout
 

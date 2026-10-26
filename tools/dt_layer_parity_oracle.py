@@ -530,6 +530,81 @@ def compare_native_capture(prefix: Path, operation: str, atol: float, rtol: floa
             "atol": atol, "rtol": rtol, "scale": scale, "captures": captures, "comparisons": comparisons}
 
 
+def inspect_capture_tensor(path: Path) -> Dict[str, Any]:
+    """Inspect a raw 68-byte-header native capture (.bin) for distribution, token similarity, and 2x2 grid artifacts."""
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Capture file not found: {resolved}")
+    with resolved.open("rb") as stream:
+        blob = stream.read(64 * 1024 * 1024 + 69)
+    if len(blob) > 64 * 1024 * 1024 + 68:
+        raise ValueError("Capture exceeds the 64 MiB payload limit")
+    header = _read_tensor_header(blob)
+    if header.identifier != 0 or header.datatype not in (16384, 131072, 524288) or not header.dims:
+        raise ValueError("Capture requires a nonempty raw floating-point tensor")
+    dimensions = struct.unpack("<12I", blob[20:68])
+    if dimensions != header.dims + (0,) * (12 - len(header.dims)):
+        raise ValueError("Capture dimensions must have contiguous positive axes and zero padding")
+    values = _tensor_to_numpy(blob, header, math.prod(header.dims)).reshape(header.dims).astype(np.float64)
+    finite_mask = np.isfinite(values)
+    if not finite_mask.all():
+        raise ValueError(
+            f"Capture contains non-finite values: nan={int(np.isnan(values).sum())}, inf={int(np.isinf(values).sum())}"
+        )
+
+    flat = values.reshape(-1)
+    quantiles = np.quantile(flat, [0.01, 0.5, 0.99]).tolist()
+    report: Dict[str, Any] = {
+        "file": str(resolved),
+        "sha256": hashlib.sha256(blob).hexdigest(),
+        "shape": list(values.shape),
+        "format": header.tensor_format,
+        "datatype": header.datatype,
+        "count": int(values.size),
+        "min": float(flat.min()),
+        "max": float(flat.max()),
+        "mean": float(flat.mean()),
+        "std": float(flat.std()),
+        "l2_norm": float(np.linalg.norm(flat)),
+        "quantiles_p01_p50_p99": [float(q) for q in quantiles],
+        "zero_fraction": float(np.mean(flat == 0.0)),
+    }
+
+    # If 2D/3D sequence-like [..., T, C], compute adjacent token cosine similarity to detect token collapse
+    if values.ndim in (2, 3) and values.shape[-2] >= 2 and values.shape[-1] >= 2:
+        seq = values.reshape(-1, values.shape[-2], values.shape[-1])[0]
+        norms = np.linalg.norm(seq, axis=-1)
+        valid = norms > 1e-12
+        if np.all(valid):
+            normalized = seq / norms[:, None]
+            adj_cos = np.sum(normalized[:-1] * normalized[1:], axis=-1)
+            report["sequence_diagnostics"] = {
+                "tokens": int(seq.shape[0]),
+                "channels": int(seq.shape[1]),
+                "token_norm_min": float(norms.min()),
+                "token_norm_max": float(norms.max()),
+                "adjacent_token_cosine_mean": float(adj_cos.mean()),
+                "adjacent_token_cosine_max": float(adj_cos.max()),
+            }
+
+    # If 4D spatial NHWC [B, H, W, C] with H, W >= 4, check 2x2 checkerboard/unpatchify periodicity
+    if values.ndim == 4 and values.shape[1] >= 4 and values.shape[2] >= 4:
+        h_adj = float(np.mean(np.abs(values[:, 1:, :, :] - values[:, :-1, :, :])))
+        w_adj = float(np.mean(np.abs(values[:, :, 1:, :] - values[:, :, :-1, :])))
+        h_stride2 = float(np.mean(np.abs(values[:, 2:, :, :] - values[:, :-2, :, :])))
+        w_stride2 = float(np.mean(np.abs(values[:, :, 2:, :] - values[:, :, :-2, :])))
+        report["spatial_periodicity_2x2"] = {
+            "height_diff_stride1": h_adj,
+            "height_diff_stride2": h_stride2,
+            "width_diff_stride1": w_adj,
+            "width_diff_stride2": w_stride2,
+            "checkerboard_ratio_h": h_adj / max(h_stride2, 1e-12),
+            "checkerboard_ratio_w": w_adj / max(w_stride2, 1e-12),
+        }
+
+    return report
+
+
 def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False,
                           execute_sdpa: bool = False, execute_embedding: bool = False,
                           execute_packed_gemm: bool = False) -> Dict[str, Any]:
@@ -668,7 +743,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_chk.add_argument("--ckpt", required=True)
     p_chk.add_argument("--contract", default="", help="Optional contract to enforce norm rank-3 and F32 policy")
 
+    p_cap_stat = sub.add_parser(
+        "inspect-capture",
+        help="Inspect a single captured native .bin tensor for distribution, token collapse, and 2x2 grid periodicity",
+    )
+    p_cap_stat.add_argument("--file", required=True, type=Path)
+    p_cap_stat.add_argument("--report", type=Path)
+
     args = parser.parse_args(argv)
+    if args.subcommand == "inspect-capture":
+        report = inspect_capture_tensor(args.file)
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0
     if args.subcommand == "compare-capture":
         report = compare_native_capture(args.prefix, args.operation, args.atol, args.rtol, args.scale)
         if args.report:

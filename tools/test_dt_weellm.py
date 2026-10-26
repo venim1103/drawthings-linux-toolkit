@@ -25,6 +25,7 @@ from tools.dt_keymap_compiler import (
 )
 from tools.dt_layer_parity_oracle import (
     compare_native_capture,
+    inspect_capture_tensor,
     inspect_ckpt_health,
     reference_gated_delta_rule,
     reference_rmsnorm_gated,
@@ -611,6 +612,29 @@ class NativeCaptureTests(unittest.TestCase):
             path.write_bytes(malformed)
             with self.assertRaisesRegex(ValueError, "zero padding"):
                 compare_native_capture(prefix, "rotary", 1e-6, 1e-6)
+
+    def test_inspect_capture_tensor_reports_sequence_and_spatial_periodicity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            seq_prefix = root / "seq"
+            seq_vals = np.arange(1, 13, dtype=np.float32).reshape(1, 3, 4)
+            self.write_capture(seq_prefix, "input_0", seq_vals)
+            seq_file = seq_prefix.with_name("seq_input_0.bin")
+            seq_report = inspect_capture_tensor(seq_file)
+            self.assertEqual(seq_report["shape"], [1, 3, 4])
+            self.assertIn("sequence_diagnostics", seq_report)
+            self.assertEqual(seq_report["sequence_diagnostics"]["tokens"], 3)
+
+            # Create a 4D NHWC tensor with deliberate 2x2 alternating row checkerboard artifact
+            grid_prefix = root / "grid"
+            grid = np.zeros((1, 4, 4, 2), dtype=np.float32)
+            grid[:, 0::2, :, :] = 1.0
+            grid[:, 1::2, :, :] = -1.0
+            self.write_capture(grid_prefix, "output_0", grid)
+            grid_file = grid_prefix.with_name("grid_output_0.bin")
+            grid_report = inspect_capture_tensor(grid_file)
+            self.assertIn("spatial_periodicity_2x2", grid_report)
+            self.assertGreater(grid_report["spatial_periodicity_2x2"]["checkerboard_ratio_h"], 100.0)
 
 
 class NativeQwenReferenceTests(unittest.TestCase):
