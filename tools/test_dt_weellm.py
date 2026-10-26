@@ -352,6 +352,143 @@ class CheckpointSafetyTests(unittest.TestCase):
             self.assertEqual(report["unreadable_tensor_count"], 0)
 
 
+class CudaPatchBundleTests(unittest.TestCase):
+    def test_strict_apply_is_idempotent_and_rejects_drift(self):
+        root = Path(__file__).resolve().parents[1]
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        manifest = json.loads((root / "DRAW_THINGS_PATCH/cuda/manifest.json").read_text())
+        if not all((source / relative).is_file() for relative, baseline in manifest["files"].items() if baseline is not None):
+            self.skipTest("CUDA patch verification needs the pinned CCV base files")
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary)
+            for relative, baseline in manifest["files"].items():
+                if baseline is not None:
+                    destination = target / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source / relative, destination)
+            untouched = target / "Package.swift"
+            untouched.write_text("preserve this CPU/build configuration\n")
+            command = [sys.executable, str(root / "tools/drawthings_cuda_patch.py"), "apply", "--ccv-source", str(target)]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            before = {relative: hashlib.sha256((target / relative).read_bytes()).hexdigest() for relative in manifest["files"]}
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(before, {relative: hashlib.sha256((target / relative).read_bytes()).hexdigest() for relative in manifest["files"]})
+            changed = target / next(iter(manifest["files"]))
+            changed.write_bytes(changed.read_bytes() + b"\ndrift\n")
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("refusing fallback", result.stderr)
+            self.assertEqual(untouched.read_text(), "preserve this CPU/build configuration\n")
+
+
+@unittest.skipUnless(os.environ.get("DT_RUN_CUDA_TESTS") == "1", "Set DT_RUN_CUDA_TESTS=1 for opt-in CUDA tests")
+class CudaQwenReferenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[1]
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        compiler = shutil.which("nvcc")
+        if not compiler:
+            raise RuntimeError("CUDA tests explicitly requested, but nvcc is unavailable")
+        temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(temporary.cleanup)
+        library_path = Path(temporary.name) / "qwen35_cuda.so"
+        build = subprocess.run(
+            [compiler, "-shared", "-Xcompiler=-fPIC", "-arch=" + os.environ.get("DT_CUDA_ARCH", "sm_86"),
+             "-std=c++17", "-DHAVE_CUDA", "-I", str(root / "DRAW_THINGS_PATCH/cuda/ccv/lib"),
+             "-I", str(source / "lib"), str(root / "tools/dt_qwen35_cuda_probe.cu"), "-o", str(library_path)],
+            capture_output=True, text=True, timeout=120)
+        if build.returncode:
+            raise RuntimeError(build.stderr)
+        cls.library = ctypes.CDLL(str(library_path))
+        pointer = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+        cls.library.dt_cuda_rmsnorm.argtypes = [ctypes.c_int] * 7 + [pointer] * 4
+        cls.library.dt_cuda_rmsnorm.restype = ctypes.c_int
+        cls.library.dt_cuda_rmsnorm_contract.argtypes = [ctypes.c_int]
+        cls.library.dt_cuda_rmsnorm_contract.restype = ctypes.c_int
+        cls.library.dt_cuda_gated_delta.argtypes = [
+            np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),
+            *([ctypes.c_int] * 5), *([pointer] * 8)]
+        cls.library.dt_cuda_gated_delta.restype = ctypes.c_int
+        cls.library.dt_cuda_gated_delta_contract.argtypes = [ctypes.c_int]
+        cls.library.dt_cuda_gated_delta_contract.restype = ctypes.c_int
+
+    @staticmethod
+    def rounded(values, datatype):
+        if datatype == DT_FLOAT16:
+            return values.astype(np.float16).astype(np.float32)
+        if datatype == DT_BFLOAT16:
+            return bf16_bytes_to_f32(f32_to_bf16_bytes(values), values.shape)
+        return values
+
+    def test_gated_rmsnorm_matches_reference(self):
+        rng = np.random.default_rng(4242)
+        for columns in (1, 3, 33, 128, 257):
+            for datatype in (DT_FLOAT32, DT_FLOAT16, DT_BFLOAT16):
+                values = rng.normal(size=(7, columns)).astype(np.float32)
+                values[0] = 0
+                gate = rng.normal(size=values.shape).astype(np.float32)
+                weight = rng.normal(size=(columns,)).astype(np.float32)
+                for affine in (0, 1):
+                    for inplace in (0, 1):
+                        with self.subTest(columns=columns, datatype=datatype, affine=affine, inplace=inplace):
+                            actual = np.empty_like(values)
+                            status = self.library.dt_cuda_rmsnorm(7, columns, datatype, DT_FLOAT32, DT_FLOAT16,
+                                                                 affine, inplace, values, gate, weight, actual)
+                            self.assertEqual(status, 0)
+                            expected = reference_rmsnorm_gated(self.rounded(values, datatype), gate,
+                                self.rounded(weight, DT_FLOAT16) if affine else np.ones_like(weight))
+                            expected = self.rounded(expected, datatype)
+                            self.assertTrue(np.isfinite(actual).all())
+                            np.testing.assert_allclose(actual, expected,
+                                atol=2e-6 if datatype == DT_FLOAT32 else 2e-3,
+                                rtol=2e-5 if datatype == DT_FLOAT32 else 1e-2)
+
+    def test_gated_rmsnorm_rejects_invalid_layout_and_accepts_empty(self):
+        self.assertEqual(self.library.dt_cuda_rmsnorm_contract(0), 0)
+        for mode in (1, 2, 3, 4):
+            self.assertNotEqual(self.library.dt_cuda_rmsnorm_contract(mode), 0)
+
+    def test_gated_delta_matches_reference(self):
+        rng = np.random.default_rng(4242)
+        for dimensions in ((1, 5, 2, 4, 3, 5), (2, 3, 1, 2, 4, 2), (1, 4, 16, 32, 128, 128)):
+            batch, sequence, key_heads, value_heads, key_dim, value_dim = dimensions
+            for datatype in (DT_FLOAT32, DT_FLOAT16, DT_BFLOAT16):
+                queries = rng.normal(size=(batch, sequence, key_heads, key_dim)).astype(np.float32) * 0.025
+                keys = rng.normal(size=queries.shape).astype(np.float32) * 0.025
+                values = rng.normal(size=(batch, sequence, value_heads, value_dim)).astype(np.float32)
+                beta = np.full((batch, sequence, value_heads), 0.5, dtype=np.float32)
+                initial = rng.normal(size=(batch, value_heads, value_dim, key_dim)).astype(np.float32) * 0.01
+                for channel_decay in (0, 1):
+                    shape = beta.shape + ((key_dim,) if channel_decay else ())
+                    for log_decay in (0, 1):
+                        decay = -np.abs(rng.normal(size=shape)).astype(np.float32) * 0.1 if log_decay else np.full(shape, 0.9, dtype=np.float32)
+                        for checkpoints, inplace in ((0, 0), (0, 1), (2, 0)):
+                            with self.subTest(dimensions=dimensions, datatype=datatype, channel_decay=channel_decay,
+                                              log_decay=log_decay, checkpoints=checkpoints, inplace=inplace):
+                                expected, state = reference_gated_delta_rule(
+                                    self.rounded(queries, datatype), self.rounded(keys, datatype),
+                                    self.rounded(values, datatype), self.rounded(beta, datatype),
+                                    decay, initial, bool(log_decay), checkpoints)
+                                expected = self.rounded(expected, datatype)
+                                actual, final = np.empty_like(expected), np.empty_like(state)
+                                status = self.library.dt_cuda_gated_delta(
+                                    np.array(dimensions, dtype=np.int32), datatype, log_decay, channel_decay, checkpoints, inplace,
+                                    queries, keys, values, decay, beta, initial, actual, final)
+                                self.assertEqual(status, 0)
+                                self.assertTrue(np.isfinite(actual).all() and np.isfinite(final).all())
+                                np.testing.assert_allclose(actual, expected, atol=2e-6 if datatype == DT_FLOAT32 else 1e-4,
+                                                           rtol=2e-5 if datatype == DT_FLOAT32 else 1e-2)
+                                np.testing.assert_allclose(final, state, atol=2e-6, rtol=2e-5)
+
+    def test_gated_delta_rejects_invalid_contract_and_accepts_empty(self):
+        self.assertEqual(self.library.dt_cuda_gated_delta_contract(0), 0)
+        for mode in (1, 2, 3, 4, 5):
+            self.assertNotEqual(self.library.dt_cuda_gated_delta_contract(mode), 0)
+
+
 class NativeQwenReferenceTests(unittest.TestCase):
     def test_fixture_cli_records_native_validation(self):
         root = Path(__file__).resolve().parents[1]

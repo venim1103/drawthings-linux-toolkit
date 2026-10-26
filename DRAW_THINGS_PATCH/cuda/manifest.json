@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "profile": "qwen35-cuda-forward",
+  "community_revision": "0621d8198f3ed505bb7cefc71b84f8f0e1ce5936",
+  "s4nnc_revision": "b5476a77e7f67f12729872e4b9f1a649b3cd3df0",
+  "ccv_revision": "69b1ed1f4e281520c29cd4b45b93c6fcdde8d2e8",
+  "patch": "patches/ccv.patch",
+  "files": {
+    "lib/nnc/cmd/gated_delta/ccv_nnc_gated_delta.c": "7164788d33c3f6f7dbfa418b9344f21dcc7c760c16c1718d6c0814478e6d1f4c",
+    "lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c": "8bcb9e18f8060b82dc3feedd89090e385b1c7ae10c92456aafb4d4fde52f108b",
+    "lib/nnc/cmd/gated_delta/gpu/ccv_nnc_gated_delta_gpu_ref.cu": null,
+    "lib/nnc/cmd/rmsnorm_gated/gpu/ccv_nnc_rmsnorm_gated_gpu_ref.cu": null
+  }
+}

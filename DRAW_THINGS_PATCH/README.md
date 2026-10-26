@@ -2,6 +2,8 @@
 
 This directory stores Linux quantization fixes for `draw-things-community`.
 
+Native Qwen3.5 CUDA forward work is maintained in the separate [CUDA patch profile](cuda/README.md). Do not apply this legacy CPU bundle's Package/assertion changes to a CUDA candidate. The CUDA profile has its own pinned manifest, snapshots, unified diff, and strict/idempotence tool.
+
 ## Patch strategy
 
 We keep two patch representations:

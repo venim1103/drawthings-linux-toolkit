@@ -22,6 +22,24 @@ This section supersedes the original completion claims and unexecuted recipes be
 - Ten GGML dequantizers have frozen three-block reference hashes independently obtained from `gguf==0.13.0`; no GGUF package install is needed to run those regression vectors.
 - The Swift auditor recognizes generic/interleaved-index syntax and head mismatches and can flag unsupported MOSS importer branches, but reports its scope as heuristic rather than runtime acceptance.
 
+### CUDA Operator Increment: October 26
+
+The separate [Qwen3.5 CUDA patch profile](../DRAW_THINGS_PATCH/cuda/README.md) now contains forward CUDA backends for `GatedDelta` and `RMSNormGated`. Both are correctness-first implementations validated on the RTX A3000/SM86, not yet integrated into a rebuilt server. The legacy CPU bundle and pristine candidate dependencies remain unchanged.
+
+- RMSNorm passed 60 precision/layout/affine/in-place numerical cases; observed maximum absolute error was about `9.54e-7`.
+- Gated delta passed 108 grouped/batched/non-square/real-head-size precision, decay, checkpoint, and in-place-state cases. Maximum observed FP32 state error was about `4.47e-8`; output error including reduced-precision rounding was about `6.10e-5`.
+- Invalid/empty operation contracts are covered. GPU tests are explicitly opt-in; CUDA compilation and real device execution were performed for this increment.
+- Pinned base hashes, independent snapshots, and a generated unified diff are maintained under `DRAW_THINGS_PATCH/cuda`. Strict apply, exact snapshot equality, repeat-apply idempotence, drift rejection, and preservation of unrelated Package files are tested in temporary trees. No snapshot fallback is allowed.
+
+```bash
+DT_RUN_CUDA_TESTS=1 .venv/bin/python -m unittest \
+  tools.test_dt_weellm.CudaQwenReferenceTests \
+  tools.test_dt_weellm.CudaPatchBundleTests -v
+.venv/bin/python tools/drawthings_cuda_patch.py verify --ccv-source /path/to/pristine/pinned/ccv
+```
+
+The gated-delta backend keeps recurrent state/decay in F32 and supports F32/F16/BF16 Q/K/V/beta, grouped heads, scalar/channel log or direct decay, backward checkpoints, and checkpoint-free in-place state. It currently supports key dimensions up to 1,024. RMSNorm supports one last-axis reduction on contiguous tensors, optional affine scale, mixed supported precisions, and in-place output. Unsupported contracts fail explicitly; backward/training and performance optimization are out of scope.
+
 ### Commands
 
 ```bash
@@ -38,7 +56,7 @@ Native tests can use `DT_CCV_SOURCE_DIR` and `DT_GRPC_CANDIDATE`. Without the co
 
 ### Remaining Acceptance Gates
 
-1. Implement and test missing CUDA operations and empty-attention handling in a separately scoped, pinned `DRAW_THINGS_PATCH` bundle, preserving the legacy CPU patches and installed runtime.
+1. Integrate the tested CUDA profile into a separate pinned candidate build and verify actual backend registration. Fix and test the distinct empty scaled-dot-product-attention operation before full guided MOSS inference, preserving the legacy CPU patches, pristine candidate, and installed runtime.
 2. Add full reference/native text-encoder and denoiser activation capture. `verify-block` is a serialization/weight check, not a forward execution oracle. Native CPU operation parity is now independently verified; full WeeLLM/native model parity is not.
 3. Convert a complete real model into private staging, verify native load and finite final generation, and measure actual peak memory/time before publication. No full-size conversion or GPU inference was performed in this hardening pass.
 4. Add explicit native decoding or a validated bridge for ezm7/palettized/packed/trailer variants before numerical diff/health checks on those artifacts. Unsupported codecs currently fail closed.
