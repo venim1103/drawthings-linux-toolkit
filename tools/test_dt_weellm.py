@@ -353,6 +353,57 @@ class CheckpointSafetyTests(unittest.TestCase):
 
 
 class CudaPatchBundleTests(unittest.TestCase):
+    def test_prepare_generates_bindings_only_in_private_copy(self):
+        root = Path(__file__).resolve().parents[1]
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("ruby") or not (source / "lib/nnc/cmd/build-cmd.rb").is_file():
+            self.skipTest("Binding preparation requires Ruby and pinned CCV sources")
+        manifest = json.loads((root / "DRAW_THINGS_PATCH/cuda/manifest.json").read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            outside = Path(temporary)
+            for relative, baseline in manifest["files"].items():
+                if baseline is not None:
+                    destination = outside / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source / relative, destination)
+            before = {relative: (outside / relative).read_bytes() for relative, baseline in manifest["files"].items() if baseline is not None}
+            result = subprocess.run([sys.executable, str(root / "tools/drawthings_cuda_patch.py"), "prepare", "--ccv-source", str(outside)],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(before, {relative: (outside / relative).read_bytes() for relative in before})
+            self.assertTrue(all(not (outside / relative).exists() for relative, baseline in manifest["files"].items() if baseline is None))
+        with tempfile.TemporaryDirectory(prefix="bindings-test-", dir=root / "output/upgrades") as temporary:
+            subprocess.run(["cp", "-a", "--reflink=auto", str(source) + "/.", temporary], check=True, timeout=60)
+            result = subprocess.run([sys.executable, str(root / "tools/drawthings_cuda_patch.py"), "prepare", "--ccv-source", temporary],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["state"], "applied_and_bindings_generated")
+
+    def test_build_helper_rejects_pristine_targets_and_unsafe_tags(self):
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tools").mkdir()
+            helper = root / "tools/drawthings_build_candidate.sh"
+            shutil.copyfile(repository / "tools/drawthings_build_candidate.sh", helper)
+            private = root / "output/upgrades/private-ccv"
+            private.mkdir(parents=True)
+            cases = [
+                ({"DRAWTHINGS_CANDIDATE_TAG": "../unsafe"}, "artifact tag"),
+                ({"DRAWTHINGS_CCV_OVERRIDE": str(private),
+                  "DRAWTHINGS_CANDIDATE_DIR": str(root / "output/upgrades/community-0621d819")}, "separate candidate directory"),
+            ]
+            for overrides, message in cases:
+                with self.subTest(overrides=overrides):
+                    environment = dict(os.environ)
+                    for key in ("DRAWTHINGS_CANDIDATE_TAG", "DRAWTHINGS_CCV_OVERRIDE", "DRAWTHINGS_CANDIDATE_DIR", "DRAWTHINGS_BAZEL_ROOT"):
+                        environment.pop(key, None)
+                    environment.update(overrides)
+                    result = subprocess.run(["bash", str(helper), "--check"], env=environment,
+                                            capture_output=True, text=True, timeout=20)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+
     def test_strict_apply_is_idempotent_and_rejects_drift(self):
         root = Path(__file__).resolve().parents[1]
         source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
@@ -490,6 +541,52 @@ class CudaQwenReferenceTests(unittest.TestCase):
 
 
 class NativeQwenReferenceTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("DT_RUN_CUDA_TESTS") == "1", "Set DT_RUN_CUDA_TESTS=1 for native CUDA execution")
+    def test_native_backend_cli_accepts_qwen_cuda_and_executes(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = Path(os.environ.get("DT_GRPC_CANDIDATE", str(root / "output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI")))
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("lldb") or not shutil.which("cc") or not candidate.is_file() or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("Native CUDA integration requires LLDB, compiler, and separately built candidate/source")
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "native-backends.json"
+            result = subprocess.run(
+                [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
+                 "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda",
+                 "--execute-qwen", "--report", str(report_path)],
+                capture_output=True, text=True, timeout=150)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report, json.loads(report_path.read_text()))
+            self.assertTrue(report["qwen_cuda_registered"])
+            self.assertEqual(report["qwen_cuda_execution"], 0)
+            self.assertEqual(len(report["checks"]), 9)
+            self.assertTrue(all(check["backend"] == check["expected"] for check in report["checks"]))
+            self.assertEqual(report["binary_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
+
+    def test_native_backend_cli_rejects_pristine_qwen_cuda(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = root / "output/upgrades/community-0621d819/bazel-bin/Apps/gRPCServerCLI"
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("lldb") or not shutil.which("cc") or not candidate.is_file() or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("Pristine negative control requires LLDB, compiler, and pinned candidate/source")
+        result = subprocess.run(
+            [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
+             "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda"],
+            capture_output=True, text=True, timeout=150)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["qwen_cuda_registered"])
+        self.assertTrue(all(check["backend"] == "0x0" for check in report["checks"][:6]))
+        self.assertTrue(all(check["backend"] == check["expected"] for check in report["checks"][6:]))
+        refused = subprocess.run(
+            [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
+             "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda", "--execute-qwen"],
+            capture_output=True, text=True, timeout=150)
+        self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+        self.assertIn("\nDT_QWEN_EXECUTION=-98\n", refused.stderr)
+        self.assertIn("\nDT_QWEN_EXECUTION_ERROR=CUDA registrations or symbols missing\n", refused.stderr)
+
     def test_fixture_cli_records_native_validation(self):
         root = Path(__file__).resolve().parents[1]
         source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))

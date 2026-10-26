@@ -440,9 +440,70 @@ def cmd_verify_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False) -> Dict[str, Any]:
+    compiler, debugger = shutil.which("cc"), shutil.which("lldb")
+    if not compiler or not debugger or not binary.is_file():
+        raise ValueError("Native backend inspection requires a compiler, LLDB, and candidate executable")
+    checks = [(operation, datatype, 2, code) for operation, code in (
+        ("gated_delta", 0x6de198ac), ("rmsnorm_gated", 0x9b8af346))
+        for datatype in (16384, 131072, 524288)]
+    checks += [("sdpa_control", 131072, 2, 0x284ed926),
+               ("gated_delta_cpu_control", 16384, 1, 0x6de198ac),
+               ("rmsnorm_cpu_control", 16384, 1, 0x9b8af346)]
+    with tempfile.TemporaryDirectory() as temporary:
+        library = Path(temporary) / "backend_probe.so"
+        subprocess.run([compiler, "-shared", "-fPIC", "-g", "-O2", "-I", str(source / "lib"),
+                        str(Path(__file__).with_name("dt_qwen35_cpu_probe.c")), "-lm", "-o", str(library)],
+                       check=True, capture_output=True, text=True, timeout=60)
+        commands = ["settings set target.disable-aslr false", "breakpoint set --name main", "run",
+                "breakpoint disable 1",
+                    f'expression -- ((void *(*)(const char *, int))dlopen)({json.dumps(str(library))}, 2)',
+                    'script addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_init", "ccv_nnc_cmd_find_backend"]]',
+                    'script assert all(address != lldb.LLDB_INVALID_ADDRESS for address in addresses), "Native backend symbol missing"',
+                    'script result = lldb.frame.EvaluateExpression("dt_probe_native_init((void*)%d)" % addresses[0]); assert result.GetError().Success(), str(result.GetError())',
+                    f'script checks = {checks!r}; selected = []',
+                    'script [selected.append(lldb.frame.EvaluateExpression("dt_probe_native_backend((void*)%d,%dU,%d,%d)" % (addresses[1], code, memory, datatype))) for operation, datatype, memory, code in checks]',
+                    'script assert all(result.GetError().Success() for result in selected), str([str(result.GetError()) for result in selected])',
+                    'script print("DT_BACKENDS=" + __import__("json").dumps([result.GetValueAsUnsigned(0) for result in selected]))',
+                    "process kill"]
+        if execute_qwen:
+            commands[-1:-1] = [
+                'script execution_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_tensor_new", "ccv_nnc_tensor_free", "ccv_nnc_cmd_exec"]]',
+                'script execution_options = lldb.SBExpressionOptions(); execution_options.SetLanguage(lldb.eLanguageTypeC); execution_options.SetIgnoreBreakpoints(True); execution_options.SetStopOthers(False); execution_options.SetUnwindOnError(False); execution_options.SetTimeoutInMicroSeconds(60000000)',
+                'script execution_ready = all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses) and all(result.GetError().Success() and result.GetValueAsUnsigned(0) == 0x5f19790a for result in selected[:6]); execution = lldb.frame.EvaluateExpression("dt_probe_native_qwen_execution(" + ",".join("(void*)%d" % address for address in execution_addresses) + ")", execution_options) if execution_ready else None; print("DT_QWEN_EXECUTION=" + str(execution.GetValueAsSigned(-99) if execution is not None and execution.GetError().Success() else -98))',
+                'script print("DT_QWEN_EXECUTION_ERROR=" + (str(execution.GetError()) if execution is not None else "CUDA registrations or symbols missing"))'
+            ]
+        invocation = [debugger, "--batch"]
+        for command in commands:
+            invocation.extend(["-o", command])
+        invocation.extend(["--", str(binary), "--help"])
+        result = subprocess.run(invocation, capture_output=True, text=True, timeout=120)
+        match = re.search(r"^DT_BACKENDS=(\[.*\])$", result.stdout, re.M)
+        if result.returncode or match is None:
+            raise ValueError("Native backend inspection failed: " + result.stdout[-6000:] + result.stderr[-2000:])
+        selected = json.loads(match.group(1))
+        execution_match = re.search(r"^DT_QWEN_EXECUTION=(-?\d+)$", result.stdout, re.M)
+        execution_status = int(execution_match.group(1)) if execution_match else None
+        if execute_qwen and execution_status != 0:
+            raise ValueError("Native Qwen execution did not pass: " + result.stdout[-6000:])
+    expected = [0x5f19790a] * 7 + [0x3d9883e5] * 2
+    return {"binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "qwen_cuda_registered": selected == expected,
+            "qwen_cuda_execution": execution_status,
+            "checks": [{"operation": operation, "datatype": datatype, "memory": memory,
+                        "backend": hex(backend), "expected": hex(wanted)}
+                       for (operation, datatype, memory, _), backend, wanted in zip(checks, selected, expected)]}
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="WeeLLM vs Draw Things Layer Parity Oracle")
     sub = parser.add_subparsers(dest="subcommand", required=True)
+    p_backends = sub.add_parser("native-backends", help="Inspect actual compiled CUDA/CPU backend selections under LLDB")
+    p_backends.add_argument("--binary", required=True, type=Path)
+    p_backends.add_argument("--ccv-source", required=True, type=Path)
+    p_backends.add_argument("--report", type=Path)
+    p_backends.add_argument("--require-qwen-cuda", action="store_true")
+    p_backends.add_argument("--execute-qwen", action="store_true", help="Run linked-runtime CUDA operators and compare with native CPU values")
 
     p_fix = sub.add_parser(
         "qwen35-linear-attn-fixture",
@@ -468,6 +529,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_chk.add_argument("--contract", default="", help="Optional contract to enforce norm rank-3 and F32 policy")
 
     args = parser.parse_args(argv)
+    if args.subcommand == "native-backends":
+        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen)
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0 if report["qwen_cuda_registered"] or not args.require_qwen_cuda else 1
     if args.subcommand == "qwen35-linear-attn-fixture":
         return cmd_generate_qwen35_fixtures(args)
     if args.subcommand == "verify-block":

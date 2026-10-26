@@ -45,7 +45,7 @@ def apply_patch(source, manifest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "apply", "verify", "generate"))
+    parser.add_argument("action", choices=("check", "apply", "prepare", "verify", "generate"))
     parser.add_argument("--ccv-source", required=True, type=Path)
     args = parser.parse_args()
     source = args.ccv_source.resolve()
@@ -75,8 +75,24 @@ def main():
             output = BUNDLE / manifest["patch"]
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(result.stdout)
-    elif args.action == "apply":
+    elif args.action in ("apply", "prepare"):
+        if args.action == "prepare":
+            if not source.is_relative_to(ROOT / "output" / "upgrades"):
+                raise ValueError("Binding preparation requires a private source copy under output/upgrades")
+            if not shutil.which("ruby"):
+                raise ValueError("Ruby is required for the upstream CCV binding generator")
         state = apply_patch(source, manifest)
+        if args.action == "prepare":
+            command_directory = source / "lib" / "nnc" / "cmd"
+            result = subprocess.run(["ruby", "build-cmd.rb", "."], cwd=command_directory,
+                                    capture_output=True, text=True, check=False, timeout=120)
+            if result.returncode:
+                raise ValueError("CCV binding generation failed: " + result.stderr[-4000:])
+            bindings = (command_directory / "ccv_nnc_cmd.inc").read_text()
+            for operation in ("GATED_DELTA", "RMSNORM_GATED"):
+                if f"_register_command_CCV_NNC_{operation}_FORWARD_backend_CCV_NNC_BACKEND_GPU_REF(&(init_map[" not in bindings:
+                    raise ValueError(f"Generated bindings lack {operation} CUDA registration")
+            state = "applied_and_bindings_generated"
     elif args.action == "verify":
         with tempfile.TemporaryDirectory() as temporary:
             clean = Path(temporary)

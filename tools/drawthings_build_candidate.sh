@@ -5,7 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REVISION="0621d8198f3ed505bb7cefc71b84f8f0e1ce5936"
 CANDIDATE="$(realpath -m "${DRAWTHINGS_CANDIDATE_DIR:-$ROOT/output/upgrades/community-${REVISION:0:8}}")"
-BAZEL_ROOT="${DRAWTHINGS_BAZEL_ROOT:-$ROOT/.cache/bazel-upgrade}"
+BAZEL_ROOT="$(realpath -m "${DRAWTHINGS_BAZEL_ROOT:-$ROOT/.cache/bazel-upgrade}")"
+CCV_OVERRIDE="${DRAWTHINGS_CCV_OVERRIDE:-}"
+ARTIFACT_TAG="${DRAWTHINGS_CANDIDATE_TAG:-${REVISION:0:8}}"
 MODE="${1:-build}"
 
 usage() {
@@ -21,6 +23,7 @@ Install build prerequisites separately:
 
 Defaults: CUDA 12.8, Swift 6.0.3, SM86, 16 jobs, 8192 MiB build memory.
 Overrides: DRAWTHINGS_CANDIDATE_DIR, DRAWTHINGS_BAZEL_ROOT,
+           DRAWTHINGS_CCV_OVERRIDE, DRAWTHINGS_CANDIDATE_TAG,
            DT_BUILD_JOBS, DT_BUILD_MEMORY_MB, DT_CUDA_COMPUTE_CAPABILITIES.
 EOF
 }
@@ -36,6 +39,27 @@ case "$MODE" in
   prepare|build|--check) ;;
   *) usage >&2; fail "unknown command: $MODE" ;;
 esac
+
+[[ "$ARTIFACT_TAG" =~ ^[A-Za-z0-9_-]+$ ]] || fail "candidate artifact tag contains invalid characters"
+CCV_ARGS=()
+if [[ -n "$CCV_OVERRIDE" ]]; then
+  CCV_OVERRIDE="$(realpath "$CCV_OVERRIDE")"
+  [[ "$CCV_OVERRIDE" == "$ROOT/output/upgrades/"* ]] || fail "CUDA override must be a private copy under output/upgrades"
+  [[ "$CANDIDATE" != "$ROOT/output/upgrades/community-${REVISION:0:8}" ]] || fail "patched builds require a separate candidate directory"
+  [[ "$BAZEL_ROOT" != "$ROOT/.cache/bazel-upgrade" ]] || fail "patched builds require a separate Bazel output root"
+  [[ "$ARTIFACT_TAG" != "${REVISION:0:8}" ]] || fail "patched builds require a distinct candidate artifact tag"
+  "$ROOT/.venv/bin/python" - "$ROOT" "$CCV_OVERRIDE" <<'PY'
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tools.drawthings_cuda_patch import BUNDLE, patch_state
+manifest = json.loads((BUNDLE / "manifest.json").read_text())
+if patch_state(Path(sys.argv[2]), manifest) != "applied":
+    raise SystemExit("error: CCV override does not match the applied pinned CUDA profile")
+PY
+  CCV_ARGS=("--override_repository=ccv=$CCV_OVERRIDE")
+fi
 
 bash "$ROOT/.devcontainer/install-build-tools.sh" --check
 SWIFT_VERSION="$(swift --version)"
@@ -61,6 +85,10 @@ if [[ "$MODE" == --check ]]; then
   exit 0
 fi
 
+if [[ -n "$CCV_OVERRIDE" ]]; then
+  "$ROOT/.venv/bin/python" "$ROOT/tools/drawthings_cuda_patch.py" prepare --ccv-source "$CCV_OVERRIDE"
+fi
+
 pushd "$CANDIDATE" >/dev/null
 if [[ ! -e WORKSPACE ]]; then
   bash Scripts/install.sh /usr
@@ -75,10 +103,11 @@ fi
 
 LOG_DIRECTORY="$ROOT/output/upgrades"
 mkdir -p "$LOG_DIRECTORY"
-LOG_FILE="$LOG_DIRECTORY/build-${REVISION:0:8}.log"
+LOG_FILE="$LOG_DIRECTORY/build-${ARTIFACT_TAG}.log"
 bazel --output_user_root="$BAZEL_ROOT" \
   --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts \
   build //Apps:gRPCServerCLI \
+  "${CCV_ARGS[@]}" \
   --spawn_strategy=local --compilation_mode=opt --config=clang --config=cuda \
   --per_file_copt='.*[.]cu@-nvcc_options=compiler-options=-frelaxed-template-template-args' \
   --action_env=TF_NEED_CUDA=1 --action_env=TF_NEED_OPENCL=0 \
@@ -102,6 +131,6 @@ bazel --output_user_root="$BAZEL_ROOT" \
 
 BINARY="$CANDIDATE/bazel-bin/Apps/gRPCServerCLI"
 [[ -x "$BINARY" ]] || fail "build succeeded without the expected executable: $BINARY"
-sha256sum "$BINARY" | tee "$LOG_DIRECTORY/gRPCServerCLI-${REVISION:0:8}.sha256"
+sha256sum "$BINARY" | tee "$LOG_DIRECTORY/gRPCServerCLI-${ARTIFACT_TAG}.sha256"
 printf 'Candidate built, not installed: %s\n' "$BINARY"
 popd >/dev/null

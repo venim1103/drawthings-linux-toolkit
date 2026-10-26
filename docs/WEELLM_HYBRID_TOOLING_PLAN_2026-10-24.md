@@ -24,7 +24,7 @@ This section supersedes the original completion claims and unexecuted recipes be
 
 ### CUDA Operator Increment: October 26
 
-The separate [Qwen3.5 CUDA patch profile](../DRAW_THINGS_PATCH/cuda/README.md) now contains forward CUDA backends for `GatedDelta` and `RMSNormGated`. Both are correctness-first implementations validated on the RTX A3000/SM86, not yet integrated into a rebuilt server. The legacy CPU bundle and pristine candidate dependencies remain unchanged.
+The separate [Qwen3.5 CUDA patch profile](../DRAW_THINGS_PATCH/cuda/README.md) now contains forward CUDA backends for `GatedDelta` and `RMSNormGated`. Both are correctness-first implementations validated on the RTX A3000/SM86 and integrated into a separately rebuilt server. The legacy CPU bundle and pristine candidate dependencies remain unchanged.
 
 - RMSNorm passed 60 precision/layout/affine/in-place numerical cases; observed maximum absolute error was about `9.54e-7`.
 - Gated delta passed 108 grouped/batched/non-square/real-head-size precision, decay, checkpoint, and in-place-state cases. Maximum observed FP32 state error was about `4.47e-8`; output error including reduced-precision rounding was about `6.10e-5`.
@@ -40,6 +40,23 @@ DT_RUN_CUDA_TESTS=1 .venv/bin/python -m unittest \
 
 The gated-delta backend keeps recurrent state/decay in F32 and supports F32/F16/BF16 Q/K/V/beta, grouped heads, scalar/channel log or direct decay, backward checkpoints, and checkpoint-free in-place state. It currently supports key dimensions up to 1,024. RMSNorm supports one last-axis reduction on contiguous tensors, optional affine scale, mixed supported precisions, and in-place output. Unsupported contracts fail explicitly; backward/training and performance optimization are out of scope.
 
+### Native Server Integration: October 26
+
+The pinned community checkout, copied CCV source, Bazel root, and artifact tag are isolated under `output/upgrades` and `.cache/bazel-qwen35-cuda`. The build helper rejects reuse of the pristine candidate, default cache, or default artifact tag when a CUDA override is supplied. Both native builds used 16 jobs; neither installed or promoted a runtime.
+
+The first full build compiled successfully but failed the new runtime registration gate: all six Qwen CUDA selections were absent. CCV's `lib/BUILD.bazel` consumes a pre-generated `ccv_nnc_cmd.inc` without regenerating it. The helper now runs the patch tool's private-only `prepare` action using upstream Ruby code generation, checks the generated GPU calls, and then builds. Ruby is declared and checked in the devcontainer build prerequisites. The first attempt's log, hash, and negative registry report are preserved with `before-bindings` names.
+
+The corrected candidate at `output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI` has SHA-256 `5cfdd16e4110e5248fcb4f37fca7da2dc26790fdddcca1f9682f22e24ba1a39d`. The local report `output/upgrades/native-backends-qwen35-cuda.json` records all six Qwen F32/F16/BF16 selections as GPU_REF, an SDPA GPU control, and both CPU controls. Its `qwen_cuda_execution=0` also requires real native allocation, transfer, GPU dispatch, and readback for tiny F32 gated-delta and affine RMSNorm operations. Outputs and state checkpoints must be finite and agree with the pinned CPU implementations within absolute `2e-6`.
+
+The native probe uses explicit C debugger expression settings and permits other threads to run during CUDA calls. Missing registrations refuse execution in the same expression; a failed debugger assertion cannot authorize a later GPU call. Regression tests accept the patched candidate and reject the pristine candidate, including explicit execution refusal. The combined suite passed **55 tests with CUDA enabled**, including the existing 168 numerical CUDA cases:
+
+```bash
+DT_RUN_CUDA_TESTS=1 .venv/bin/python -m unittest \
+  tools.test_dt_weellm tools.test_dt_make_config tools.test_dt_tensor_to_playable -v
+```
+
+This closes operator integration, not full-model activation parity or MOSS inference. F16/BF16 numerical execution is covered by the standalone CUDA tests; the linked-server execution probe currently uses F32 fixtures.
+
 ### Commands
 
 ```bash
@@ -52,17 +69,17 @@ The gated-delta backend keeps recurrent state/decay in F32 and supports F32/F16/
   --native-ccv-source /path/to/pinned/ccv
 ```
 
-Native tests can use `DT_CCV_SOURCE_DIR` and `DT_GRPC_CANDIDATE`. Without the compiler, pinned sources, or candidate/debugger, relevant native tests explicitly skip; CPU-only success must not be presented as native acceptance. Fixture manifests record whether validation is `numpy_reference_only` or `native_cpu_verified`, input/output conventions, fixture hash, native source hashes, tolerances, and observed errors.
+Native tests can use `DT_CCV_SOURCE_DIR` and `DT_GRPC_CANDIDATE`. The CUDA-enabled native execution test defaults to the separate Qwen candidate; the native split-store test defaults to the pristine candidate. Without the compiler, pinned sources, or candidate/debugger, relevant native tests explicitly skip; CPU-only success must not be presented as native acceptance. Fixture manifests record whether validation is `numpy_reference_only` or `native_cpu_verified`, input/output conventions, fixture hash, native source hashes, tolerances, and observed errors.
 
 ### Remaining Acceptance Gates
 
-1. Integrate the tested CUDA profile into a separate pinned candidate build and verify actual backend registration. Fix and test the distinct empty scaled-dot-product-attention operation before full guided MOSS inference, preserving the legacy CPU patches, pristine candidate, and installed runtime.
+1. Fix and test the distinct empty scaled-dot-product-attention operation, then run the strict guided MOSS image canary using the isolated Qwen-integrated candidate. Preserve the legacy CPU patches, pristine candidate, and installed runtime; operator acceptance does not authorize promotion.
 2. Add full reference/native text-encoder and denoiser activation capture. `verify-block` is a serialization/weight check, not a forward execution oracle. Native CPU operation parity is now independently verified; full WeeLLM/native model parity is not.
-3. Convert a complete real model into private staging, verify native load and finite final generation, and measure actual peak memory/time before publication. No full-size conversion or GPU inference was performed in this hardening pass.
+3. Convert a complete real model into private staging, verify native load and finite final generation, and measure actual peak memory/time before publication. No full-size conversion or full-model GPU inference was performed in this hardening pass.
 4. Add explicit native decoding or a validated bridge for ezm7/palettized/packed/trailer variants before numerical diff/health checks on those artifacts. Unsupported codecs currently fail closed.
 5. Validate full artifact/catalog publication under concurrency and paired external storage, broader LoRA families/input/diagonal splits, and model/tokenizer/reference-environment pins and third-party notices before calling the workbench production-complete.
 
-No canonical checkpoint payloads, active catalogs, native source files, installed binaries, or patch bundles were changed by these CPU/native-probe checks. The candidate binary still has SHA-256 `fd9f2d82119e6d79172a70b4230f79c75933958b78a36b2cd8e4799cfb265b5a`.
+No canonical checkpoint payloads were edited and no runtime was promoted. Post-integration checks matched the installed server/launcher, all three legacy CPU converters, and both active catalogs against the preservation baseline. Both detached community source trees remain clean; the original CCV dependency reports `pristine`. The original candidate retains SHA-256 `fd9f2d82119e6d79172a70b4230f79c75933958b78a36b2cd8e4799cfb265b5a`. GPU memory returned to zero and no owned server, debugger, or compiler remained active.
 
 ---
 

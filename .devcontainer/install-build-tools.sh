@@ -16,6 +16,7 @@ check_tools() {
     [[ "$(bazel --version)" == "bazel $BAZEL_VERSION" ]]
     "$CUDA_ROOT/bin/nvcc" --version
     /usr/bin/llvm-config --version
+    command -v ruby >/dev/null
     [[ -r /etc/ssl/certs/java/cacerts ]]
     [[ -f "$(/usr/bin/clang -print-resource-dir)/include/omp.h" ]]
     for header in cuda_runtime.h cuda_profiler_api.h cublas_api.h cusolver_common.h curand.h cufft.h cusparse.h; do
@@ -52,7 +53,7 @@ done
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-remove --no-install-recommends \
-    ca-certificates-java clang llvm llvm-dev libomp-dev \
+    ca-certificates-java clang llvm llvm-dev libomp-dev ruby \
     libpng-dev libjpeg-dev libatlas-base-dev libblas-dev \
     cuda-nvcc-12-8 cuda-cupti-dev-12-8 cuda-profiler-api-12-8 libcufile-dev-12-8 \
     "cuda-cudart-dev-12-8=${runtime_versions[0]}" \

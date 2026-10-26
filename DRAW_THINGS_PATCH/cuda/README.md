@@ -29,6 +29,36 @@ To regenerate after snapshot changes, supply pristine pinned base files:
 .venv/bin/python tools/drawthings_cuda_patch.py generate --ccv-source /path/to/pristine/pinned/ccv
 ```
 
+## Isolated Server Integration
+
+The candidate helper accepts `DRAWTHINGS_CCV_OVERRIDE` only for an applied, hash-verified profile in a private directory under `output/upgrades`. A distinct candidate directory, Bazel root, and artifact tag are required, preventing reuse of the pristine candidate's build outputs and provenance files.
+
+Ruby is a native-build prerequisite. Before Bazel runs, the helper automatically invokes the patch tool's `prepare` action, which regenerates bindings with upstream `ruby build-cmd.rb .` inside the private CCV copy and verifies both GPU registration calls. `prepare` refuses non-private source paths before modifying files. Plain `apply` does not regenerate bindings: CCV's Bazel rules consume a pre-generated command table, so compiling the new CUDA files alone is not sufficient.
+
+```bash
+DRAWTHINGS_CANDIDATE_DIR="$PWD/output/upgrades/community-0621d819-qwen35-cuda" \
+DRAWTHINGS_BAZEL_ROOT="$PWD/.cache/bazel-qwen35-cuda" \
+DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda" \
+DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda \
+DT_BUILD_JOBS=16 bash tools/drawthings_build_candidate.sh build
+
+.venv/bin/python tools/dt_layer_parity_oracle.py native-backends \
+	--binary output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI \
+	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda \
+	--require-qwen-cuda --execute-qwen \
+	--report output/upgrades/native-backends-qwen35-cuda.json
+```
+
+Create the detached community checkout and independent CCV copy before this command; apply the profile only to that private CCV copy. The report checks six CUDA precision selections, CPU/SDPA controls, the binary hash, and optionally real linked-runtime GPU operations against CPU values. The pristine server is a tested negative control: the required-Qwen-CUDA gate rejects it even though CPU and SDPA controls are present. Integration is accepted only after both the full build and the positive linked-runtime check pass.
+
+### Verified Integration
+
+The separate candidate built with 16 jobs and passed the linked-runtime gate. Its SHA-256 is `5cfdd16e4110e5248fcb4f37fca7da2dc26790fdddcca1f9682f22e24ba1a39d`; the local acceptance report is `output/upgrades/native-backends-qwen35-cuda.json`.
+
+All six Qwen F32/F16/BF16 selections resolve to GPU_REF, with SDPA and both CPU controls also matching. Actual native allocation, transfer, command dispatch, and GPU-to-CPU transfer passed for tiny F32 gated-delta and affine RMSNorm cases; all outputs and recurrent-state checkpoints were finite and within absolute `2e-6` of the pinned CPU implementations. The pristine candidate also passes a negative test that explicitly refuses GPU execution when registrations are absent. The combined CUDA-enabled suite passed all 55 tests.
+
+The first full build correctly failed the registration gate because bindings were stale. Its log, hash, and negative registry report are retained with `before-bindings` names under `output/upgrades`. Automatic upstream regeneration fixed the integration; no generated file was hand-edited. This candidate is not installed or promoted. The original candidate, installed runtime, legacy CPU tools, and active catalogs remain unchanged.
+
 ## Coverage And Limits
 
 - RMSNorm: one last-axis reduction on contiguous tensors, optional affine scale, mixed F32/F16/BF16 value/gate/scale types, FP32 accumulation, in-place output, zero-rank empty operations.
@@ -38,4 +68,4 @@ To regenerate after snapshot changes, supply pristine pinned base files:
 
 On the RTX A3000/SM86, 60 RMSNorm and 108 gated-delta numerical cases passed, plus invalid/empty contract tests. Observed maximum errors were approximately `9.54e-7` for RMSNorm, `4.47e-8` for FP32 gated-delta state, and `6.10e-5` for gated-delta output including reduced-precision rounding. FP32 checks use absolute tolerance `2e-6` and relative tolerance `2e-5`; reduced-precision output checks use separately declared tolerances in the tests.
 
-These results do not establish full MOSS inference. Server integration, the distinct zero-length scaled-dot-product-attention crash, complete text-encoder/denoiser parity, and an accepted final image remain separate gates.
+These results establish standalone operator correctness and linked-server operator integration, not full MOSS inference. The distinct zero-length scaled-dot-product-attention crash, complete text-encoder/denoiser parity, and an accepted final image remain separate gates.
