@@ -81,6 +81,18 @@ The private two-step and original 50-step 512x512 CFG-3/shift-5 requests now eac
 
 These are finite-output passes, **not semantic-quality acceptance**: the 50-step image depicts a repeated green structure rather than the requested teapot. Full reference conditioning/denoiser/sampler/decode parity is still needed. A read-only cuBLAS trace also showed the parameter-12 warnings are zero-sized skipped GEMMs with matching FP16 types (`m=0,k=0`), ruling out the mixed-datatype hypothesis; their broader empty-operation handling remains separate. The old LTX GEMM crash investigation remains deferred.
 
+### Quality Diagnosis And Captured CPU Parity: October 26
+
+The runtime binary remains `920bf727...`; this increment adds diagnostic coverage, not a production correction. Real bounded pre/post captures show that MOSS receives nonzero, distinct positive/negative text features (mean-feature cosine about 0.396). Its 4096-to-3072 text projection matches CPU math with maximum unrounded absolute error about 0.03127 under declared relative/absolute tolerances. The first 24-head text attention uses scale 1, no causal mask, no variable-length mode; independent CPU attention differs by at most 0.002071 in output and 5.81e-6 in log-sum-exp. Adjacent-pair rotary multiplication and its four-axis text positions also match the reference formula within reduced-precision tolerance.
+
+The FP32 timestep projection matches CPU math to about 6.05e-8 maximum absolute error; its rows vary between timesteps. The live timestep weight and bias exactly match the official checkpoint, including a strictly bounded read of its raw FP32 trailer descriptor. Native latent scaling and pack/unpack ordering agree at source level with the reference setup. Native Euler velocity sign is consistent, though its timestep grid is not identical to the reference's snapped schedule. These facts do not establish complete Qwen/DiT/sampler/VAE parity.
+
+`compare-capture` makes linear, rotary, and unmasked noncausal SDPA comparisons repeatable with capture hashes, shape/type validation, finite-value gates, and memory/compute budgets. The C capture adapter caps payloads at 64 MiB, rejects noncontiguous/unsupported tensors, and atomically refuses overwrite. Captures and reports are under `output/upgrades/moss-image-base-add235e9`, with prefixes `text_projection_capture`, `text_attention_capture`, `text_rotary_capture`, and `time_projection_capture`.
+
+Nonuniform packed Q5_K/Q6_K GEMM tests initially exposed a small difference from dense products. The controlling kernel documents an intentional int8 activation quantization for more than four rows; modeling that contract makes packed products pass, while a separate dense GPU control independently matches unquantized CPU products. New `--execute-packed-gemm` acceptance covers both paths. Nonuniform packed lookup remains verified against native CPU decoding. All **60** combined CUDA-enabled tests pass.
+
+Two diagnostic hypotheses were rejected without changing source or defaults. Forcing dense packed-weight fallback only inside a disposable debugger inferior makes encoder conditioning non-finite. Removing the negative branch with CFG 1 still produces an unrelated structured image after 50 steps (`output/q6p_canary_moss_base_q8p_512_cfg1_quality_diagnostic_20261026`), despite strict finite-image acceptance. The special skipped negative block is therefore not the sole quality cause. Next is a complete reference layer/model boundary comparison, not a sampler or precision change justified only by these passing primitives. M1 quality remains unaccepted.
+
 ### Commands
 
 ```bash

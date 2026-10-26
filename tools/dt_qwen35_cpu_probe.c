@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "nnc/ccv_nnc.h"
 #include "nnc/ccv_nnc_easy.h"
 
@@ -90,6 +92,52 @@ int dt_probe_native_nonfinite(const void* tensor_pointer, void* synchronize, voi
   return status ? -32 : nonfinite;
 }
 
+int dt_probe_native_tensor_dump(const void* tensor_pointer, void* synchronize, void* transfer,
+  const char* path)
+{
+  const ccv_nnc_tensor_t* source = tensor_pointer;
+  const int datatype = source->info.datatype;
+  if (datatype != CCV_32F && datatype != CCV_16F && datatype != CCV_16BF) return -30;
+  if (!CCV_IS_TENSOR_CONTIGUOUS(source)) return -33;
+  const size_t count = ccv_nnc_tensor_count(source->info);
+  const size_t size = count * (datatype == CCV_32F ? 4 : 2);
+  if (!count || size > 64 * 1024 * 1024) return -34;
+  void* values = malloc(size);
+  if (!values) return -31;
+  int status = 0;
+  if (CCV_TENSOR_GET_MEMORY(source->info.type) == CCV_TENSOR_GPU_MEMORY)
+  {
+    status = ((int (*)(void))synchronize)();
+    if (!status) status = ((int (*)(void*, const void*, size_t, int))transfer)(values, source->data.u8, size, 2);
+  } else {
+    memcpy(values, source->data.u8, size);
+  }
+  if (status) { free(values); return -32; }
+  const int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (descriptor < 0) { free(values); return -35; }
+  FILE* output = fdopen(descriptor, "wb");
+  if (!output) { close(descriptor); unlink(path); free(values); return -35; }
+  uint32_t header[17] = {0, CCV_TENSOR_CPU_MEMORY, source->info.format, datatype, 0};
+  memcpy(header + 5, source->info.dim, sizeof(int) * CCV_NNC_MAX_DIM_ALLOC);
+  if (fwrite(header, 1, sizeof(header), output) != sizeof(header) ||
+      fwrite(values, 1, size, output) != size) status = -35;
+  if (fclose(output)) status = -35;
+  if (status) unlink(path);
+  free(values);
+  return status;
+}
+
+int dt_probe_native_sdpa_parameters(const void* command_pointer)
+{
+  const ccv_nnc_cmd_t* command = command_pointer;
+  if (command->cmd != CCV_NNC_SCALED_DOT_PRODUCT_ATTENTION_FORWARD) return -37;
+  fprintf(stderr, "DT_SDPA_PARAMETERS scale=%g causal=%d varlen=%d\n",
+    command->info.scaled_dot_product_attention.scale,
+    command->info.scaled_dot_product_attention.is_causal,
+    command->info.scaled_dot_product_attention.is_varlen);
+  return 0;
+}
+
 int dt_probe_native_sdpa_contract(void* forward, const int mode)
 {
   ccv_nnc_tensor_t tensors[7] = {0};
@@ -135,7 +183,7 @@ int dt_probe_native_embedding_execution(void* allocate_tensor, void* release_ten
       unsigned char dense[4096] = {0}, reference[4096] = {0};
       for (int element = 0; element < 768; element++)
       {
-        const int row = element / 256;
+        const int row = (element / 256 + element / 13 + element % 7) % 3;
         if (datatypes[datatype_index] == CCV_32F) ((float*)dense)[element] = dense_f32[row];
         else ((uint16_t*)dense)[element] = datatypes[datatype_index] == CCV_16F ? dense_f16[row] : dense_bf16[row];
       }
@@ -200,6 +248,113 @@ int dt_probe_native_embedding_execution(void* allocate_tensor, void* release_ten
         if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
       if (status) return status;
     }
+  return 0;
+}
+
+int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, void* execute_command,
+  void* quantize, void* dequantize)
+{
+  typedef ccv_nnc_tensor_t* (*allocate_fn)(void*, ccv_nnc_tensor_param_t, int);
+  typedef int (*execute_fn)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
+    ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*);
+  const int formats[] = {CCV_NNC_QX_8I_ROWWISE_Q5_K, CCV_NNC_QX_8I_ROWWISE_Q6_K};
+  const uint16_t levels[] = {0x3400, 0x3800, 0x3a00, 0x3c00, 0xbc00, 0xb800, 0x4000, 0x4400};
+  const float activation_values[] = {0.25f, 0.5f, 0.75f, 1, -1, -0.5f, 2, 4};
+  for (int format_index = 0; format_index < 2; format_index++)
+  {
+    uint16_t dense[32 * 256], reference[32 * 256], activations[16 * 256], output[16 * 32], dense_output[16 * 32];
+    unsigned char packed[8192] = {0};
+    for (int index = 0; index < 32 * 256; index++)
+      dense[index] = levels[((index / 256) + (index % 256) / 32 + index % 7) % 8];
+    for (int index = 0; index < 16 * 256; index++)
+      activations[index] = levels[((index / 256) + (index % 256) / 16) % 8];
+    memset(output, 0xff, sizeof(output));
+    const size_t packed_size = ((size_t (*)(const void*, int, int, size_t, size_t, int,
+      const float*, size_t, void*, size_t))quantize)(dense, CCV_16F, CCV_TENSOR_CPU_MEMORY,
+        32 * 256, 256, formats[format_index], 0, 0, packed, sizeof(packed));
+    if (!packed_size || packed_size > sizeof(packed)) return -50;
+    ((void (*)(const void*, int, int, size_t, size_t, int, void*, size_t))dequantize)(packed,
+      CCV_16F, CCV_TENSOR_CPU_MEMORY, packed_size, 256, formats[format_index], reference, 32 * 256);
+    ccv_nnc_tensor_t host[3] = {0};
+    ccv_nnc_tensor_t* host_pointers[] = {host, host + 1, host + 2};
+    ccv_nnc_tensor_t* device[3] = {0};
+    const int shapes[3][2] = {{16, 256}, {32, 256}, {16, 32}};
+    int status = 0;
+    for (int index = 0; index < 3; index++)
+    {
+      host[index].info.type = CCV_TENSOR_CPU_MEMORY;
+      host[index].info.format = CCV_TENSOR_FORMAT_NHWC;
+      host[index].info.datatype = index == 1 ? CCV_QX | CCV_NNC_QX_8I_ROWWISE_X | (CCV_16F >> 12) : CCV_16F;
+      host[index].info.reserved = index == 1 ? formats[format_index] : 0;
+      memcpy(host[index].info.dim, shapes[index], sizeof(shapes[index]));
+      host[index].data.u8 = index == 0 ? (unsigned char*)activations : index == 1 ? packed : (unsigned char*)output;
+      ccv_nnc_tensor_param_t parameters = host[index].info;
+      parameters.type = CCV_TENSOR_GPU_MEMORY;
+      device[index] = ((allocate_fn)allocate_tensor)(0, parameters, 0);
+      if (!device[index]) { status = -51; break; }
+    }
+    const ccv_nnc_hint_t hint = {0};
+    const ccv_nnc_cmd_t transfer = {.cmd = CCV_NNC_DATA_TRANSFER_FORWARD, .algorithm = -1};
+    const ccv_nnc_cmd_t gemm = {.cmd = CCV_NNC_GEMM_FORWARD, .algorithm = -1,
+      .info = {.blas = {.transpose_b = {0, 1}}}};
+    if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, host_pointers, 3, device, 3, 0);
+    if (!status) status = ((execute_fn)execute_command)(gemm, hint, 0, device, 2, device + 2, 1, 0);
+    if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, device + 2, 1, host_pointers + 2, 1, 0);
+    if (!status)
+    {
+      ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[1]);
+      ccv_nnc_tensor_param_t parameters = host[1].info;
+      parameters.type = CCV_TENSOR_GPU_MEMORY;
+      parameters.datatype = CCV_16F;
+      parameters.reserved = 0;
+      device[1] = ((allocate_fn)allocate_tensor)(0, parameters, 0);
+      if (!device[1]) status = -51;
+      host[1].info = parameters;
+      host[1].info.type = CCV_TENSOR_CPU_MEMORY;
+      host[1].data.u8 = (unsigned char*)reference;
+      host[2].data.u8 = (unsigned char*)dense_output;
+      if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, host_pointers + 1, 1, device + 1, 1, 0);
+      if (!status) status = ((execute_fn)execute_command)(gemm, hint, 0, device, 2, device + 2, 1, 0);
+      if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, device + 2, 1, host_pointers + 2, 1, 0);
+    }
+    if (!status)
+      for (int row = 0; row < 16; row++)
+        for (int column = 0; column < 32; column++)
+        {
+          float expected = 0;
+          float expected_dense = 0;
+          for (int reduction = 0; reduction < 256; reduction++)
+          {
+            const uint16_t bits = reference[column * 256 + reduction];
+            const int exponent = (bits >> 10) & 31;
+            const float value = exponent ? ldexpf((bits & 1023) + 1024, exponent - 25) : ldexpf(bits & 1023, -24);
+            const float activation = activation_values[(row + reduction / 16) % 8];
+            const float weight = (bits & 0x8000) ? -value : value;
+            expected_dense += weight * activation;
+            expected += weight * nearbyintf(activation * (127.0f / 4)) * (4.0f / 127);
+          }
+          const uint16_t bits = output[row * 32 + column];
+          const int exponent = (bits >> 10) & 31;
+          const float magnitude = exponent ? ldexpf((bits & 1023) + 1024, exponent - 25) : ldexpf(bits & 1023, -24);
+          const float actual = bits & 0x8000 ? -magnitude : magnitude;
+          const uint16_t control_bits = dense_output[row * 32 + column];
+          const int control_exponent = (control_bits >> 10) & 31;
+          const float control_magnitude = control_exponent ? ldexpf((control_bits & 1023) + 1024, control_exponent - 25) : ldexpf(control_bits & 1023, -24);
+          const float control = control_bits & 0x8000 ? -control_magnitude : control_magnitude;
+          if (exponent == 31 || control_exponent == 31 ||
+              fabsf(actual - expected) > 0.003f * fmaxf(1, fabsf(expected)) ||
+              fabsf(control - expected_dense) > 0.003f * fmaxf(1, fabsf(expected_dense)))
+          {
+            fprintf(stderr, "DT_PACKED_GEMM_MISMATCH format=%d row=%d column=%d packed=%g dense=%g expected=%g\n",
+              formats[format_index], row, column, actual, control, expected);
+            status = -52;
+            break;
+          }
+        }
+    for (int index = 0; index < 3; index++)
+      if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
+    if (status) return status;
+  }
   return 0;
 }
 

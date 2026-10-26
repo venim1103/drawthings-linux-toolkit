@@ -554,6 +554,14 @@ Both the two-step smoke profile and original 50-step M1 profile now pass strict 
 
 **M1 quality remains unaccepted.** The 50-step image is a repeated green structure, not the requested orange teapot, so finite numerical output is not evidence of correct conditioning or model parity. Next, compare reference text conditioning, denoiser, sampler, and decode boundaries. SFT, packed-quality comparisons, and default promotion remain gated. The remaining cuBLAS warnings were traced to zero-sized skipped GEMMs with matching FP16 operands, not a mixed-datatype call; the deferred LTX crash work was not reopened.
 
+### M1 Quality Boundary Checks: October 26
+
+No runtime source change is made in this follow-up; the candidate remains SHA-256 `920bf727c5a27a7d1ad90735735c74b7edfbbc1459598cea018f71e2d713dd96`. Bounded actual activation captures independently pass CPU checks for MOSS text projection, first text attention and log-sum-exp, rotary multiplication/positions, and FP32 timestep projection. The timestep weights match the checkpoint exactly; text conditioning is finite, nonzero, and distinct between prompts. These are operation-level checks, not proof of full text-encoder or denoiser correctness.
+
+New `compare-capture` tooling records hashes, shapes, datatypes, tolerances, and errors and refuses malformed/non-finite/oversized or unsupported captures. The packed-GEMM gate now checks nonuniform weights/activations plus a dense GPU control; its CPU model accounts for the documented int8 activation quantization in the packed fast path. The full CUDA-enabled suite passes 60 tests.
+
+The 50-step CFG-1 isolation test passes finite-output checks but still depicts an unrelated structured scene, not the teapot. Removing the special negative branch is insufficient. A debugger-only bypass of packed fast GEMM instead causes non-finite encoder conditioning and was rejected. The normal CFG-3 profile, source files, models, and installed/default runtime were not changed by these experiments. M1 still needs full reference-boundary and prompt-fidelity acceptance.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].

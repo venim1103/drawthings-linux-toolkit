@@ -45,7 +45,7 @@ DT_BUILD_JOBS=16 bash tools/drawthings_build_candidate.sh build
 .venv/bin/python tools/dt_layer_parity_oracle.py native-backends \
 	--binary output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI \
 	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-embedding \
-	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding \
+	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding --execute-packed-gemm \
 	--report output/upgrades/native-backends-qwen35-cuda-embedding.json
 ```
 
@@ -78,6 +78,21 @@ Both private guided MOSS canaries now produce exactly one finite final image and
 Finite output is **not image-quality acceptance**. The 50-step result is a repeated green structure rather than the requested orange teapot. Reference activation/sampler/decoder parity and prompt fidelity remain unresolved; no default promotion or SFT claim follows from these results. The remaining `GEMM_EX` warnings were separately traced to zero-sized skipped operations with matching FP16 operands, not a mixed-datatype failure.
 
 ## Coverage And Limits
+
+### Captured Activation Checks
+
+`tools/dt_layer_parity_oracle.py compare-capture` compares bounded raw native captures with independent CPU linear, adjacent-pair rotary, or unmasked noncausal grouped-attention math. The prefix identifies `<prefix>_input_0.bin`, further inputs, and `<prefix>_output_0.bin`; optional attention output 1 is log-sum-exp. Reports record capture hashes, shapes, formats, datatypes, tolerances, and measured errors. Non-finite/malformed data, unsupported masked/projected attention, and excessive reference allocations fail explicitly. Capture scope is an individual operation, not full-model parity.
+
+```bash
+.venv/bin/python tools/dt_layer_parity_oracle.py compare-capture \
+	--prefix output/upgrades/moss-image-base-add235e9/text_attention_capture \
+	--operation sdpa --scale 1 --atol 0.005 --rtol 0.005 \
+	--report output/upgrades/moss-image-base-add235e9/text-attention-parity.json
+```
+
+Real MOSS captures pass text projection, text attention/log-sum-exp, rotary multiplication, and FP32 timestep projection checks. The latter's loaded weights and bias match the checkpoint exactly. `--execute-packed-gemm` additionally checks nonuniform Q5_K/Q6_K weights and activations against native CPU decoding, with a separate same-weight dense GPU control. For more than four rows, the native packed fast path intentionally quantizes activations to int8; its CPU expectation explicitly models that rounding, while the dense control uses unquantized activations. A constant-row-only fixture would miss this distinction. The combined CUDA-enabled suite now passes **60 tests**.
+
+A 50-step CFG-1 diagnostic also returns a finite but unrelated image, so the special negative branch is not the sole cause of the quality failure. A debugger-only dense-fallback A/B produces non-finite encoder conditioning and was rejected, not promoted. The on-disk candidate stays `920bf727...`; neither experiment changes model files or runtime defaults. Quality remains unaccepted.
 
 - RMSNorm: one last-axis reduction on contiguous tensors, optional affine scale, mixed F32/F16/BF16 value/gate/scale types, FP32 accumulation, in-place output, zero-rank empty operations.
 - Gated delta: grouped key/value heads, FP32 recurrent state and decay, F32/F16/BF16 Q/K/V/beta, scalar-per-head or per-key-channel decay, explicit log-decay, nonzero initial state, checkpoints, and in-place state when checkpoint count is zero. Key dimension is limited to 1,024.

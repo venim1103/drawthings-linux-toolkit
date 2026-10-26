@@ -22,6 +22,7 @@ import json
 import math
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.dt_direct_ckpt_builder import load_contract
+from tools.dt_tensor_to_playable import _read_tensor_header, _tensor_to_numpy
 from tools.dt_weellm.seek_io import open_seeker
 from tools.dt_weellm.sqlite_store import DrawThingsCkptStore
 from tools.dt_weellm.transforms import (
@@ -440,8 +442,97 @@ def cmd_verify_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def compare_native_capture(prefix: Path, operation: str, atol: float, rtol: float,
+                           scale: float = 1.0) -> Dict[str, Any]:
+    if not all(math.isfinite(value) for value in (atol, rtol, scale)) or atol < 0 or rtol < 0:
+        raise ValueError("Capture tolerances and scale must be finite; tolerances must be nonnegative")
+    captures = {}
+
+    def load(role):
+        path = prefix.with_name(prefix.name + "_" + role + ".bin")
+        with path.open("rb") as stream:
+            blob = stream.read(64 * 1024 * 1024 + 69)
+        if len(blob) > 64 * 1024 * 1024 + 68:
+            raise ValueError("Capture exceeds the 64 MiB payload limit")
+        header = _read_tensor_header(blob)
+        if header.identifier != 0 or header.datatype not in (16384, 131072, 524288) or not header.dims:
+            raise ValueError("Capture requires a nonempty raw floating-point tensor")
+        dimensions = struct.unpack("<12I", blob[20:68])
+        if dimensions != header.dims + (0,) * (12 - len(header.dims)):
+            raise ValueError("Capture dimensions must have contiguous positive axes and zero padding")
+        values = _tensor_to_numpy(blob, header, math.prod(header.dims)).reshape(header.dims).astype(np.float64)
+        if not np.isfinite(values).all():
+            raise ValueError("Capture contains non-finite values: " + role)
+        captures[role] = {"shape": list(values.shape), "format": header.tensor_format,
+                  "datatype": header.datatype, "sha256": hashlib.sha256(blob).hexdigest()}
+        return values
+
+    values = load("input_0")
+    right = load("input_1")
+    actual = load("output_0")
+    extra = []
+    if operation == "linear":
+        if values.ndim < 2 or right.ndim != 2 or values.shape[-1] != right.shape[1]:
+            raise ValueError("Linear capture has incompatible activation/weight shapes")
+        elements = math.prod(values.shape[:-1]) * right.shape[0]
+        if elements > 16_000_000 or elements * right.shape[1] > 2_000_000_000:
+            raise ValueError("Linear capture exceeds the CPU reference budget")
+        expected = values @ right.T
+        if prefix.with_name(prefix.name + "_input_2.bin").exists():
+            bias = load("input_2")
+            if bias.shape != (right.shape[0],):
+                raise ValueError("Linear bias must match the output channels")
+            expected += bias
+    elif operation == "rotary":
+        if values.shape[-1] % 2 or right.shape[-1] != values.shape[-1] or np.broadcast_shapes(values.shape, right.shape) != values.shape:
+            raise ValueError("Rotary capture requires broadcast-compatible adjacent complex pairs")
+        expected = np.empty_like(values)
+        expected[..., 0::2] = values[..., 0::2] * right[..., 0::2] - values[..., 1::2] * right[..., 1::2]
+        expected[..., 1::2] = values[..., 0::2] * right[..., 1::2] + values[..., 1::2] * right[..., 0::2]
+    elif operation == "sdpa":
+        third = load("input_2")
+        if any(tensor.ndim != 4 for tensor in (values, right, third)):
+            raise ValueError("SDPA capture requires NHWC rank-four tensors")
+        if (values.shape[0] != right.shape[0] or right.shape[:3] != third.shape[:3]
+                or values.shape[3] != right.shape[3] or values.shape[2] % right.shape[2]):
+            raise ValueError("SDPA capture has incompatible batch/head dimensions")
+        if (any(prefix.with_name(prefix.name + "_input_" + str(index) + ".bin").exists() for index in range(3, 8))
+                or prefix.with_name(prefix.name + "_output_2.bin").exists()):
+            raise ValueError("Masked or projected SDPA capture is not supported")
+        if any(capture["format"] != 2 for capture in captures.values()):
+            raise ValueError("SDPA capture requires NHWC tensor metadata")
+        groups = values.shape[2] // right.shape[2]
+        elements = values.shape[0] * values.shape[2] * values.shape[1] * right.shape[1]
+        if (elements > 16_000_000 or elements * values.shape[3] > 2_000_000_000
+                or max(right.size, third.size) * groups > 16_000_000):
+            raise ValueError("SDPA capture exceeds the CPU reference budget")
+        keys = np.repeat(right, groups, axis=2)
+        third = np.repeat(third, groups, axis=2)
+        scores = (values.transpose(0, 2, 1, 3) @ keys.transpose(0, 2, 3, 1)) * scale
+        maximum = scores.max(axis=-1, keepdims=True)
+        exponent = np.exp(scores - maximum)
+        denominator = exponent.sum(axis=-1, keepdims=True)
+        expected = ((exponent / denominator) @ third.transpose(0, 2, 1, 3)).transpose(0, 2, 1, 3)
+        if prefix.with_name(prefix.name + "_output_1.bin").exists():
+            extra.append(("logsumexp", load("output_1"), (maximum + np.log(denominator)).squeeze(-1)))
+    else:
+        raise ValueError("Unknown capture operation: " + operation)
+    comparisons = []
+    for name, observed, reference in [("output", actual, expected)] + extra:
+        if observed.shape != reference.shape or not np.isfinite(reference).all():
+            raise ValueError("Capture output shape mismatch or non-finite reference: " + name)
+        difference = np.abs(observed - reference)
+        comparisons.append({"name": name, "max_absolute_error": float(difference.max()),
+                            "mean_absolute_error": float(difference.mean()),
+                            "matches": bool(np.allclose(observed, reference, atol=atol, rtol=rtol))})
+    return {"operation": operation, "scope": "captured_operation_not_full_model_parity",
+            "result": "PASS" if all(check["matches"] for check in comparisons) else "FAIL",
+            "atol": atol, "rtol": rtol, "scale": scale, "captures": captures, "comparisons": comparisons}
+
+
 def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False,
-                          execute_sdpa: bool = False, execute_embedding: bool = False) -> Dict[str, Any]:
+                          execute_sdpa: bool = False, execute_embedding: bool = False,
+                          execute_packed_gemm: bool = False) -> Dict[str, Any]:
     compiler, debugger = shutil.which("cc"), shutil.which("lldb")
     if not compiler or not debugger or not binary.is_file():
         raise ValueError("Native backend inspection requires a compiler, LLDB, and candidate executable")
@@ -467,7 +558,7 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
                     'script assert all(result.GetError().Success() for result in selected), str([str(result.GetError()) for result in selected])',
                     'script print("DT_BACKENDS=" + __import__("json").dumps([result.GetValueAsUnsigned(0) for result in selected]))',
                     "process kill"]
-        if execute_qwen or execute_sdpa or execute_embedding:
+        if execute_qwen or execute_sdpa or execute_embedding or execute_packed_gemm:
             commands[-1:-1] = [
                 'script execution_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_tensor_new", "ccv_nnc_tensor_free", "ccv_nnc_cmd_exec"]]',
                 'script execution_options = lldb.SBExpressionOptions(); execution_options.SetLanguage(lldb.eLanguageTypeC); execution_options.SetIgnoreBreakpoints(True); execution_options.SetStopOthers(False); execution_options.SetUnwindOnError(False); execution_options.SetTimeoutInMicroSeconds(60000000)'
@@ -483,10 +574,17 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
                 'script sdpa_ready = sdpa_forward != lldb.LLDB_INVALID_ADDRESS and all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses); sdpa_contracts = [lldb.frame.EvaluateExpression("dt_probe_native_sdpa_contract((void*)%d,%d)" % (sdpa_forward, mode), execution_options) for mode in range(8)] if sdpa_ready else []; sdpa_statuses = [result.GetValueAsSigned(-99) if result.GetError().Success() else -99 for result in sdpa_contracts]; print("DT_SDPA_CONTRACTS=" + __import__("json").dumps(sdpa_statuses)); print("DT_SDPA_ERRORS=" + str([str(result.GetError()) for result in sdpa_contracts]))',
                 'script sdpa_execution = lldb.frame.EvaluateExpression("dt_probe_native_sdpa_execution(" + ",".join("(void*)%d" % address for address in execution_addresses) + ")", execution_options) if sdpa_statuses == [0,-1,-1,-1,-1,-1,0,-1] else None; print("DT_SDPA_EXECUTION=" + str(sdpa_execution.GetValueAsSigned(-99) if sdpa_execution is not None and sdpa_execution.GetError().Success() else -98)); print("DT_SDPA_EXECUTION_ERROR=" + (str(sdpa_execution.GetError()) if sdpa_execution is not None else "SDPA contracts failed"))'
             ]
+        if execute_embedding or execute_packed_gemm:
+            commands[-1:-1] = [
+                'script packing_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_quantize_8i_rowwise_x", "ccv_nnc_dequantize_8i_rowwise_x"]]'
+            ]
         if execute_embedding:
             commands[-1:-1] = [
-                'script packing_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_quantize_8i_rowwise_x", "ccv_nnc_dequantize_8i_rowwise_x"]]',
                 'script embedding_ready = all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses + packing_addresses) and addresses[1] != lldb.LLDB_INVALID_ADDRESS; embedding = lldb.frame.EvaluateExpression("dt_probe_native_embedding_execution(" + ",".join("(void*)%d" % address for address in execution_addresses + [addresses[1]] + packing_addresses) + ")", execution_options) if embedding_ready else None; print("DT_EMBEDDING_EXECUTION=" + str(embedding.GetValueAsSigned(-99) if embedding is not None and embedding.GetError().Success() else -98)); print("DT_EMBEDDING_ERROR=" + (str(embedding.GetError()) if embedding is not None else "Native symbols missing"))'
+            ]
+        if execute_packed_gemm:
+            commands[-1:-1] = [
+                'script packed_ready = all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses + packing_addresses); packed = lldb.frame.EvaluateExpression("dt_probe_native_packed_gemm(" + ",".join("(void*)%d" % address for address in execution_addresses + packing_addresses) + ")", execution_options) if packed_ready else None; print("DT_PACKED_GEMM_EXECUTION=" + str(packed.GetValueAsSigned(-99) if packed is not None and packed.GetError().Success() else -98)); print("DT_PACKED_GEMM_ERROR=" + (str(packed.GetError()) if packed is not None else "Native symbols missing"))'
             ]
         invocation = [debugger, "--batch"]
         for command in commands:
@@ -511,12 +609,17 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
         embedding_status = int(embedding_match.group(1)) if embedding_match else None
         if execute_embedding and embedding_status != 0:
             raise ValueError("Native packed embedding validation did not pass: " + result.stdout[-6000:])
+        packed_match = re.search(r"^DT_PACKED_GEMM_EXECUTION=(-?\d+)$", result.stdout, re.M)
+        packed_status = int(packed_match.group(1)) if packed_match else None
+        if execute_packed_gemm and packed_status != 0:
+            raise ValueError("Native packed GEMM validation did not pass: " + result.stdout[-10000:])
     expected = [0x5f19790a] * 7 + [0x3d9883e5] * 2
     return {"binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
             "qwen_cuda_registered": selected == expected,
             "qwen_cuda_execution": execution_status,
             "sdpa_contracts": sdpa_contracts, "sdpa_cuda_execution": sdpa_status,
             "packed_embedding_cuda_execution": embedding_status,
+            "packed_gemm_cuda_execution": packed_status,
             "checks": [{"operation": operation, "datatype": datatype, "memory": memory,
                         "backend": hex(backend), "expected": hex(wanted)}
                        for (operation, datatype, memory, _), backend, wanted in zip(checks, selected, expected)]}
@@ -525,6 +628,13 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="WeeLLM vs Draw Things Layer Parity Oracle")
     sub = parser.add_subparsers(dest="subcommand", required=True)
+    p_capture = sub.add_parser("compare-capture", help="Compare captured native linear, rotary, or unmasked SDPA operations with CPU math")
+    p_capture.add_argument("--prefix", required=True, type=Path)
+    p_capture.add_argument("--operation", required=True, choices=("linear", "rotary", "sdpa"))
+    p_capture.add_argument("--atol", type=float, default=0.001)
+    p_capture.add_argument("--rtol", type=float, default=0.001)
+    p_capture.add_argument("--scale", type=float, default=1.0)
+    p_capture.add_argument("--report", type=Path)
     p_backends = sub.add_parser("native-backends", help="Inspect actual compiled CUDA/CPU backend selections under LLDB")
     p_backends.add_argument("--binary", required=True, type=Path)
     p_backends.add_argument("--ccv-source", required=True, type=Path)
@@ -533,6 +643,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_backends.add_argument("--execute-qwen", action="store_true", help="Run linked-runtime CUDA operators and compare with native CPU values")
     p_backends.add_argument("--execute-sdpa", action="store_true", help="Check empty SDPA contracts and a nonempty grouped FP16 CUDA operation")
     p_backends.add_argument("--execute-embedding", action="store_true", help="Validate packed Q5_K/Q6_K row lookup across F32/F16/BF16")
+    p_backends.add_argument("--execute-packed-gemm", action="store_true", help="Compare packed Q5_K/Q6_K FP16 matrix multiplication with native CPU decoding")
 
     p_fix = sub.add_parser(
         "qwen35-linear-attn-fixture",
@@ -558,8 +669,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_chk.add_argument("--contract", default="", help="Optional contract to enforce norm rank-3 and F32 policy")
 
     args = parser.parse_args(argv)
+    if args.subcommand == "compare-capture":
+        report = compare_native_capture(args.prefix, args.operation, args.atol, args.rtol, args.scale)
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0 if report["result"] == "PASS" else 1
     if args.subcommand == "native-backends":
-        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa, args.execute_embedding)
+        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa, args.execute_embedding, args.execute_packed_gemm)
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

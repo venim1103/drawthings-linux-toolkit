@@ -24,6 +24,7 @@ from tools.dt_keymap_compiler import (
     build_moss_image_contract,
 )
 from tools.dt_layer_parity_oracle import (
+    compare_native_capture,
     inspect_ckpt_health,
     reference_gated_delta_rule,
     reference_rmsnorm_gated,
@@ -540,6 +541,78 @@ class CudaQwenReferenceTests(unittest.TestCase):
             self.assertNotEqual(self.library.dt_cuda_gated_delta_contract(mode), 0)
 
 
+class NativeCaptureTests(unittest.TestCase):
+    @staticmethod
+    def write_capture(prefix, role, values):
+        values = np.asarray(values, dtype="<f4")
+        header = struct.pack("<17I", 0, 1, 2, DT_FLOAT32, 0,
+                             *values.shape, *([0] * (12 - values.ndim)))
+        prefix.with_name(prefix.name + "_" + role + ".bin").write_bytes(header + values.tobytes())
+
+    def test_linear_capture_is_finite_complete_and_cli_reproducible(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "linear"
+            values = np.arange(6, dtype=np.float32).reshape(2, 3)
+            weights = np.array([[0.5, -1, 2]], dtype=np.float32)
+            expected = values @ weights.T + 0.25
+            for role, array in (("input_0", values), ("input_1", weights),
+                                ("input_2", np.array([0.25])), ("output_0", expected)):
+                self.write_capture(prefix, role, array)
+            report = compare_native_capture(prefix, "linear", 1e-6, 1e-6)
+            self.assertEqual(report["result"], "PASS")
+            self.assertEqual(len(report["captures"]), 4)
+            self.assertTrue(all(len(item["sha256"]) == 64 for item in report["captures"].values()))
+            destination = Path(temporary) / "report.json"
+            result = subprocess.run([sys.executable, str(Path(__file__).with_name("dt_layer_parity_oracle.py")),
+                                     "compare-capture", "--prefix", str(prefix), "--operation", "linear",
+                                     "--atol", "0.000001", "--rtol", "0.000001", "--report", str(destination)],
+                                    cwd=temporary, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout), json.loads(destination.read_text()))
+            self.write_capture(prefix, "output_0", expected + 1)
+            self.assertEqual(compare_native_capture(prefix, "linear", 1e-6, 1e-6)["result"], "FAIL")
+            self.write_capture(prefix, "output_0", np.full_like(expected, np.nan))
+            with self.assertRaisesRegex(ValueError, "non-finite"):
+                compare_native_capture(prefix, "linear", 1e-6, 1e-6)
+
+    def test_grouped_attention_capture_and_mask_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "attention"
+            queries = np.zeros((1, 2, 2, 2), dtype=np.float32)
+            keys = np.zeros((1, 3, 1, 2), dtype=np.float32)
+            values = np.arange(6, dtype=np.float32).reshape(1, 3, 1, 2)
+            expected = np.broadcast_to(values.mean(axis=1, keepdims=True), queries.shape).copy()
+            for role, array in (("input_0", queries), ("input_1", keys), ("input_2", values),
+                                ("output_0", expected), ("output_1", np.full((1, 2, 2), np.log(3)))):
+                self.write_capture(prefix, role, array)
+            report = compare_native_capture(prefix, "sdpa", 1e-6, 1e-6)
+            self.assertEqual(report["result"], "PASS")
+            self.assertEqual(len(report["comparisons"]), 2)
+            self.write_capture(prefix, "input_3", np.zeros((1, 1, 2, 3)))
+            with self.assertRaisesRegex(ValueError, "Masked"):
+                compare_native_capture(prefix, "sdpa", 1e-6, 1e-6)
+
+    def test_rotary_capture_and_invalid_metadata_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "rotary"
+            values = np.arange(1, 9, dtype=np.float32).reshape(1, 1, 2, 4)
+            rotation = np.array([0, -1, 1, 0], dtype=np.float32).reshape(1, 1, 1, 4)
+            expected = values.copy()
+            expected[..., 0] = values[..., 1]
+            expected[..., 1] = -values[..., 0]
+            for role, array in (("input_0", values), ("input_1", rotation), ("output_0", expected)):
+                self.write_capture(prefix, role, array)
+            self.assertEqual(compare_native_capture(prefix, "rotary", 1e-6, 1e-6)["result"], "PASS")
+            with self.assertRaisesRegex(ValueError, "finite"):
+                compare_native_capture(prefix, "rotary", float("nan"), 0)
+            path = prefix.with_name(prefix.name + "_input_0.bin")
+            malformed = bytearray(path.read_bytes())
+            struct.pack_into("<12I", malformed, 20, 1, 0, 1, 2, 4, *([0] * 7))
+            path.write_bytes(malformed)
+            with self.assertRaisesRegex(ValueError, "zero padding"):
+                compare_native_capture(prefix, "rotary", 1e-6, 1e-6)
+
+
 class NativeQwenReferenceTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("DT_RUN_CUDA_TESTS") == "1", "Set DT_RUN_CUDA_TESTS=1 for native CUDA execution")
     def test_native_backend_cli_accepts_qwen_cuda_and_executes(self):
@@ -553,7 +626,7 @@ class NativeQwenReferenceTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
                  "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda",
-                 "--execute-qwen", "--execute-sdpa", "--execute-embedding", "--report", str(report_path)],
+                 "--execute-qwen", "--execute-sdpa", "--execute-embedding", "--execute-packed-gemm", "--report", str(report_path)],
                 capture_output=True, text=True, timeout=150)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
@@ -563,6 +636,7 @@ class NativeQwenReferenceTests(unittest.TestCase):
             self.assertEqual(report["sdpa_contracts"], [0, -1, -1, -1, -1, -1, 0, -1])
             self.assertEqual(report["sdpa_cuda_execution"], 0)
             self.assertEqual(report["packed_embedding_cuda_execution"], 0)
+            self.assertEqual(report["packed_gemm_cuda_execution"], 0)
             self.assertEqual(len(report["checks"]), 9)
             self.assertTrue(all(check["backend"] == check["expected"] for check in report["checks"]))
             self.assertEqual(report["binary_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
