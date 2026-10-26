@@ -553,16 +553,33 @@ class NativeQwenReferenceTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
                  "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda",
-                 "--execute-qwen", "--report", str(report_path)],
+                 "--execute-qwen", "--execute-sdpa", "--report", str(report_path)],
                 capture_output=True, text=True, timeout=150)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
             self.assertEqual(report, json.loads(report_path.read_text()))
             self.assertTrue(report["qwen_cuda_registered"])
             self.assertEqual(report["qwen_cuda_execution"], 0)
+            self.assertEqual(report["sdpa_contracts"], [0, -1, -1, -1, -1, -1, 0, -1])
+            self.assertEqual(report["sdpa_cuda_execution"], 0)
             self.assertEqual(len(report["checks"]), 9)
             self.assertTrue(all(check["backend"] == check["expected"] for check in report["checks"]))
             self.assertEqual(report["binary_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
+
+    def test_native_sdpa_gate_rejects_pre_fix_binary(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = root / "output/upgrades/gRPCServerCLI-0621d819-qwen35-cuda-before-empty-sdpa"
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("lldb") or not shutil.which("cc") or not candidate.is_file() or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("SDPA negative control requires the preserved pre-fix candidate and pinned source")
+        result = subprocess.run(
+            [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
+             "--binary", str(candidate), "--ccv-source", str(source), "--execute-sdpa"],
+            capture_output=True, text=True, timeout=150)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Native SDPA validation did not pass", result.stderr)
+        self.assertIn("SIGFPE", result.stderr)
+        self.assertIn("\nDT_SDPA_EXECUTION=-98\n", result.stderr)
 
     def test_native_backend_cli_rejects_pristine_qwen_cuda(self):
         root = Path(__file__).resolve().parents[1]

@@ -312,3 +312,32 @@ index 0000000..0081780
 +}
 +#endif
 \ No newline at end of file
+diff --git a/lib/nnc/cmd/scaled_dot_product_attention/gpu/ccv_nnc_scaled_dot_product_attention_flash_attn.cu b/lib/nnc/cmd/scaled_dot_product_attention/gpu/ccv_nnc_scaled_dot_product_attention_flash_attn.cu
+index 40ced2d..b4030bf 100644
+--- a/lib/nnc/cmd/scaled_dot_product_attention/gpu/ccv_nnc_scaled_dot_product_attention_flash_attn.cu
++++ b/lib/nnc/cmd/scaled_dot_product_attention/gpu/ccv_nnc_scaled_dot_product_attention_flash_attn.cu
+@@ -40,12 +40,21 @@ static int _ccv_nnc_scaled_dot_product_attention_forw(const ccv_nnc_cmd_t cmd, c
+ 	ccv_nnc_tensor_view_t* const saved_softmax_lse = output_size > 1 ? (ccv_nnc_tensor_view_t*)outputs[1] : 0;
+ 	ccv_nnc_tensor_view_t* const o = (weights) ? (ccv_nnc_tensor_view_t*)outputs[2] : (ccv_nnc_tensor_view_t*)outputs[0];
+ 	const int q_nd = ccv_nnc_tensor_nd(q->info.dim);
+-	assert(q_nd == 3 || q_nd == 4);
+ 	const int k_nd = ccv_nnc_tensor_nd(k->info.dim);
+-	assert(k_nd == 3 || k_nd == 4);
+ 	const int v_nd = ccv_nnc_tensor_nd(v->info.dim);
+-	assert(v_nd == 3 || v_nd == 4);
+ 	const int o_nd = ccv_nnc_tensor_nd(o->info.dim);
++	if (!q_nd || !k_nd || !v_nd || !o_nd)
++	{
++		if (q_nd || k_nd || v_nd || o_nd)
++			return CCV_NNC_EXEC_INVALID;
++		for (int index = 0; index < output_size; index++)
++			if (outputs[index] && ccv_nnc_tensor_nd(outputs[index]->info.dim))
++				return CCV_NNC_EXEC_INVALID;
++		return CCV_NNC_EXEC_SUCCESS;
++	}
++	assert(q_nd == 3 || q_nd == 4);
++	assert(k_nd == 3 || k_nd == 4);
++	assert(v_nd == 3 || v_nd == 4);
+ 	assert(o_nd == 3 || o_nd == 4);
+ 	assert(q_nd == k_nd && k_nd == v_nd && v_nd == o_nd);
+ 	if (is_varlen && q_nd != 4)

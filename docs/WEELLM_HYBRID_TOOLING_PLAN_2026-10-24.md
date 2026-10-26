@@ -46,7 +46,7 @@ The pinned community checkout, copied CCV source, Bazel root, and artifact tag a
 
 The first full build compiled successfully but failed the new runtime registration gate: all six Qwen CUDA selections were absent. CCV's `lib/BUILD.bazel` consumes a pre-generated `ccv_nnc_cmd.inc` without regenerating it. The helper now runs the patch tool's private-only `prepare` action using upstream Ruby code generation, checks the generated GPU calls, and then builds. Ruby is declared and checked in the devcontainer build prerequisites. The first attempt's log, hash, and negative registry report are preserved with `before-bindings` names.
 
-The corrected candidate at `output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI` has SHA-256 `5cfdd16e4110e5248fcb4f37fca7da2dc26790fdddcca1f9682f22e24ba1a39d`. The local report `output/upgrades/native-backends-qwen35-cuda.json` records all six Qwen F32/F16/BF16 selections as GPU_REF, an SDPA GPU control, and both CPU controls. Its `qwen_cuda_execution=0` also requires real native allocation, transfer, GPU dispatch, and readback for tiny F32 gated-delta and affine RMSNorm operations. Outputs and state checkpoints must be finite and agree with the pinned CPU implementations within absolute `2e-6`.
+The initial operator-integrated candidate at `output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI` had SHA-256 `5cfdd16e4110e5248fcb4f37fca7da2dc26790fdddcca1f9682f22e24ba1a39d`, now preserved separately as `output/upgrades/gRPCServerCLI-0621d819-qwen35-cuda-before-empty-sdpa`. The local report `output/upgrades/native-backends-qwen35-cuda.json` records all six Qwen F32/F16/BF16 selections as GPU_REF, an SDPA GPU control, and both CPU controls. Its `qwen_cuda_execution=0` also requires real native allocation, transfer, GPU dispatch, and readback for tiny F32 gated-delta and affine RMSNorm operations. Outputs and state checkpoints must be finite and agree with the pinned CPU implementations within absolute `2e-6`.
 
 The native probe uses explicit C debugger expression settings and permits other threads to run during CUDA calls. Missing registrations refuse execution in the same expression; a failed debugger assertion cannot authorize a later GPU call. Regression tests accept the patched candidate and reject the pristine candidate, including explicit execution refusal. The combined suite passed **55 tests with CUDA enabled**, including the existing 168 numerical CUDA cases:
 
@@ -56,6 +56,18 @@ DT_RUN_CUDA_TESTS=1 .venv/bin/python -m unittest \
 ```
 
 This closes operator integration, not full-model activation parity or MOSS inference. F16/BF16 numerical execution is covered by the standalone CUDA tests; the linked-server execution probe currently uses F32 fixtures.
+
+### Empty Attention And Guided Canary: October 26
+
+The preserved pre-fix binary reproduces the rank-zero SDPA divide-by-zero. The CUDA profile now includes the pinned original SDPA source and a narrow guard: all required tensors and present outputs empty is a no-op; mixed empty/nonempty contracts fail. Existing assertions and nonempty compute remain intact. A fresh private CCV copy at `output/upgrades/ccv-69b1ed1f-qwen35-cuda-empty-sdpa` avoids applying an evolved profile over older snapshots.
+
+The 16-job rebuild reused the private cache and completed in 18 seconds. The current separate candidate has SHA-256 `5cca983e5883b5e9091f24d34475af99bc6054e67aa51da1f7f6fa8e7441febd`. Its report `output/upgrades/native-backends-qwen35-cuda-empty-sdpa.json` passes the existing Qwen gate plus `--execute-sdpa`: eight empty/mixed/projected contracts and a nonempty batched, grouped, non-square FP16 GPU calculation against known output. The combined CUDA-enabled suite now passes **56 tests**.
+
+The two-step 512x512 CFG-3/fixed-shift-5 private canary completes its stream and post-Echo without SIGFPE but still returns zero final images and one preview with **131,072 non-finite values**. This is a failed canary, not a quality result. Its 323 whole-device samples show an observed 979 MiB peak and 57 C maximum; four utilization readings are unavailable, and partial-run memory is not a model-fit measurement. No 50-step run was attempted after this failure.
+
+Bounded LLDB diagnostics inspect actual first-layer GPU calls without changing their outputs. The first gated-delta case uses `[1,11,16,128]` Q/K, `[1,11,32,128]` V, F32 decay/state, and zero backward checkpoints. It returns success and all six inputs/two outputs are finite after synchronization. The first gated RMSNorm likewise returns success with finite three inputs/output. These observations narrow the investigation but do not establish full encoder or denoiser parity. The observer resolves versioned CUDA APIs through `dlsym` and reads back through a header-grounded C adapter; unsuccessful observer launches were excluded from evidence.
+
+Raw canary output is under `output/q6p_canary_moss_base_q8p_512_qwen35_empty_sdpa_2steps_20261026`. Verified diagnostic logs are under `output/q6p_canary_moss_base_q8p_qwen_live_delta_finite_verified_20261026` and `output/q6p_canary_moss_base_q8p_qwen_live_rmsnorm_finite_20261026`. Runtime logs also contain `GEMM_EX` parameter-12 warnings; their connection to the remaining non-finite output is unproven. The deferred LTX GEMM investigation was not reopened.
 
 ### Commands
 
@@ -73,7 +85,7 @@ Native tests can use `DT_CCV_SOURCE_DIR` and `DT_GRPC_CANDIDATE`. The CUDA-enabl
 
 ### Remaining Acceptance Gates
 
-1. Fix and test the distinct empty scaled-dot-product-attention operation, then run the strict guided MOSS image canary using the isolated Qwen-integrated candidate. Preserve the legacy CPU patches, pristine candidate, and installed runtime; operator acceptance does not authorize promotion.
+1. Locate the first non-finite activation after the verified first Qwen operation pair, including later encoder layers, denoiser, and decode boundaries. Require a finite final image in the short strict guided canary before the full 50-step MOSS profile. Preserve the legacy CPU patches, pristine candidate, and installed runtime; operator/empty-SDPA acceptance does not authorize promotion.
 2. Add full reference/native text-encoder and denoiser activation capture. `verify-block` is a serialization/weight check, not a forward execution oracle. Native CPU operation parity is now independently verified; full WeeLLM/native model parity is not.
 3. Convert a complete real model into private staging, verify native load and finite final generation, and measure actual peak memory/time before publication. No full-size conversion or full-model GPU inference was performed in this hardening pass.
 4. Add explicit native decoding or a validated bridge for ezm7/palettized/packed/trailer variants before numerical diff/health checks on those artifacts. Unsupported codecs currently fail closed.

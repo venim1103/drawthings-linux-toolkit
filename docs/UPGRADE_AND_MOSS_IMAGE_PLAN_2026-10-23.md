@@ -532,6 +532,18 @@ Probe source, shared object, and registry log are `backend-probe.c`, `backend-pr
 
 Before implementing a runtime fix, the existing `DRAW_THINGS_PATCH/README.md`, manifest, applier, and generator were reviewed as requested. Preserve their unified-diff/snapshot provenance and strict application/idempotence verification approach. Keep native-CUDA changes explicitly separate from the legacy CPU quantization bundle: its Package and assertion patches must not be replayed into the CUDA candidate. The next implementation needs validated CUDA support or an explicit tested fallback for both Qwen3.5 operations, plus safe empty-attention handling. Record any such patch in `DRAW_THINGS_PATCH` against the pinned community/s4nnc/CCV revisions, build an isolated candidate, and require finite encoder/latent/final-image tests before accepting M1. No upstream runtime patch, rebuild, installation, catalog edit, or promotion was performed during this diagnosis.
 
+### M1 CUDA Integration And Empty SDPA: October 26
+
+The subsequent [hybrid hardening and native integration](WEELLM_HYBRID_TOOLING_PLAN_2026-10-24.md) implements the two Qwen CUDA backends in a separate pinned [CUDA profile](../DRAW_THINGS_PATCH/cuda/README.md). The legacy CPU bundle, installed runtime, and pristine candidate are preserved. The original operator-integrated binary is retained at `output/upgrades/gRPCServerCLI-0621d819-qwen35-cuda-before-empty-sdpa`; the empty-tensor probe reproduces its SIGFPE at SDPA `+3614`.
+
+The profile now adds an early all-empty SDPA no-op and rejects partially empty descriptors or nonempty auxiliary outputs. No assertion suppression or generated-table hand edits are used. The new isolated binary has SHA-256 `5cca983e5883b5e9091f24d34475af99bc6054e67aa51da1f7f6fa8e7441febd`, built with 16 jobs against a fresh private CCV copy. Native acceptance passes all six Qwen precision selections, actual Qwen GPU/CPU comparisons, eight SDPA empty/mixed/projected contracts, and a nonempty grouped FP16 attention control. The full CUDA-enabled suite passes 56 tests.
+
+The short guided MOSS profile (512x512, two steps, CFG 3, fixed shift 5, seed 4242, the same prompt/settings as M1) was rerun using independent private copies after all six canonical/staged model hashes passed. The crash is resolved and stream/post-Echo finish, but there are zero final images and one preview containing 131,072 non-finite values. The strict canary correctly fails. Output: `output/q6p_canary_moss_base_q8p_512_qwen35_empty_sdpa_2steps_20261026`. Observed whole-device peak is 979 MiB over 323 samples, maximum 57 C; four utilization readings are unavailable. These failed-run measurements do not establish full-model memory requirements. The 50-step run was withheld.
+
+Separate bounded live-call diagnostics confirm the first actual FP16 Qwen gated-delta and gated-RMSNorm calls return success with finite inputs and outputs after synchronization. They do not prove all later layers remain finite. The next gate is finding the first subsequent non-finite activation across encoder/denoiser/decode boundaries. `GEMM_EX` parameter-12 warnings are recorded but not established as the cause; the old LTX GEMM investigation remains deferred. No image acceptance, SFT/packed-quality result, default installation, or promotion is claimed.
+
+Post-test hashes match for all three canonical downloads, all three private model copies, the installed server/launcher, all three CPU converters, both active catalogs, and the pristine candidate. Diagnostic inferiors were explicitly killed and GPU memory returned to zero.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].

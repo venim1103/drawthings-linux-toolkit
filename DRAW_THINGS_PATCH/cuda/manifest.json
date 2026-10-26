@@ -9,6 +9,7 @@
     "lib/nnc/cmd/gated_delta/ccv_nnc_gated_delta.c": "7164788d33c3f6f7dbfa418b9344f21dcc7c760c16c1718d6c0814478e6d1f4c",
     "lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c": "8bcb9e18f8060b82dc3feedd89090e385b1c7ae10c92456aafb4d4fde52f108b",
     "lib/nnc/cmd/gated_delta/gpu/ccv_nnc_gated_delta_gpu_ref.cu": null,
-    "lib/nnc/cmd/rmsnorm_gated/gpu/ccv_nnc_rmsnorm_gated_gpu_ref.cu": null
+    "lib/nnc/cmd/rmsnorm_gated/gpu/ccv_nnc_rmsnorm_gated_gpu_ref.cu": null,
+    "lib/nnc/cmd/scaled_dot_product_attention/gpu/ccv_nnc_scaled_dot_product_attention_flash_attn.cu": "19c282c100908acc4d2dfc55ef9f257608e593541f2ee2f7256057c215641e30"
   }
 }

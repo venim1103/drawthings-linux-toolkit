@@ -440,7 +440,8 @@ def cmd_verify_block(args: argparse.Namespace) -> int:
     return 0
 
 
-def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False) -> Dict[str, Any]:
+def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False,
+                          execute_sdpa: bool = False) -> Dict[str, Any]:
     compiler, debugger = shutil.which("cc"), shutil.which("lldb")
     if not compiler or not debugger or not binary.is_file():
         raise ValueError("Native backend inspection requires a compiler, LLDB, and candidate executable")
@@ -466,12 +467,21 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
                     'script assert all(result.GetError().Success() for result in selected), str([str(result.GetError()) for result in selected])',
                     'script print("DT_BACKENDS=" + __import__("json").dumps([result.GetValueAsUnsigned(0) for result in selected]))',
                     "process kill"]
-        if execute_qwen:
+        if execute_qwen or execute_sdpa:
             commands[-1:-1] = [
                 'script execution_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_tensor_new", "ccv_nnc_tensor_free", "ccv_nnc_cmd_exec"]]',
-                'script execution_options = lldb.SBExpressionOptions(); execution_options.SetLanguage(lldb.eLanguageTypeC); execution_options.SetIgnoreBreakpoints(True); execution_options.SetStopOthers(False); execution_options.SetUnwindOnError(False); execution_options.SetTimeoutInMicroSeconds(60000000)',
+                'script execution_options = lldb.SBExpressionOptions(); execution_options.SetLanguage(lldb.eLanguageTypeC); execution_options.SetIgnoreBreakpoints(True); execution_options.SetStopOthers(False); execution_options.SetUnwindOnError(False); execution_options.SetTimeoutInMicroSeconds(60000000)'
+            ]
+        if execute_qwen:
+            commands[-1:-1] = [
                 'script execution_ready = all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses) and all(result.GetError().Success() and result.GetValueAsUnsigned(0) == 0x5f19790a for result in selected[:6]); execution = lldb.frame.EvaluateExpression("dt_probe_native_qwen_execution(" + ",".join("(void*)%d" % address for address in execution_addresses) + ")", execution_options) if execution_ready else None; print("DT_QWEN_EXECUTION=" + str(execution.GetValueAsSigned(-99) if execution is not None and execution.GetError().Success() else -98))',
                 'script print("DT_QWEN_EXECUTION_ERROR=" + (str(execution.GetError()) if execution is not None else "CUDA registrations or symbols missing"))'
+            ]
+        if execute_sdpa:
+            commands[-1:-1] = [
+                'script sdpa_forward = lldb.target.FindSymbols("_ccv_nnc_scaled_dot_product_attention_forw").GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target)',
+                'script sdpa_ready = sdpa_forward != lldb.LLDB_INVALID_ADDRESS and all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses); sdpa_contracts = [lldb.frame.EvaluateExpression("dt_probe_native_sdpa_contract((void*)%d,%d)" % (sdpa_forward, mode), execution_options) for mode in range(8)] if sdpa_ready else []; sdpa_statuses = [result.GetValueAsSigned(-99) if result.GetError().Success() else -99 for result in sdpa_contracts]; print("DT_SDPA_CONTRACTS=" + __import__("json").dumps(sdpa_statuses)); print("DT_SDPA_ERRORS=" + str([str(result.GetError()) for result in sdpa_contracts]))',
+                'script sdpa_execution = lldb.frame.EvaluateExpression("dt_probe_native_sdpa_execution(" + ",".join("(void*)%d" % address for address in execution_addresses) + ")", execution_options) if sdpa_statuses == [0,-1,-1,-1,-1,-1,0,-1] else None; print("DT_SDPA_EXECUTION=" + str(sdpa_execution.GetValueAsSigned(-99) if sdpa_execution is not None and sdpa_execution.GetError().Success() else -98)); print("DT_SDPA_EXECUTION_ERROR=" + (str(sdpa_execution.GetError()) if sdpa_execution is not None else "SDPA contracts failed"))'
             ]
         invocation = [debugger, "--batch"]
         for command in commands:
@@ -486,10 +496,17 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
         execution_status = int(execution_match.group(1)) if execution_match else None
         if execute_qwen and execution_status != 0:
             raise ValueError("Native Qwen execution did not pass: " + result.stdout[-6000:])
+        sdpa_contract_match = re.search(r"^DT_SDPA_CONTRACTS=(\[.*\])$", result.stdout, re.M)
+        sdpa_contracts = json.loads(sdpa_contract_match.group(1)) if sdpa_contract_match else None
+        sdpa_execution_match = re.search(r"^DT_SDPA_EXECUTION=(-?\d+)$", result.stdout, re.M)
+        sdpa_status = int(sdpa_execution_match.group(1)) if sdpa_execution_match else None
+        if execute_sdpa and (sdpa_contracts != [0, -1, -1, -1, -1, -1, 0, -1] or sdpa_status != 0):
+            raise ValueError("Native SDPA validation did not pass: " + result.stdout[-10000:])
     expected = [0x5f19790a] * 7 + [0x3d9883e5] * 2
     return {"binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
             "qwen_cuda_registered": selected == expected,
             "qwen_cuda_execution": execution_status,
+            "sdpa_contracts": sdpa_contracts, "sdpa_cuda_execution": sdpa_status,
             "checks": [{"operation": operation, "datatype": datatype, "memory": memory,
                         "backend": hex(backend), "expected": hex(wanted)}
                        for (operation, datatype, memory, _), backend, wanted in zip(checks, selected, expected)]}
@@ -504,6 +521,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_backends.add_argument("--report", type=Path)
     p_backends.add_argument("--require-qwen-cuda", action="store_true")
     p_backends.add_argument("--execute-qwen", action="store_true", help="Run linked-runtime CUDA operators and compare with native CPU values")
+    p_backends.add_argument("--execute-sdpa", action="store_true", help="Check empty SDPA contracts and a nonempty grouped FP16 CUDA operation")
 
     p_fix = sub.add_parser(
         "qwen35-linear-attn-fixture",
@@ -530,7 +548,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     if args.subcommand == "native-backends":
-        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen)
+        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa)
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
