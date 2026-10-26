@@ -544,6 +544,16 @@ Separate bounded live-call diagnostics confirm the first actual FP16 Qwen gated-
 
 Post-test hashes match for all three canonical downloads, all three private model copies, the installed server/launcher, all three CPU converters, both active catalogs, and the pristine candidate. Diagnostic inferiors were explicitly killed and GPU memory returned to zero.
 
+### M1 Packed Embedding Fix And Finite Output: October 26
+
+The remaining non-finite values were traced to Qwen's first nonempty token lookup, not to the new recurrent operators: the packed Q5_K embedding table was interpreted as dense float storage by CUDA index-select. The output already contained 1,848 non-finite values before the first decoder normalization. The pinned CUDA profile now uses CCV's existing packed decoder before typed lookup, adds QX registration and explicit validation, and retains the pre-fix binary as a negative control. The new isolated binary is SHA-256 `920bf727c5a27a7d1ad90735735c74b7edfbbc1459598cea018f71e2d713dd96`; it was rebuilt with 16 jobs without changing installed or legacy CPU runtimes.
+
+The native packed lookup gate checks Q5_K/Q6_K, F32/F16/BF16, and repeated/reordered indices against the pinned native CPU encoder/decoder. F32 is exact; reduced precision permits two ULPs with strict finite/sign checks. The combined suite now passes 57 tests with CUDA enabled. The original candidate and pre-fix controls remain independently retained.
+
+Both the two-step smoke profile and original 50-step M1 profile now pass strict final-image checks: one 512x512 finite final image, zero audio, complete stream/chunks, successful post-Echo. Acceptance reports and images are under `output/q6p_canary_moss_base_q8p_512_packed_embedding_2steps_20261026` and `output/q6p_canary_moss_base_q8p_512_packed_embedding_50steps_20261026`. The full config hash still matches the original `f4a1fac323101d86d63fb2650483a9baa4d3cb8c1ef7edb3d64e81f16d5facf9`. Telemetry spans about 120/475 seconds including startup; both runs sample a 2,305 MiB whole-device peak, with maximum temperatures 56/59 C. One full-run utilization sample is unavailable.
+
+**M1 quality remains unaccepted.** The 50-step image is a repeated green structure, not the requested orange teapot, so finite numerical output is not evidence of correct conditioning or model parity. Next, compare reference text conditioning, denoiser, sampler, and decode boundaries. SFT, packed-quality comparisons, and default promotion remain gated. The remaining cuBLAS warnings were traced to zero-sized skipped GEMMs with matching FP16 operands, not a mixed-datatype call; the deferred LTX crash work was not reopened.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].

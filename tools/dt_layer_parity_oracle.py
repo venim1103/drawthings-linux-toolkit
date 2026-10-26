@@ -441,7 +441,7 @@ def cmd_verify_block(args: argparse.Namespace) -> int:
 
 
 def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False,
-                          execute_sdpa: bool = False) -> Dict[str, Any]:
+                          execute_sdpa: bool = False, execute_embedding: bool = False) -> Dict[str, Any]:
     compiler, debugger = shutil.which("cc"), shutil.which("lldb")
     if not compiler or not debugger or not binary.is_file():
         raise ValueError("Native backend inspection requires a compiler, LLDB, and candidate executable")
@@ -467,7 +467,7 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
                     'script assert all(result.GetError().Success() for result in selected), str([str(result.GetError()) for result in selected])',
                     'script print("DT_BACKENDS=" + __import__("json").dumps([result.GetValueAsUnsigned(0) for result in selected]))',
                     "process kill"]
-        if execute_qwen or execute_sdpa:
+        if execute_qwen or execute_sdpa or execute_embedding:
             commands[-1:-1] = [
                 'script execution_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_tensor_new", "ccv_nnc_tensor_free", "ccv_nnc_cmd_exec"]]',
                 'script execution_options = lldb.SBExpressionOptions(); execution_options.SetLanguage(lldb.eLanguageTypeC); execution_options.SetIgnoreBreakpoints(True); execution_options.SetStopOthers(False); execution_options.SetUnwindOnError(False); execution_options.SetTimeoutInMicroSeconds(60000000)'
@@ -482,6 +482,11 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
                 'script sdpa_forward = lldb.target.FindSymbols("_ccv_nnc_scaled_dot_product_attention_forw").GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target)',
                 'script sdpa_ready = sdpa_forward != lldb.LLDB_INVALID_ADDRESS and all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses); sdpa_contracts = [lldb.frame.EvaluateExpression("dt_probe_native_sdpa_contract((void*)%d,%d)" % (sdpa_forward, mode), execution_options) for mode in range(8)] if sdpa_ready else []; sdpa_statuses = [result.GetValueAsSigned(-99) if result.GetError().Success() else -99 for result in sdpa_contracts]; print("DT_SDPA_CONTRACTS=" + __import__("json").dumps(sdpa_statuses)); print("DT_SDPA_ERRORS=" + str([str(result.GetError()) for result in sdpa_contracts]))',
                 'script sdpa_execution = lldb.frame.EvaluateExpression("dt_probe_native_sdpa_execution(" + ",".join("(void*)%d" % address for address in execution_addresses) + ")", execution_options) if sdpa_statuses == [0,-1,-1,-1,-1,-1,0,-1] else None; print("DT_SDPA_EXECUTION=" + str(sdpa_execution.GetValueAsSigned(-99) if sdpa_execution is not None and sdpa_execution.GetError().Success() else -98)); print("DT_SDPA_EXECUTION_ERROR=" + (str(sdpa_execution.GetError()) if sdpa_execution is not None else "SDPA contracts failed"))'
+            ]
+        if execute_embedding:
+            commands[-1:-1] = [
+                'script packing_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_quantize_8i_rowwise_x", "ccv_nnc_dequantize_8i_rowwise_x"]]',
+                'script embedding_ready = all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses + packing_addresses) and addresses[1] != lldb.LLDB_INVALID_ADDRESS; embedding = lldb.frame.EvaluateExpression("dt_probe_native_embedding_execution(" + ",".join("(void*)%d" % address for address in execution_addresses + [addresses[1]] + packing_addresses) + ")", execution_options) if embedding_ready else None; print("DT_EMBEDDING_EXECUTION=" + str(embedding.GetValueAsSigned(-99) if embedding is not None and embedding.GetError().Success() else -98)); print("DT_EMBEDDING_ERROR=" + (str(embedding.GetError()) if embedding is not None else "Native symbols missing"))'
             ]
         invocation = [debugger, "--batch"]
         for command in commands:
@@ -502,11 +507,16 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
         sdpa_status = int(sdpa_execution_match.group(1)) if sdpa_execution_match else None
         if execute_sdpa and (sdpa_contracts != [0, -1, -1, -1, -1, -1, 0, -1] or sdpa_status != 0):
             raise ValueError("Native SDPA validation did not pass: " + result.stdout[-10000:])
+        embedding_match = re.search(r"^DT_EMBEDDING_EXECUTION=(-?\d+)$", result.stdout, re.M)
+        embedding_status = int(embedding_match.group(1)) if embedding_match else None
+        if execute_embedding and embedding_status != 0:
+            raise ValueError("Native packed embedding validation did not pass: " + result.stdout[-6000:])
     expected = [0x5f19790a] * 7 + [0x3d9883e5] * 2
     return {"binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
             "qwen_cuda_registered": selected == expected,
             "qwen_cuda_execution": execution_status,
             "sdpa_contracts": sdpa_contracts, "sdpa_cuda_execution": sdpa_status,
+            "packed_embedding_cuda_execution": embedding_status,
             "checks": [{"operation": operation, "datatype": datatype, "memory": memory,
                         "backend": hex(backend), "expected": hex(wanted)}
                        for (operation, datatype, memory, _), backend, wanted in zip(checks, selected, expected)]}
@@ -522,6 +532,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_backends.add_argument("--require-qwen-cuda", action="store_true")
     p_backends.add_argument("--execute-qwen", action="store_true", help="Run linked-runtime CUDA operators and compare with native CPU values")
     p_backends.add_argument("--execute-sdpa", action="store_true", help="Check empty SDPA contracts and a nonempty grouped FP16 CUDA operation")
+    p_backends.add_argument("--execute-embedding", action="store_true", help="Validate packed Q5_K/Q6_K row lookup across F32/F16/BF16")
 
     p_fix = sub.add_parser(
         "qwen35-linear-attn-fixture",
@@ -548,7 +559,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     if args.subcommand == "native-backends":
-        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa)
+        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa, args.execute_embedding)
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

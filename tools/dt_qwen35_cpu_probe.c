@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include "nnc/ccv_nnc.h"
 #include "nnc/ccv_nnc_easy.h"
@@ -52,6 +53,7 @@ int dt_probe_native_nonfinite(const void* tensor_pointer, void* synchronize, voi
   const int count = ccv_nnc_tensor_count(source->info);
   if (!count) return 0;
   const size_t size = (size_t)count * (datatype == CCV_32F ? 4 : 2);
+  if (size > 64 * 1024 * 1024) return -34;
   void* values = malloc(size);
   if (!values) return -31;
   int status = 0;
@@ -63,11 +65,27 @@ int dt_probe_native_nonfinite(const void* tensor_pointer, void* synchronize, voi
     memcpy(values, source->data.u8, size);
   }
   int nonfinite = 0;
+  float maximum_f32 = 0;
+  uint16_t maximum_16 = 0;
   if (!status)
     for (int index = 0; index < count; index++)
+    {
       nonfinite += datatype == CCV_32F ? !isfinite(((const float*)values)[index]) :
         datatype == CCV_16F ? ((((const uint16_t*)values)[index] & 0x7c00) == 0x7c00) :
         ((((const uint16_t*)values)[index] & 0x7f80) == 0x7f80);
+      if (datatype == CCV_32F)
+      {
+        const float magnitude = fabsf(((const float*)values)[index]);
+        if (isfinite(magnitude) && magnitude > maximum_f32) maximum_f32 = magnitude;
+      } else {
+        const uint16_t magnitude = ((const uint16_t*)values)[index] & 0x7fff;
+        const int finite = datatype == CCV_16F ? magnitude < 0x7c00 : magnitude < 0x7f80;
+        if (finite && magnitude > maximum_16) maximum_16 = magnitude;
+      }
+    }
+  if (!status)
+    fprintf(stderr, "DT_TENSOR_RANGE count=%d datatype=%d nonfinite=%d maximum_f32=%g maximum_16=0x%04x\n",
+      count, datatype, nonfinite, maximum_f32, maximum_16);
   free(values);
   return status ? -32 : nonfinite;
 }
@@ -94,6 +112,95 @@ int dt_probe_native_sdpa_contract(void* forward, const int mode)
   return ((int (*)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
     ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*))forward)(
       command, hint, 0, inputs, mode >= 6 ? 5 : 3, outputs, mode >= 6 ? 3 : mode == 5 ? 2 : 1, 0);
+}
+
+int dt_probe_native_embedding_execution(void* allocate_tensor, void* release_tensor,
+  void* execute_command, void* select_backend, void* quantize, void* dequantize)
+{
+  if (dt_probe_native_backend(select_backend, CCV_NNC_INDEX_SELECT_FORWARD,
+      CCV_TENSOR_GPU_MEMORY, CCV_QX) != CCV_NNC_BACKEND_GPU_REF) return -40;
+  typedef ccv_nnc_tensor_t* (*allocate_fn)(void*, ccv_nnc_tensor_param_t, int);
+  typedef int (*execute_fn)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
+    ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*);
+  const int datatypes[] = {CCV_32F, CCV_16F, CCV_16BF};
+  const int formats[] = {CCV_NNC_QX_8I_ROWWISE_Q5_K, CCV_NNC_QX_8I_ROWWISE_Q6_K};
+  const int indices[] = {2, 0, 2, 1};
+  const float dense_f32[] = {1, 2, 4};
+  const uint16_t dense_f16[] = {0x3c00, 0x4000, 0x4400};
+  const uint16_t dense_bf16[] = {0x3f80, 0x4000, 0x4080};
+  for (int format_index = 0; format_index < 2; format_index++)
+    for (int datatype_index = 0; datatype_index < 3; datatype_index++)
+    {
+      unsigned char packed[1024] = {0};
+      unsigned char dense[4096] = {0}, reference[4096] = {0};
+      for (int element = 0; element < 768; element++)
+      {
+        const int row = element / 256;
+        if (datatypes[datatype_index] == CCV_32F) ((float*)dense)[element] = dense_f32[row];
+        else ((uint16_t*)dense)[element] = datatypes[datatype_index] == CCV_16F ? dense_f16[row] : dense_bf16[row];
+      }
+      const size_t packed_size = ((size_t (*)(const void*, int, int, size_t, size_t, int,
+        const float*, size_t, void*, size_t))quantize)(dense, datatypes[datatype_index],
+          CCV_TENSOR_CPU_MEMORY, 768, 256, formats[format_index], 0, 0, packed, sizeof(packed));
+      if (!packed_size || packed_size > sizeof(packed)) return -43;
+      ((void (*)(const void*, int, int, size_t, size_t, int, void*, size_t))dequantize)(packed,
+        datatypes[datatype_index], CCV_TENSOR_CPU_MEMORY, packed_size, 256, formats[format_index], reference, 768);
+      unsigned char output[4096];
+      memset(output, 0xff, sizeof(output));
+      ccv_nnc_tensor_t host[3] = {0};
+      ccv_nnc_tensor_t* host_pointers[] = {host, host + 1, host + 2};
+      ccv_nnc_tensor_t* device[3] = {0};
+      const int shapes[3][2] = {{3, 256}, {4, 0}, {4, 256}};
+      int status = 0;
+      for (int index = 0; index < 3; index++)
+      {
+        host[index].info.type = CCV_TENSOR_CPU_MEMORY;
+        host[index].info.format = CCV_TENSOR_FORMAT_NHWC;
+        host[index].info.datatype = index == 0 ? CCV_QX | CCV_NNC_QX_8I_ROWWISE_X |
+          (datatypes[datatype_index] >> 12) : index == 1 ? CCV_32S : datatypes[datatype_index];
+        host[index].info.reserved = index == 0 ? formats[format_index] : 0;
+        memcpy(host[index].info.dim, shapes[index], sizeof(shapes[index]));
+        host[index].data.u8 = index == 0 ? packed : index == 1 ? (unsigned char*)indices : output;
+        ccv_nnc_tensor_param_t parameters = host[index].info;
+        parameters.type = CCV_TENSOR_GPU_MEMORY;
+        device[index] = ((allocate_fn)allocate_tensor)(0, parameters, 0);
+        if (!device[index]) { status = -41; break; }
+      }
+      const ccv_nnc_hint_t hint = {0};
+      const ccv_nnc_cmd_t transfer = {.cmd = CCV_NNC_DATA_TRANSFER_FORWARD, .algorithm = -1};
+      const ccv_nnc_cmd_t lookup = {.cmd = CCV_NNC_INDEX_SELECT_FORWARD, .algorithm = -1};
+      if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, host_pointers, 3, device, 3, 0);
+      if (!status) status = ((execute_fn)execute_command)(lookup, hint, 0, device, 2, device + 2, 1, 0);
+      if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, device + 2, 1, host_pointers + 2, 1, 0);
+      if (!status)
+        for (int element = 0; element < 1024; element++)
+        {
+          const int row = indices[element / 256];
+          const int reference_element = row * 256 + element % 256;
+            const uint16_t actual_bits = ((const uint16_t*)output)[element];
+            const uint16_t reference_bits = ((const uint16_t*)reference)[reference_element];
+            const int exponent_mask = datatypes[datatype_index] == CCV_16F ? 0x7c00 : 0x7f80;
+          if (datatypes[datatype_index] == CCV_32F ?
+              ((const float*)output)[element] != ((const float*)reference)[reference_element] :
+              (actual_bits & exponent_mask) == exponent_mask ||
+              (reference_bits & exponent_mask) == exponent_mask ||
+              (actual_bits & 0x8000) != (reference_bits & 0x8000) ||
+              abs((int)actual_bits - reference_bits) > 2)
+          {
+            fprintf(stderr, "DT_EMBEDDING_MISMATCH format=%d datatype=%d element=%d actual_f32=%g actual_16=0x%04x reference_16=0x%04x\n",
+              formats[format_index], datatypes[datatype_index], element,
+              datatypes[datatype_index] == CCV_32F ? ((const float*)output)[element] : 0,
+              datatypes[datatype_index] == CCV_32F ? 0 : ((const uint16_t*)output)[element],
+              datatypes[datatype_index] == CCV_32F ? 0 : ((const uint16_t*)reference)[reference_element]);
+            status = -42;
+            break;
+          }
+        }
+      for (int index = 0; index < 3; index++)
+        if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
+      if (status) return status;
+    }
+  return 0;
 }
 
 int dt_probe_native_sdpa_execution(void* allocate_tensor, void* release_tensor, void* execute_command)

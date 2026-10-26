@@ -69,6 +69,18 @@ Bounded LLDB diagnostics inspect actual first-layer GPU calls without changing t
 
 Raw canary output is under `output/q6p_canary_moss_base_q8p_512_qwen35_empty_sdpa_2steps_20261026`. Verified diagnostic logs are under `output/q6p_canary_moss_base_q8p_qwen_live_delta_finite_verified_20261026` and `output/q6p_canary_moss_base_q8p_qwen_live_rmsnorm_finite_20261026`. Runtime logs also contain `GEMM_EX` parameter-12 warnings; their connection to the remaining non-finite output is unproven. The deferred LTX GEMM investigation was not reopened.
 
+### Packed Embedding And Finite Output: October 26
+
+The first nonempty Qwen embedding lookup, before decoder normalization, produced 1,848 non-finite values in `[11,4096]`. Its table is Q5_K-packed (`CCV_QX`, reserved codec 9); the CUDA index-select path neither decoded packed storage nor registered QX, so release-mode dispatch read encoded bytes as dense floats. This supersedes the earlier hypothesis that the first failure must occur after the initial Qwen operation pair. A few finite early operator calls were not full-encoder validation.
+
+The separate CUDA profile now pins the original index-select source and reuses `ccv_nnc_compat_decode_qx` before typed lookup. It registers QX support, validates decoded precision/contiguity, prefetches external data, and checks launch status. The current isolated candidate is SHA-256 `920bf727c5a27a7d1ad90735735c74b7edfbbc1459598cea018f71e2d713dd96`, built with 16 jobs against `output/upgrades/ccv-69b1ed1f-qwen35-cuda-embedding`. The prior `5cca983e...` binary is preserved at `output/upgrades/gRPCServerCLI-0621d819-before-packed-embedding`. The full dense table is currently decoded into workspace, increasing memory; row-selective decoding is a later optimization.
+
+Native `--execute-embedding` adds tiny Q5_K/Q6_K lookup tests across F32/F16/BF16 and repeated/reordered indices. The fixture uses CCV's native encoder and its aligned row-scale footer, not an assumed raw GGML layout. GPU values are compared with native CPU decoding: exact F32, at most two ULPs for reduced precision, with strict finite/sign checks. The pre-fix runtime refuses the packed test before device execution. The combined CUDA-enabled suite passes **57 tests** and the linked Qwen/SDPA/embedding report passes all gates.
+
+The private two-step and original 50-step 512x512 CFG-3/shift-5 requests now each produce one finite final image with complete stream/chunks/post-Echo and no audio. Raw outputs and acceptance metadata are under `output/q6p_canary_moss_base_q8p_512_packed_embedding_{2steps,50steps}_20261026`. The 50-step config hash is unchanged at `f4a1fac323101d86d63fb2650483a9baa4d3cb8c1ef7edb3d64e81f16d5facf9`. Observed whole-device peaks are 2,305 MiB for both runs; telemetry spans about 120/475 seconds including startup, maximum temperatures 56/59 C, with one unavailable utilization sample in the full run.
+
+These are finite-output passes, **not semantic-quality acceptance**: the 50-step image depicts a repeated green structure rather than the requested teapot. Full reference conditioning/denoiser/sampler/decode parity is still needed. A read-only cuBLAS trace also showed the parameter-12 warnings are zero-sized skipped GEMMs with matching FP16 types (`m=0,k=0`), ruling out the mixed-datatype hypothesis; their broader empty-operation handling remains separate. The old LTX GEMM crash investigation remains deferred.
+
 ### Commands
 
 ```bash
@@ -85,7 +97,7 @@ Native tests can use `DT_CCV_SOURCE_DIR` and `DT_GRPC_CANDIDATE`. The CUDA-enabl
 
 ### Remaining Acceptance Gates
 
-1. Locate the first non-finite activation after the verified first Qwen operation pair, including later encoder layers, denoiser, and decode boundaries. Require a finite final image in the short strict guided canary before the full 50-step MOSS profile. Preserve the legacy CPU patches, pristine candidate, and installed runtime; operator/empty-SDPA acceptance does not authorize promotion.
+1. Establish prompt-faithful image quality and reference activation/sampler/decode parity. The packed-embedding fix now passes short and full 50-step finite-image gates, but the full result does not depict the requested subject. Preserve the legacy CPU patches, pristine candidate, and installed runtime; finite-output acceptance does not authorize promotion.
 2. Add full reference/native text-encoder and denoiser activation capture. `verify-block` is a serialization/weight check, not a forward execution oracle. Native CPU operation parity is now independently verified; full WeeLLM/native model parity is not.
 3. Convert a complete real model into private staging, verify native load and finite final generation, and measure actual peak memory/time before publication. No full-size conversion or full-model GPU inference was performed in this hardening pass.
 4. Add explicit native decoding or a validated bridge for ezm7/palettized/packed/trailer variants before numerical diff/health checks on those artifacts. Unsupported codecs currently fail closed.

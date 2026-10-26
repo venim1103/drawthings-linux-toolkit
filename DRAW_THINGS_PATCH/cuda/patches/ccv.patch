@@ -178,6 +178,82 @@ index 0000000..4fd5a66
 +}
 +#endif
 \ No newline at end of file
+diff --git a/lib/nnc/cmd/index/gpu/ccv_nnc_index_select_gpu_ref.cu b/lib/nnc/cmd/index/gpu/ccv_nnc_index_select_gpu_ref.cu
+index c6686c8..4490499 100644
+--- a/lib/nnc/cmd/index/gpu/ccv_nnc_index_select_gpu_ref.cu
++++ b/lib/nnc/cmd/index/gpu/ccv_nnc_index_select_gpu_ref.cu
+@@ -55,34 +55,47 @@ static int _ccv_nnc_index_select_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hin
+ 	const int b_rows = b->info.dim[0];
+ 	assert(b_rows == indices->info.dim[0]);
+ 	assert(a_cols == b_cols);
+-	assert(a->info.datatype == b->info.datatype);
++	const int is_quantized = CCV_GET_DATA_TYPE(a->info.datatype) == CCV_QX;
++	const int a_datatype = is_quantized ? (a->info.datatype & 0xff) << 12 : a->info.datatype;
++	if (a_datatype != b->info.datatype || (is_quantized &&
++		(!CCV_IS_TENSOR_CONTIGUOUS(a) || a_nd != 2 || a_datatype == CCV_32S)))
++		return CCV_NNC_EXEC_INVALID;
+ 	if (indices->info.datatype == CCV_32S)
+ 	{
+-		assert(a->info.datatype == CCV_32F || a->info.datatype == CCV_16F || a->info.datatype == CCV_16BF || a->info.datatype == CCV_32S);
++		if (a_datatype != CCV_32F && a_datatype != CCV_16F && a_datatype != CCV_16BF && a_datatype != CCV_32S)
++			return CCV_NNC_EXEC_INVALID;
+ 	} else {
+-		assert(indices->info.datatype == CCV_32F);
+-		assert(a->info.datatype == CCV_32F || a->info.datatype == CCV_16F || a->info.datatype == CCV_16BF);
++		if (indices->info.datatype != CCV_32F || (a_datatype != CCV_32F && a_datatype != CCV_16F && a_datatype != CCV_16BF))
++			return CCV_NNC_EXEC_INVALID;
++	}
++	ccv_nnc_tensor_prefetch_async((ccv_nnc_tensor_t*)a, stream_context);
++	const unsigned char* a_data = a->data.u8;
++	if (is_quantized)
++	{
++		void* const workspace = ccv_nnc_stream_context_get_workspace(stream_context, ccv_nnc_compat_qx_dense_data_size(a->info), CCV_TENSOR_GPU_MEMORY);
++		ccv_nnc_compat_decode_qx(a->data.u8, a->info, workspace, stream_context);
++		a_data = (const unsigned char*)workspace;
+ 	}
+ 	cudaStream_t stream = ccv_nnc_stream_context_get_stream(stream_context);
+ 	const int count = b_rows * b_cols;
+ 	if (indices->info.datatype == CCV_32S)
+ 	{
+-		if (a->info.datatype == CCV_32S)
+-			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, a->data.i32, a_cols_inc, indices->data.i32, b->data.i32, b_cols_inc);
+-		else if (a->info.datatype == CCV_16F || a->info.datatype == CCV_16BF)
+-			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (__half*)a->data.f16, a_cols_inc, indices->data.i32, (__half*)b->data.f16, b_cols_inc);
++		if (a_datatype == CCV_32S)
++			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (const int*)a_data, a_cols_inc, indices->data.i32, b->data.i32, b_cols_inc);
++		else if (a_datatype == CCV_16F || a_datatype == CCV_16BF)
++			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (const __half*)a_data, a_cols_inc, indices->data.i32, (__half*)b->data.f16, b_cols_inc);
+ 		else
+-			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, a->data.f32, a_cols_inc, indices->data.i32, b->data.f32, b_cols_inc);
++			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (const float*)a_data, a_cols_inc, indices->data.i32, b->data.f32, b_cols_inc);
+ 	} else {
+ 		assert(indices->info.datatype == CCV_32F);
+-		if (a->info.datatype == CCV_16F)
+-			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (__half*)a->data.f16, a_cols_inc, a_rows, indices->data.f32, (__half*)b->data.f16, b_cols_inc);
+-		else if (a->info.datatype == CCV_16BF)
+-			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (__nv_bfloat16*)a->data.f16, a_cols_inc, a_rows, indices->data.f32, (__nv_bfloat16*)b->data.f16, b_cols_inc);
++		if (a_datatype == CCV_16F)
++			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (const __half*)a_data, a_cols_inc, a_rows, indices->data.f32, (__half*)b->data.f16, b_cols_inc);
++		else if (a_datatype == CCV_16BF)
++			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (const __nv_bfloat16*)a_data, a_cols_inc, a_rows, indices->data.f32, (__nv_bfloat16*)b->data.f16, b_cols_inc);
+ 		else
+-			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, a->data.f32, a_cols_inc, a_rows, indices->data.f32, b->data.f32, b_cols_inc);
++			_ccv_nnc_index_select_forw_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, b_cols, (const float*)a_data, a_cols_inc, a_rows, indices->data.f32, b->data.f32, b_cols_inc);
+ 	}
+-	return CCV_NNC_EXEC_SUCCESS;
++	return cudaPeekAtLastError() == cudaSuccess ? CCV_NNC_EXEC_SUCCESS : CCV_NNC_EXEC_INVALID;
+ }
+ 
+ template<typename NUM>
+@@ -159,7 +172,7 @@ static int _ccv_nnc_index_select_back(const ccv_nnc_cmd_t cmd, const ccv_nnc_hin
+ REGISTER_COMMAND_BACKEND(CCV_NNC_INDEX_SELECT_FORWARD, CCV_NNC_BACKEND_GPU_REF)(ccv_nnc_cmd_backend_registry_t* const registry)
+ {
+ 	registry->tensor_formats = CCV_TENSOR_FORMAT_NCHW | CCV_TENSOR_FORMAT_NHWC;
+-	registry->tensor_datatypes = CCV_32F | CCV_32S | CCV_16F | CCV_16BF;
++	registry->tensor_datatypes = CCV_32F | CCV_32S | CCV_16F | CCV_16BF | CCV_QX;
+ 	registry->tensor_memory = CCV_TENSOR_GPU_MEMORY;
+ 	registry->algorithms = 1;
+ 	registry->exec = _ccv_nnc_index_select_forw;
 diff --git a/lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c b/lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c
 index 9c91d18..f08a56a 100644
 --- a/lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c
