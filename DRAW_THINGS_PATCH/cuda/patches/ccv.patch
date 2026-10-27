@@ -254,6 +254,54 @@ index c6686c8..4490499 100644
  	registry->tensor_memory = CCV_TENSOR_GPU_MEMORY;
  	registry->algorithms = 1;
  	registry->exec = _ccv_nnc_index_select_forw;
+diff --git a/lib/nnc/cmd/norm/gpu/ccv_nnc_rmsnorm_gpu_cudnn.cu b/lib/nnc/cmd/norm/gpu/ccv_nnc_rmsnorm_gpu_cudnn.cu
+index 37c706e..9700ed7 100644
+--- a/lib/nnc/cmd/norm/gpu/ccv_nnc_rmsnorm_gpu_cudnn.cu
++++ b/lib/nnc/cmd/norm/gpu/ccv_nnc_rmsnorm_gpu_cudnn.cu
+@@ -10,6 +10,14 @@ extern "C" {
+ 
+ #ifdef HAVE_CUDNN
+ 
++template<typename NUM>
++__global__ void _ccv_nnc_rmsnorm_output_scale_kernel(const size_t count, const float scale, NUM* const output)
++{
++	CUDA_1D_KERNEL_LOOP(index, count) {
++		output[index] = (NUM)((float)output[index] * scale);
++	}
++}
++
+ template<typename NUM>
+ __global__ void _ccv_nnc_inv_std_kernel(const int count, const float epsilon, const NUM* const a, NUM* const b)
+ {
+@@ -23,7 +31,27 @@ static int _ccv_nnc_rmsnorm_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t h
+ 	assert(input_size == 2 || input_size == 1);
+ 	assert(output_size == 2);
+ 	if (cmd.info.rmsnorm.scale != 1)
+-		return CCV_NNC_EXEC_INVALID;
++	{
++		if (!isfinite(cmd.info.rmsnorm.scale) || !CCV_IS_TENSOR_CONTIGUOUS(outputs[0]) ||
++			(outputs[0]->info.datatype != CCV_32F && outputs[0]->info.datatype != CCV_16F && outputs[0]->info.datatype != CCV_16BF))
++			return CCV_NNC_EXEC_INVALID;
++		ccv_nnc_cmd_t unscaled = cmd;
++		unscaled.info.rmsnorm.scale = 1;
++		const int status = _ccv_nnc_rmsnorm_forw(unscaled, hint, flags, inputs, input_size, outputs, output_size, stream_context);
++		if (status != CCV_NNC_EXEC_SUCCESS)
++			return status;
++		const size_t count = ccv_nnc_tensor_count(outputs[0]->info);
++		if (!count)
++			return CCV_NNC_EXEC_SUCCESS;
++		cudaStream_t stream = ccv_nnc_stream_context_get_stream(stream_context);
++		if (outputs[0]->info.datatype == CCV_32F)
++			_ccv_nnc_rmsnorm_output_scale_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, cmd.info.rmsnorm.scale, outputs[0]->data.f32);
++		else if (outputs[0]->info.datatype == CCV_16F)
++			_ccv_nnc_rmsnorm_output_scale_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, cmd.info.rmsnorm.scale, (__half*)outputs[0]->data.f16);
++		else
++			_ccv_nnc_rmsnorm_output_scale_kernel<<<CUDA_GET_BLOCKS(count), CUDA_NUM_THREADS, 0, stream>>>(count, cmd.info.rmsnorm.scale, (__nv_bfloat16*)outputs[0]->data.f16);
++		return cudaPeekAtLastError() == cudaSuccess ? CCV_NNC_EXEC_SUCCESS : CCV_NNC_EXEC_INVALID;
++	}
+ 	const int elementwise_affine = cmd.info.rmsnorm.elementwise_affine;
+ #ifdef HAVE_CUDA_SM80
+ 	ccv_nnc_flash_norm_info_t flash_norm = {};
 diff --git a/lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c b/lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c
 index 9c91d18..f08a56a 100644
 --- a/lib/nnc/cmd/rmsnorm_gated/ccv_nnc_rmsnorm_gated.c

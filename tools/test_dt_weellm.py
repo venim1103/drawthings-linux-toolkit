@@ -790,7 +790,7 @@ class NativeQwenReferenceTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
                  "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda",
-                 "--execute-qwen", "--execute-sdpa", "--execute-embedding", "--execute-packed-gemm", "--report", str(report_path)],
+                 "--execute-qwen", "--execute-sdpa", "--execute-embedding", "--execute-packed-gemm", "--execute-scaled-rmsnorm", "--report", str(report_path)],
                 capture_output=True, text=True, timeout=150)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
@@ -801,9 +801,24 @@ class NativeQwenReferenceTests(unittest.TestCase):
             self.assertEqual(report["sdpa_cuda_execution"], 0)
             self.assertEqual(report["packed_embedding_cuda_execution"], 0)
             self.assertEqual(report["packed_gemm_cuda_execution"], 0)
+            self.assertEqual(report["scaled_rmsnorm_cuda_execution"], 0)
             self.assertEqual(len(report["checks"]), 9)
             self.assertTrue(all(check["backend"] == check["expected"] for check in report["checks"]))
             self.assertEqual(report["binary_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
+
+    def test_native_scaled_rmsnorm_gate_rejects_pre_fix_binary(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = root / "output/upgrades/gRPCServerCLI-0621d819-before-scaled-rmsnorm"
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("lldb") or not shutil.which("cc") or not candidate.is_file() or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("Scaled RMSNorm negative control requires the preserved pre-fix candidate/source")
+        result = subprocess.run(
+            [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
+             "--binary", str(candidate), "--ccv-source", str(source), "--execute-scaled-rmsnorm"],
+            capture_output=True, text=True, timeout=150)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Native scaled RMSNorm validation did not pass", result.stderr)
+        self.assertIn("\nDT_SCALED_RMSNORM_EXECUTION=-1\n", result.stderr)
 
     def test_native_embedding_gate_rejects_pre_fix_binary(self):
         root = Path(__file__).resolve().parents[1]

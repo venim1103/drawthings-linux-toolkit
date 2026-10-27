@@ -2,7 +2,7 @@
 
 **Review Date:** 2026-10-26  
 **Baseline Reviewed:** `venim1103/drawthings-linux-toolkit` (`main` across `cf8baab..acd9b26`)  
-**Active Isolated CUDA Candidate:** `920bf727c5a27a7d1ad90735735c74b7edfbbc1459598cea018f71e2d713dd96`
+**Active Isolated CUDA Candidate:** `1d27f8d444d6211322496d3ce20871173b5d7d5942401bbe07fba9fa216a91b5` (October 27 scaled-RMSNorm fix; the original review used `920bf727...`).
 
 ## Follow-Up Verification: October 27
 
@@ -21,6 +21,16 @@ No native reshape, timestep, sampler, or precision patch was justified by these 
 Raw evidence and JSON reports are under `output/upgrades/moss-image-base-add235e9`: `review-conditioning-inspection.json`, `review-early-latent-inspection.json`, `review-late-latent-inspection.json`, `review-raw-timestep-comparison.json`, `review-latent-vae-affine-comparison.json`, and `review-vae-configured-normalization-comparison.json`. Failed/unmatched debugger probes were excluded from evidence and their owned inferiors cleaned up; the private Linux probe now requests parent-death cleanup.
 
 ---
+
+## Recurrent-Path Quality Fix: October 27
+
+The complete MOSS block-0 checks below passed, but the first full Qwen recurrent-layer trace exposed a real unsupported operation: CUDA RMSNorm returned `-1` for the non-unit output scales used to normalize Q/K. Its forward implementation rejected every `scale != 1`, including Qwen's `1/sqrt(128)` and `1/128`. Finite early kernel outputs and complete denoising streams had not proved that these normalizations succeeded.
+
+The pinned CUDA profile now runs the established scale-one RMSNorm path, then applies the finite requested scale to its normalized output, leaving saved inverse statistics unchanged. The preserved pre-fix binary is a negative control. Thirty-six scaled affine/non-affine F32/F16/BF16 numerical cases pass, and the real recurrent-layer trace now completes all 29 operations, including the two previously rejected normalizations. The combined CUDA-enabled suite passes 67 tests.
+
+The new isolated candidate SHA-256 is `1d27f8d444d6211322496d3ce20871173b5d7d5942401bbe07fba9fa216a91b5`. The original standard 50-step CFG-3/shift-5/seed-4242 canary now returns a finite image that visibly matches the requested orange teapot, white table, and green plant. The full config hash is unchanged. Evidence lives under `output/q6p_canary_moss_base_q8p_scaled_rmsnorm_50steps_20261027`; sampled peak memory is 2,305 MiB and telemetry duration about 129 seconds including startup. This is a tested Base bring-up result, not universal quality/framework certification or default-promotion authorization. Repeatability and another prompt are next.
+
+An isolated offline Transformers 5.3.0 reference was used for a complete pre-fix full-attention layer comparison; its finite output differed by roughly 2.7% RMS in FP32 or 1.3% with native activation quantization modelled. Those bounded comparisons were informative but did not replace the required recurrent-path status check. Existing converted `A_log` values were inspected and already represent exponentiated scales; no speculative extra `exp`, sampler, or concat change was applied.
 
 ## Complete Block Follow-Up: October 27
 

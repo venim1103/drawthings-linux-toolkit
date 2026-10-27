@@ -1,8 +1,8 @@
 # Qwen3.5 CUDA Forward Patch Profile
 
-This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty-forward SDPA handling, and decoded packed-embedding lookup without changing Package files, assertion settings, CPU backends, or the installed runtime.
+This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty-forward SDPA handling, decoded packed-embedding lookup, and scaled RMSNorm forward support without changing Package files, assertion settings, CPU backends, or the installed runtime.
 
-The manifest pins community, s4nnc, and CCV revisions and SHA-256 hashes for the two modified registration files and original CUDA SDPA/index-select sources. The `ccv/` tree contains patched snapshots; `patches/ccv.patch` is the generated unified diff. The patch tool never falls back to copying snapshots over unexpected upstream files.
+The manifest pins community, s4nnc, and CCV revisions and SHA-256 hashes for the two modified registration files and original CUDA SDPA/index-select/RMSNorm sources. The `ccv/` tree contains patched snapshots; `patches/ccv.patch` is the generated unified diff. The patch tool never falls back to copying snapshots over unexpected upstream files.
 
 ## Validate
 
@@ -38,15 +38,15 @@ Ruby is a native-build prerequisite. Before Bazel runs, the helper automatically
 ```bash
 DRAWTHINGS_CANDIDATE_DIR="$PWD/output/upgrades/community-0621d819-qwen35-cuda" \
 DRAWTHINGS_BAZEL_ROOT="$PWD/.cache/bazel-qwen35-cuda" \
-DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-embedding" \
-DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-embedding \
+DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-scaled-rmsnorm" \
+DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-scaled-rmsnorm \
 DT_BUILD_JOBS=16 bash tools/drawthings_build_candidate.sh build
 
 .venv/bin/python tools/dt_layer_parity_oracle.py native-backends \
 	--binary output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI \
-	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-embedding \
-	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding --execute-packed-gemm \
-	--report output/upgrades/native-backends-qwen35-cuda-embedding.json
+	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-scaled-rmsnorm \
+	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding --execute-packed-gemm --execute-scaled-rmsnorm \
+	--report output/upgrades/native-backends-qwen35-scaled-rmsnorm.json
 ```
 
 Create the detached community checkout and independent CCV copy before this command; apply the profile only to that private CCV copy. An earlier applied profile is not an upgrade base: create a fresh copy of the pinned pristine CCV source when the profile changes. The report checks six CUDA precision selections, CPU/SDPA controls, the binary hash, and optionally real linked-runtime GPU operations against CPU values. The pristine server is a tested negative control: the required-Qwen-CUDA gate rejects it even though CPU and SDPA controls are present. Integration is accepted only after both the full build and the positive linked-runtime check pass.
@@ -76,6 +76,18 @@ The current separate candidate has SHA-256 `920bf727c5a27a7d1ad90735735c74b7edfb
 Both private guided MOSS canaries now produce exactly one finite final image and complete stream/chunks/post-Echo: two steps and the original 50-step CFG-3/shift-5 profile. Their acceptance metadata records zero non-finite values. The full run's config hash remains `f4a1fac323101d86d63fb2650483a9baa4d3cb8c1ef7edb3d64e81f16d5facf9`; output is `output/q6p_canary_moss_base_q8p_512_packed_embedding_50steps_20261026`. Whole-device telemetry covers about 475 seconds, with a 2,305 MiB observed peak and 59 C maximum; one utilization reading is unavailable. These include startup and are not allocator-exact performance results.
 
 Finite output is **not image-quality acceptance**. The 50-step result is a repeated green structure rather than the requested orange teapot. Reference activation/sampler/decoder parity and prompt fidelity remain unresolved; no default promotion or SFT claim follows from these results. The remaining `GEMM_EX` warnings were separately traced to zero-sized skipped operations with matching FP16 operands, not a mixed-datatype failure.
+
+### Scaled RMSNorm And First Prompt-Following Base Result: October 27
+
+A complete Qwen recurrent-layer trace, unlike finiteness-only checks, stopped at `CCV_NNC_RMSNORM_FORWARD` with status `-1`. The CUDA implementation explicitly rejected every `scale != 1`; Qwen's non-affine key/query L2 normalization requires `1/sqrt(128)` and `1/128`. This was a real model-execution gap despite finite downstream artifacts. The preserved `output/upgrades/gRPCServerCLI-0621d819-before-scaled-rmsnorm` remains a negative control.
+
+The profile now pins the original RMSNorm CUDA source and supports finite non-unit forward scales on contiguous F32/F16/BF16 output: run the existing scale-one implementation, then scale only the normalized output in place. Saved inverse-standard-deviation values are unchanged. Scale-one behavior and backward rejection remain intact. The numerical gate covers **36** affine/non-affine dtype/scale cases, including zero and negative output scales, zero input rows, and saved-statistics checks; the pre-fix binary is explicitly rejected. The complete recurrent-layer replay now executes all 29 operations successfully, including both formerly rejected Q/K scales.
+
+The current separate candidate is SHA-256 `1d27f8d444d6211322496d3ce20871173b5d7d5942401bbe07fba9fa216a91b5`, built with 16 jobs in about 21 seconds against a fresh private CCV copy. All existing native gates plus `--execute-scaled-rmsnorm` pass; the full CUDA-enabled suite passes **67 tests**.
+
+Both standard private canaries pass: two steps and the original 50-step CFG-3/shift-5/seed-4242 512x512 profile, with unchanged full config hash `f4a1fac323101d86d63fb2650483a9baa4d3cb8c1ef7edb3d64e81f16d5facf9`. The full image now visibly depicts the requested orange teapot on a white table beside a green plant, instead of the previous unrelated texture. This is the first prompt-following Base bring-up observation for this profile, not a cross-framework quality benchmark or universal acceptance. Raw/PNG/acceptance artifacts are under `output/q6p_canary_moss_base_q8p_scaled_rmsnorm_{2steps,50steps}_20261027`. Observed whole-device peak is 2,305 MiB for both, telemetry spans about 75/129 seconds including startup, and maximum temperatures are 57/65 C; no samples are missing.
+
+The isolated offline Transformers 5.3.0 reference is installed only under the private output tree, with no change to normal toolkit imports and no new weights downloaded. A pre-fix full-attention-layer comparison produced finite outputs with roughly 2.7% RMS difference from FP32 reference, or 1.3% when native activation quantization was modelled. This did not expose the later-discovered unsupported recurrent normalization. The main lesson is to check operation return statuses and complete recurrent paths, not treat finite early primitives as encoder certification. Repeatability, other prompts/resolutions, SFT, backward behavior, and default promotion remain separate gates.
 
 ## Coverage And Limits
 
@@ -115,4 +127,4 @@ A 50-step CFG-1 diagnostic also returns a finite but unrelated image, so the spe
 
 On the RTX A3000/SM86, 60 RMSNorm and 108 gated-delta numerical cases passed, plus invalid/empty contract tests. Observed maximum errors were approximately `9.54e-7` for RMSNorm, `4.47e-8` for FP32 gated-delta state, and `6.10e-5` for gated-delta output including reduced-precision rounding. FP32 checks use absolute tolerance `2e-6` and relative tolerance `2e-5`; reduced-precision output checks use separately declared tolerances in the tests.
 
-These results establish standalone operator correctness, linked-server integration, empty SDPA handling, and finite full-profile MOSS output. Complete text-encoder/denoiser parity, prompt-faithful image quality, broader codec/layout coverage, and production readiness remain separate gates.
+These results establish tested operator correctness, linked-server integration, complete block-0 comparison, and one finite prompt-following full-profile MOSS Base image. Complete cross-framework model parity, repeatability, broader prompt/model/codec/layout coverage, and production readiness remain separate gates.

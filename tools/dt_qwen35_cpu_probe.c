@@ -7,6 +7,14 @@
 #include "nnc/ccv_nnc_easy.h"
 
 static void* workspace;
+static size_t capture_limit = 64 * 1024 * 1024;
+
+int dt_probe_native_set_capture_limit(const size_t limit)
+{
+  if (!limit || limit > 128 * 1024 * 1024) return -34;
+  capture_limit = limit;
+  return 0;
+}
 
 void* ccv_nnc_stream_context_get_workspace(ccv_nnc_stream_context_t* context,
   const size_t size, const int memory)
@@ -101,7 +109,7 @@ int dt_probe_native_tensor_dump(const void* tensor_pointer, void* synchronize, v
   if (!CCV_IS_TENSOR_CONTIGUOUS(source)) return -33;
   const size_t count = ccv_nnc_tensor_count(source->info);
   const size_t size = count * (datatype == CCV_32F ? 4 : 2);
-  if (!count || size > 64 * 1024 * 1024) return -34;
+  if (!count || size > capture_limit) return -34;
   void* values = malloc(size);
   if (!values) return -31;
   int status = 0;
@@ -138,10 +146,11 @@ const char* dt_probe_native_command_metadata(const void* command_pointer, void* 
     command->cmd == CCV_NNC_SCALAR_MUL_FORWARD;
   const int is_gemm = command->cmd == CCV_NNC_GEMM_FORWARD;
   snprintf(metadata, sizeof(metadata),
-    "{\"code\":%u,\"name\":\"%s\",\"scalars\":[%.9g,%.9g],\"soft_cap\":%.9g,\"rms_epsilon\":%.9g,\"rms_axis_count\":%d,\"rms_axes\":[%d,%d,%d],\"attention_scale\":%.9g,\"transpose_a\":[%d,%d],\"transpose_b\":[%d,%d]}",
+    "{\"code\":%u,\"name\":\"%s\",\"scalars\":[%.9g,%.9g],\"soft_cap\":%.9g,\"rms_epsilon\":%.9g,\"rms_scale\":%.9g,\"rms_axis_count\":%d,\"rms_axes\":[%d,%d,%d],\"attention_scale\":%.9g,\"transpose_a\":[%d,%d],\"transpose_b\":[%d,%d]}",
     command->cmd, name, is_blas ? command->info.blas.a[0] : 0, is_blas ? command->info.blas.a[1] : 0,
     command->cmd == CCV_NNC_TANH_FORWARD ? command->info.tanh.soft_cap : 0,
-    is_norm ? command->info.rmsnorm.epsilon : 0, is_norm ? command->info.rmsnorm.count : 0,
+    is_norm ? command->info.rmsnorm.epsilon : 0, is_norm ? command->info.rmsnorm.scale : 0,
+    is_norm ? command->info.rmsnorm.count : 0,
     is_norm ? command->info.rmsnorm.axis[0] : 0, is_norm ? command->info.rmsnorm.axis[1] : 0,
     is_norm ? command->info.rmsnorm.axis[2] : 0,
     command->cmd == CCV_NNC_SCALED_DOT_PRODUCT_ATTENTION_FORWARD ? command->info.scaled_dot_product_attention.scale : 0,
@@ -166,24 +175,35 @@ const char* dt_probe_native_tensor_metadata(const void* tensor_pointer)
 
 int dt_probe_native_decoded_tensor_dump(const void* tensor_pointer, void* synchronize,
   void* transfer, void* allocate_tensor, void* release_tensor, void* decode_tensor,
-  void* prefetch_tensor, const char* path, void* stream)
+  void* prefetch_tensor, void* execute_command, const char* path, void* stream)
 {
   const ccv_nnc_tensor_t* source = tensor_pointer;
-  if (CCV_GET_DATA_TYPE(source->info.datatype) != CCV_QX)
+  const int quantized = CCV_GET_DATA_TYPE(source->info.datatype) == CCV_QX;
+  if (!quantized && CCV_IS_TENSOR_CONTIGUOUS(source))
     return dt_probe_native_tensor_dump(source, synchronize, transfer, path);
-  if (!CCV_IS_TENSOR_CONTIGUOUS(source)) return -33;
+  if (quantized && !CCV_IS_TENSOR_CONTIGUOUS(source)) return -33;
   ccv_nnc_tensor_param_t parameters = source->info;
-  parameters.datatype = (parameters.datatype & 0xff) << 12;
+  parameters.datatype = quantized ? (parameters.datatype & 0xff) << 12 : parameters.datatype;
   parameters.reserved = 0;
   const size_t size = (size_t)ccv_nnc_tensor_count(parameters) * (parameters.datatype == CCV_32F ? 4 : 2);
-  if (!size || size > 64 * 1024 * 1024 ||
+  if (!size || size > capture_limit ||
       (parameters.datatype != CCV_32F && parameters.datatype != CCV_16F && parameters.datatype != CCV_16BF)) return -34;
   ccv_nnc_tensor_t* dense = ((ccv_nnc_tensor_t* (*)(void*, ccv_nnc_tensor_param_t, int))allocate_tensor)(0, parameters, 0);
   if (!dense) return -31;
   ((void (*)(ccv_nnc_tensor_t*, ccv_nnc_stream_context_t*))prefetch_tensor)((ccv_nnc_tensor_t*)source, stream);
-  ((void (*)(const void*, ccv_nnc_tensor_param_t, void*, ccv_nnc_stream_context_t*))decode_tensor)(
-    source->data.u8, source->info, dense->data.u8, stream);
-  const int status = dt_probe_native_tensor_dump(dense, synchronize, transfer, path);
+  int status = 0;
+  if (quantized)
+    ((void (*)(const void*, ccv_nnc_tensor_param_t, void*, ccv_nnc_stream_context_t*))decode_tensor)(
+      source->data.u8, source->info, dense->data.u8, stream);
+  else {
+    ccv_nnc_tensor_t* inputs[] = {(ccv_nnc_tensor_t*)source};
+    ccv_nnc_tensor_t* outputs[] = {dense};
+    const ccv_nnc_cmd_t transform = {.cmd = CCV_NNC_FORMAT_TRANSFORM_FORWARD, .algorithm = -1};
+    const ccv_nnc_hint_t hint = {0};
+    status = ((int (*)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
+      ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*))execute_command)(transform, hint, 0, inputs, 1, outputs, 1, stream);
+  }
+  if (!status) status = dt_probe_native_tensor_dump(dense, synchronize, transfer, path);
   ((void (*)(ccv_nnc_tensor_t*))release_tensor)(dense);
   return status;
 }
@@ -424,6 +444,99 @@ int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, voi
       if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
     if (status) return status;
   }
+  return 0;
+}
+
+static float dt_probe_float_value(const unsigned char* data, const int datatype, const int element)
+{
+  if (datatype == CCV_32F) return ((const float*)data)[element];
+  const uint16_t bits = ((const uint16_t*)data)[element];
+  float value;
+  if (datatype == CCV_16BF)
+  {
+    const uint32_t expanded = (uint32_t)bits << 16;
+    memcpy(&value, &expanded, 4);
+  } else {
+    const int exponent = (bits >> 10) & 31;
+    value = exponent == 31 ? NAN : exponent ? ldexpf((bits & 1023) + 1024, exponent - 25) : ldexpf(bits & 1023, -24);
+    if (bits & 0x8000) value = -value;
+  }
+  return value;
+}
+
+int dt_probe_native_scaled_rmsnorm(void* allocate_tensor, void* release_tensor, void* execute_command)
+{
+  typedef ccv_nnc_tensor_t* (*allocate_fn)(void*, ccv_nnc_tensor_param_t, int);
+  typedef int (*execute_fn)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
+    ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*);
+  const float scales[] = {1, 0.125f, 1.0f / 128, 0.0883883461f, 0, -0.125f};
+  const int datatypes[] = {CCV_32F, CCV_16F, CCV_16BF};
+  const float values[] = {0, 0.25f, -0.5f, 1};
+  const uint16_t half[] = {0, 0x3400, 0xb800, 0x3c00};
+  const uint16_t bfloat[] = {0, 0x3e80, 0xbf00, 0x3f80};
+  for (int datatype_index = 0; datatype_index < 3; datatype_index++)
+    for (int scale_index = 0; scale_index < 6; scale_index++)
+      for (int affine = 0; affine < 2; affine++)
+    {
+      unsigned char data[4][6 * 128 * 4];
+      memset(data, 0xff, sizeof(data));
+      for (int element = 0; element < 6 * 128; element++)
+      {
+        const int index = element < 128 ? 0 : element % 4;
+        if (datatypes[datatype_index] == CCV_32F) ((float*)data[0])[element] = values[index];
+        else ((uint16_t*)data[0])[element] = datatypes[datatype_index] == CCV_16F ? half[index] : bfloat[index];
+      }
+      for (int element = 0; element < 128; element++)
+        if (datatypes[datatype_index] == CCV_32F) ((float*)data[3])[element] = 2;
+        else ((uint16_t*)data[3])[element] = 0x4000;
+      ccv_nnc_tensor_t host[4] = {0};
+      ccv_nnc_tensor_t* host_pointers[] = {host, host + 1, host + 2, host + 3};
+      ccv_nnc_tensor_t* device[4] = {0};
+      int status = 0;
+      for (int index = 0; index < 4; index++)
+      {
+        host[index].info.type = CCV_TENSOR_CPU_MEMORY;
+        host[index].info.format = CCV_TENSOR_FORMAT_NHWC;
+        host[index].info.datatype = datatypes[datatype_index];
+        const int shape[] = {1, index == 3 ? 1 : 3, index == 3 ? 1 : 2, index == 2 ? 1 : 128};
+        memcpy(host[index].info.dim, shape, sizeof(shape));
+        host[index].data.u8 = data[index];
+        ccv_nnc_tensor_param_t parameters = host[index].info;
+        parameters.type = CCV_TENSOR_GPU_MEMORY;
+        device[index] = ((allocate_fn)allocate_tensor)(0, parameters, 0);
+        if (!device[index]) { status = -60; break; }
+      }
+      const ccv_nnc_hint_t hint = {0};
+      const ccv_nnc_cmd_t transfer = {.cmd = CCV_NNC_DATA_TRANSFER_FORWARD, .algorithm = -1};
+      const ccv_nnc_cmd_t norm = {.cmd = CCV_NNC_RMSNORM_FORWARD, .algorithm = -1,
+        .info = {.rmsnorm = {.epsilon = 1e-6f / 128, .elementwise_affine = affine,
+          .scale = scales[scale_index], .count = 1, .axis = {3}}}};
+      ccv_nnc_tensor_t* norm_inputs[] = {device[0], device[3]};
+      if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, host_pointers, 4, device, 4, 0);
+      if (!status) status = ((execute_fn)execute_command)(norm, hint, 0, norm_inputs, affine ? 2 : 1, device + 1, 2, 0);
+      if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, device + 1, 2, host_pointers + 1, 2, 0);
+      if (!status)
+        for (int element = 0; element < 6 * 128; element++)
+        {
+          const float variance = element < 128 ? 0 : (0.25f * 0.25f + 0.5f * 0.5f + 1) / 4;
+          const float expected = values[element < 128 ? 0 : element % 4] * scales[scale_index] * (affine ? 2 : 1) / sqrtf(variance + 1e-6f / 128);
+          const float actual = dt_probe_float_value(data[1], datatypes[datatype_index], element);
+          const float tolerance = datatypes[datatype_index] == CCV_32F ? 2e-6f : datatypes[datatype_index] == CCV_16F ? 0.002f : 0.015f;
+          if (!isfinite(actual) || fabsf(actual - expected) > tolerance * fmaxf(fabsf(expected), 0.01f)) status = -61;
+        }
+      if (!status)
+        for (int row = 0; row < 6; row++)
+        {
+          const float variance = row == 0 ? 0 : (0.25f * 0.25f + 0.5f * 0.5f + 1) / 4;
+          const float expected = 1 / sqrtf(variance + 1e-6f / 128);
+          const float actual = dt_probe_float_value(data[2], datatypes[datatype_index], row);
+          const float tolerance = datatypes[datatype_index] == CCV_32F ? 2e-6f : datatypes[datatype_index] == CCV_16F ? 0.002f : 0.015f;
+          if (!isfinite(actual) || fabsf(actual - expected) > tolerance * expected) status = -62;
+        }
+      for (int index = 0; index < 4; index++)
+        if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
+      if (status) return status;
+    }
   return 0;
 }
 

@@ -562,6 +562,14 @@ New `compare-capture` tooling records hashes, shapes, datatypes, tolerances, and
 
 The 50-step CFG-1 isolation test passes finite-output checks but still depicts an unrelated structured scene, not the teapot. Removing the special negative branch is insufficient. A debugger-only bypass of packed fast GEMM instead causes non-finite encoder conditioning and was rejected. The normal CFG-3 profile, source files, models, and installed/default runtime were not changed by these experiments. M1 still needs full reference-boundary and prompt-fidelity acceptance.
 
+### M1 First Prompt-Following Base Result: October 27
+
+A complete Qwen recurrent trace identified the remaining quality blocker: native CUDA RMSNorm rejected Qwen's non-unit key/query normalization scales with `CCV_NNC_EXEC_INVALID`. The pinned profile now supports finite non-unit forward output scales by running its established scale-one path and scaling only normalized output, preserving saved inverse-standard-deviation values. The previous binary remains a negative control; 36 scaled affine/non-affine precision cases and the complete 29-operation recurrent layer now pass. The combined CUDA-enabled suite passes 67 tests.
+
+The isolated candidate is SHA-256 `1d27f8d444d6211322496d3ce20871173b5d7d5942401bbe07fba9fa216a91b5`, built with 16 jobs against a fresh private CCV copy. The original 50-step CFG-3, shift-5, seed-4242, 512x512 Base profile now produces one finite image visibly depicting the requested orange teapot on a white table beside a plant. Stream/chunks/post-Echo pass, and config SHA-256 remains `f4a1fac323101d86d63fb2650483a9baa4d3cb8c1ef7edb3d64e81f16d5facf9`. Raw/PNG/acceptance and GPU evidence are under `output/q6p_canary_moss_base_q8p_scaled_rmsnorm_50steps_20261027`. Sampled whole-device peak is 2,305 MiB; telemetry spans about 129 seconds including startup, maximum 65 C, with no missing readings.
+
+This is the first prompt-following M1 Base bring-up observation, not production/default promotion or universal image-quality certification. Repeatability, another prompt, SFT, quantization-quality comparisons, and broader framework parity remain separate gates. The isolated reference packages did not change normal toolkit dependencies or download new model weights. Existing installed binaries, CPU tools, and canonical payloads/catalogs remain preserved; the old LTX GEMM crash investigation remains deferred.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].
