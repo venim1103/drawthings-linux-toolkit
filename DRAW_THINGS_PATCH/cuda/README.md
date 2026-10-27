@@ -95,6 +95,14 @@ The same native candidate now passes a fresh-process Base repeat with identical 
 
 These are bounded prompt-following observations, not universal quality or cross-framework equivalence. Official packed 4-bit S, other resolutions, backward behavior, and promotion remain separate gates.
 
+### Official 4-bit S Numerical And Image Gates: October 27
+
+Official SFT `i4x` at the pinned revision passes separate two-step and 50-step image/stream gates; the full image visibly follows the same teapot scene as q8p. The actual metadata inventory contains 308 Q4_K tensors with the Hadamard-256 modifier, eight retained q8p tensors, 199 ezm7 tensors and nine raw tensors. It is not a renamed palettized q4p file. All private model hashes remain unchanged.
+
+`--execute-packed-gemm` now includes Q4_K both plain and with the **regular normalized H256** used by the official artifact. Its independent CPU activation reference uses the pinned H4-based convention, not a Sylvester/Walsh transform; rotated activations are quantized per row for the packed expectation, while the separate dense-GPU control remains unquantized. Q5_K/Q6_K coverage stays intact. The linked report `output/upgrades/native-backends-qwen35-q4k-h256.json` and all **67 CUDA-enabled tests** pass.
+
+The i4x denoiser uses about 44.1% less disk space, but this offloaded run has the same observed 2,305 MiB whole-device peak as q8p. A single matched image supports this profile, not universal quality equivalence, performance certification, custom quantization, or default promotion. Exact hashes, configs, telemetry caveats and reproduction are in the upgrade/MOSS plan. Other resolutions remain the next gate.
+
 ## Coverage And Limits
 
 ### Complete MOSS Block Capture
@@ -122,7 +130,7 @@ The private trace is about 1.02 GB and was bounded to 64 MiB per tensor and 2 Gi
 	--report output/upgrades/moss-image-base-add235e9/text-attention-parity.json
 ```
 
-Real MOSS captures pass text projection, text attention/log-sum-exp, rotary multiplication, and FP32 timestep projection checks. The latter's loaded weights and bias match the checkpoint exactly. `--execute-packed-gemm` additionally checks nonuniform Q5_K/Q6_K weights and activations against native CPU decoding, with a separate same-weight dense GPU control. For more than four rows, the native packed fast path intentionally quantizes activations to int8; its CPU expectation explicitly models that rounding, while the dense control uses unquantized activations. A constant-row-only fixture would miss this distinction. The combined CUDA-enabled suite now passes **60 tests**.
+Real MOSS captures pass text projection, text attention/log-sum-exp, rotary multiplication, and FP32 timestep projection checks. The latter's loaded weights and bias match the checkpoint exactly. `--execute-packed-gemm` additionally checks nonuniform Q4_K/Q5_K/Q6_K weights and activations against native CPU decoding, including the regular-H256 Q4_K variant, with a separate same-weight dense GPU control. For more than four rows, the native packed fast path intentionally quantizes activations to int8; its CPU expectation explicitly models that rounding in the appropriate activation space, while the dense control uses unquantized activations. A constant-row-only fixture would miss this distinction. The combined CUDA-enabled suite passes **67 tests**.
 
 A 50-step CFG-1 diagnostic also returns a finite but unrelated image, so the special negative branch is not the sole cause of the quality failure. A debugger-only dense-fallback A/B produces non-finite encoder conditioning and was rejected, not promoted. The on-disk candidate stays `920bf727...`; neither experiment changes model files or runtime defaults. Quality remains unaccepted.
 
@@ -133,4 +141,4 @@ A 50-step CFG-1 diagnostic also returns a finite but unrelated image, so the spe
 
 On the RTX A3000/SM86, 60 RMSNorm and 108 gated-delta numerical cases passed, plus invalid/empty contract tests. Observed maximum errors were approximately `9.54e-7` for RMSNorm, `4.47e-8` for FP32 gated-delta state, and `6.10e-5` for gated-delta output including reduced-precision rounding. FP32 checks use absolute tolerance `2e-6` and relative tolerance `2e-5`; reduced-precision output checks use separately declared tolerances in the tests.
 
-These results establish tested operator correctness, linked-server integration, complete block-0 comparison, exact Base repeatability for one fixed profile, and finite prompt-following Base/SFT q8p images. Complete cross-framework model parity, broader prompt/resolution/codec/layout coverage, and production readiness remain separate gates.
+These results establish tested operator correctness, linked-server integration, complete block-0 comparison, exact Base repeatability for one fixed profile, and finite prompt-following Base/SFT q8p and official SFT 4-bit S images. Complete cross-framework model parity, broader prompt/resolution/codec/layout coverage, and production readiness remain separate gates.

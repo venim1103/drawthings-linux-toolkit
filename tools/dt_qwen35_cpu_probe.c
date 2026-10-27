@@ -340,18 +340,41 @@ int dt_probe_native_embedding_execution(void* allocate_tensor, void* release_ten
   return 0;
 }
 
+static float dt_probe_float_value(const unsigned char* data, const int datatype, const int element);
+
+static void dt_probe_regular_hadamard_256(float* values)
+{
+  for (int stride = 1; stride < 256; stride *= 4)
+    for (int block = 0; block < 256; block += stride * 4)
+      for (int offset = 0; offset < stride; offset++)
+      {
+        float* group = values + block + offset;
+        const float first = group[0], second = group[stride];
+        const float third = group[stride * 2], fourth = group[stride * 3];
+        group[0] = first + second + third - fourth;
+        group[stride] = first + second - third + fourth;
+        group[stride * 2] = first - second + third + fourth;
+        group[stride * 3] = -first + second + third + fourth;
+      }
+  for (int element = 0; element < 256; element++)
+    values[element] *= 0.0625f;
+}
+
 int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, void* execute_command,
   void* quantize, void* dequantize)
 {
   typedef ccv_nnc_tensor_t* (*allocate_fn)(void*, ccv_nnc_tensor_param_t, int);
   typedef int (*execute_fn)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
     ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*);
-  const int formats[] = {CCV_NNC_QX_8I_ROWWISE_Q5_K, CCV_NNC_QX_8I_ROWWISE_Q6_K};
+  const int formats[] = {CCV_NNC_QX_8I_ROWWISE_Q4_K,
+    CCV_NNC_QX_8I_ROWWISE_Q4_K | CCV_NNC_QX_8I_ROWWISE_HADAMARD_256,
+    CCV_NNC_QX_8I_ROWWISE_Q5_K, CCV_NNC_QX_8I_ROWWISE_Q6_K};
   const uint16_t levels[] = {0x3400, 0x3800, 0x3a00, 0x3c00, 0xbc00, 0xb800, 0x4000, 0x4400};
   const float activation_values[] = {0.25f, 0.5f, 0.75f, 1, -1, -0.5f, 2, 4};
-  for (int format_index = 0; format_index < 2; format_index++)
+  for (int format_index = 0; format_index < (int)(sizeof(formats) / sizeof(formats[0])); format_index++)
   {
-    uint16_t dense[32 * 256], reference[32 * 256], activations[16 * 256], output[16 * 32], dense_output[16 * 32];
+    uint16_t dense[32 * 256], reference[32 * 256], packed_reference[32 * 256];
+    uint16_t activations[16 * 256], output[16 * 32], dense_output[16 * 32];
     unsigned char packed[8192] = {0};
     for (int index = 0; index < 32 * 256; index++)
       dense[index] = levels[((index / 256) + (index % 256) / 32 + index % 7) % 8];
@@ -364,6 +387,9 @@ int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, voi
     if (!packed_size || packed_size > sizeof(packed)) return -50;
     ((void (*)(const void*, int, int, size_t, size_t, int, void*, size_t))dequantize)(packed,
       CCV_16F, CCV_TENSOR_CPU_MEMORY, packed_size, 256, formats[format_index], reference, 32 * 256);
+    ((void (*)(const void*, int, int, size_t, size_t, int, void*, size_t))dequantize)(packed,
+      CCV_16F, CCV_TENSOR_CPU_MEMORY, packed_size, 256,
+      formats[format_index] & ~CCV_NNC_QX_8I_ROWWISE_HADAMARD_256, packed_reference, 32 * 256);
     ccv_nnc_tensor_t host[3] = {0};
     ccv_nnc_tensor_t* host_pointers[] = {host, host + 1, host + 2};
     ccv_nnc_tensor_t* device[3] = {0};
@@ -408,19 +434,26 @@ int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, voi
     }
     if (!status)
       for (int row = 0; row < 16; row++)
+      {
+        float packed_activations[256];
+        for (int reduction = 0; reduction < 256; reduction++)
+          packed_activations[reduction] = activation_values[(row + reduction / 16) % 8];
+        if (formats[format_index] & CCV_NNC_QX_8I_ROWWISE_HADAMARD_256)
+          dt_probe_regular_hadamard_256(packed_activations);
+        float maximum_activation = 0;
+        for (int reduction = 0; reduction < 256; reduction++)
+          maximum_activation = fmaxf(maximum_activation, fabsf(packed_activations[reduction]));
         for (int column = 0; column < 32; column++)
         {
           float expected = 0;
           float expected_dense = 0;
           for (int reduction = 0; reduction < 256; reduction++)
           {
-            const uint16_t bits = reference[column * 256 + reduction];
-            const int exponent = (bits >> 10) & 31;
-            const float value = exponent ? ldexpf((bits & 1023) + 1024, exponent - 25) : ldexpf(bits & 1023, -24);
             const float activation = activation_values[(row + reduction / 16) % 8];
-            const float weight = (bits & 0x8000) ? -value : value;
+            const float weight = dt_probe_float_value((const unsigned char*)reference, CCV_16F, column * 256 + reduction);
+            const float packed_weight = dt_probe_float_value((const unsigned char*)packed_reference, CCV_16F, column * 256 + reduction);
             expected_dense += weight * activation;
-            expected += weight * nearbyintf(activation * (127.0f / 4)) * (4.0f / 127);
+            expected += packed_weight * nearbyintf(packed_activations[reduction] * (127.0f / maximum_activation)) * (maximum_activation / 127);
           }
           const uint16_t bits = output[row * 32 + column];
           const int exponent = (bits >> 10) & 31;
@@ -430,7 +463,7 @@ int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, voi
           const int control_exponent = (control_bits >> 10) & 31;
           const float control_magnitude = control_exponent ? ldexpf((control_bits & 1023) + 1024, control_exponent - 25) : ldexpf(control_bits & 1023, -24);
           const float control = control_bits & 0x8000 ? -control_magnitude : control_magnitude;
-          if (exponent == 31 || control_exponent == 31 ||
+            if (exponent == 31 || control_exponent == 31 || !isfinite(expected) || !isfinite(expected_dense) ||
               fabsf(actual - expected) > 0.003f * fmaxf(1, fabsf(expected)) ||
               fabsf(control - expected_dense) > 0.003f * fmaxf(1, fabsf(expected_dense)))
           {
@@ -440,6 +473,7 @@ int dt_probe_native_packed_gemm(void* allocate_tensor, void* release_tensor, voi
             break;
           }
         }
+      }
     for (int index = 0; index < 3; index++)
       if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
     if (status) return status;

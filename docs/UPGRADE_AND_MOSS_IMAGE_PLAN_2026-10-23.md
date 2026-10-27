@@ -612,6 +612,18 @@ Short/full telemetry spans about 95/132 seconds including startup, with sampled 
 
 Next gate: independently verify and test official SFT `i4x` (4-bit S) rather than assuming q8p acceptance transfers to a packed codec. Its pinned artifact is 2,952,435,712 bytes with SHA-256 `7dc38a503051fdfcdd78bb7d14d905aa9a3a915c949a23f0921ec974c8d2c985`; no custom i4x quantization or default installation is implied.
 
+### M1 Official SFT 4-bit S: October 27
+
+The separately gated official `moss_image_sft_i4x.ckpt` above was downloaded into `dt-models`, size/hash-verified, and independently copied into the private SFT model directory. The unchanged native candidate passes both two-step and standard 50-step CFG-3/shift-5/seed-4242 512x512 runs with one finite final image, zero audio, complete stream/chunks and post-Echo. The full image visibly follows the orange-teapot/table/plant/window prompt and is close to q8p, with differences in shape, reflections, and framing. Evidence: `output/q6p_canary_moss_sft_i4x_scaled_rmsnorm_{2steps,50steps}_20261027`; full config SHA-256 `675b65a7d1f5c418125388a13de798a101276ac8da23fa5ff16b817392762654`. Reproduce with the preceding SFT private-directory recipe, changing only `--model moss_image_sft_i4x.ckpt`.
+
+A read-only metadata inventory, not an encoded-weight health scan, verifies the actual variants. Both denoisers contain 524 tensors. The i4x store has **308 Q4_K/Hadamard-256** tensors (`0x118a1eab`: external marker plus Hadamard modifier plus Q4_K identifier), eight retained q8p tensors, 199 ezm7 tensors and nine raw F32/F16 tensors. The q8p store has 316 q8p tensors and the same remaining groups. Identifier meanings agree with the pinned s4nnc store. Detailed counts/examples: `output/upgrades/moss-image-sft-55d7bdb2/q8p-i4x-codec-inventory.json`. Public encoded-codec readers remain fail-closed; metadata inspection does not add a general decoder.
+
+The native packed-GEMM gate now numerically covers plain Q4_K and the actual **regular H256** Q4_K variant, as well as Q5_K/Q6_K. Regular H256 uses the pinned H4-based convention and normalization, not Sylvester/Walsh ordering. Its CPU expectation models activation quantization in rotated space; a separate dense-GPU control uses inverse-rotated decoded weights and unquantized activations. All linked native execution gates pass in `output/upgrades/native-backends-qwen35-q4k-h256.json`; the combined CUDA-enabled suite passes **67 tests**. All four private SFT payload hashes remain unchanged afterward.
+
+Short/full i4x telemetry spans about 58/102 seconds including startup, sampled whole-device peak 2,305 MiB and maximum temperatures 58/65 C. Four short-run utilization samples are unavailable; memory/temperature samples and all full-run readings are complete. The i4x denoiser is about **44.1% smaller on disk**, but observed end-to-end peak device memory is unchanged from q8p with this CPU-offload profile and shared Qwen encoder. The durations are individual observations, not a controlled speed benchmark.
+
+This establishes official SFT 4-bit S inference for one tested subject/profile, not broad quantization-quality equivalence, custom i4x generation, other models/layouts, or promotion. Next: non-square and recommended-resolution coverage using the same private inputs and unchanged candidate.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].

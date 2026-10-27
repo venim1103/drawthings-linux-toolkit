@@ -975,7 +975,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_backends.add_argument("--execute-qwen", action="store_true", help="Run linked-runtime CUDA operators and compare with native CPU values")
     p_backends.add_argument("--execute-sdpa", action="store_true", help="Check empty SDPA contracts and a nonempty grouped FP16 CUDA operation")
     p_backends.add_argument("--execute-embedding", action="store_true", help="Validate packed Q5_K/Q6_K row lookup across F32/F16/BF16")
-    p_backends.add_argument("--execute-packed-gemm", action="store_true", help="Compare packed Q5_K/Q6_K FP16 matrix multiplication with native CPU decoding")
+    p_backends.add_argument("--execute-packed-gemm", action="store_true", help="Compare packed Q4_K/Q5_K/Q6_K FP16 GEMM, including Q4_K Hadamard-256, with native CPU decoding")
     p_backends.add_argument("--execute-scaled-rmsnorm", action="store_true", help="Verify non-affine scaled RMSNorm used by Qwen query/key normalization")
 
     p_fix = sub.add_parser(
