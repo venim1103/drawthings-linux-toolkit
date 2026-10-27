@@ -600,6 +600,18 @@ bash tools/run_q6p_canary_once.sh \
 
 The canary's automatic timestamp tag avoids overwriting the verification runs above. It starts an explicitly selected local candidate only for the test and cleans it up afterward; it does not install or promote a default server.
 
+### M1 SFT q8p Bring-Up: October 27
+
+Official `drawthingsai/MOSS-Image-SFT` revision `55d7bdb21604cba9ff35795b6b0e163f0d51802a` supplied `moss_image_sft_q8p.ckpt`: 5,283,102,720 bytes, SHA-256 `e5631ac16e2e0c2f034ce1ff4ad2afbe677cb16597a05ec841aa9338668e45ae`. The pinned Hub metadata and native model-zoo hash agree. Only this missing denoiser was downloaded into `dt-models`; its Qwen/VAE companions exactly match the Base payloads already present. The source is public, ungated, Apache-2.0.
+
+All three canonical files were hash-verified and copied into `output/upgrades/moss-image-sft-55d7bdb2/models`. Each private copy is a writable regular file with link count one and an identity distinct from its canonical source; there are no model hardlinks or symlinks. `source.sha256` and `model-copy-verification.json` record provenance. All three private hashes still match after inference. No active catalog was edited.
+
+On the unchanged `1d27f8d...` candidate, both the two-step contract check and standard 50-step CFG-3/shift-5/seed-4242 512x512 SFT run pass: one finite final image, zero audio, complete stream/chunks, successful post-Echo. The full render visibly depicts the requested orange ceramic teapot, white table, green plant, and bright window light. Evidence is under `output/q6p_canary_moss_sft_q8p_scaled_rmsnorm_{2steps,50steps}_20261027`; full config SHA-256 is `83664eee5f3df2039a55bbea6cd553c1ea528e32ae150600b6e07bcb8e2b1359`.
+
+Short/full telemetry spans about 95/132 seconds including startup, with sampled whole-device peak 2,305 MiB for both and maximum temperatures 58/65 C. One short-run utilization sample is unavailable; memory/temperature samples and all full-run readings are complete. This is SFT q8p bring-up on one subject/profile, not universal quality, other resolutions/codecs, source-conversion parity, or default promotion. The preceding reproduction command also works for SFT by setting `models="$PWD/output/upgrades/moss-image-sft-55d7bdb2/models"` and selecting `--model moss_image_sft_q8p.ckpt`.
+
+Next gate: independently verify and test official SFT `i4x` (4-bit S) rather than assuming q8p acceptance transfers to a packed codec. Its pinned artifact is 2,952,435,712 bytes with SHA-256 `7dc38a503051fdfcdd78bb7d14d905aa9a3a915c949a23f0921ec974c8d2c985`; no custom i4x quantization or default installation is implied.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].

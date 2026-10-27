@@ -89,6 +89,12 @@ Both standard private canaries pass: two steps and the original 50-step CFG-3/sh
 
 The isolated offline Transformers 5.3.0 reference is installed only under the private output tree, with no change to normal toolkit imports and no new weights downloaded. A pre-fix full-attention-layer comparison produced finite outputs with roughly 2.7% RMS difference from FP32 reference, or 1.3% when native activation quantization was modelled. This did not expose the later-discovered unsupported recurrent normalization. The main lesson is to check operation return statuses and complete recurrent paths, not treat finite early primitives as encoder certification. Repeatability, other prompts/resolutions, SFT, backward behavior, and default promotion remain separate gates.
 
+### Base Repeatability And SFT q8p Bring-Up: October 27
+
+The same native candidate now passes a fresh-process Base repeat with identical config, raw final tensor bytes, decoded values, and PNG, plus a distinct prompt/seed depicting a blue vase, three white daisies, and a red book. Separately pinned official SFT q8p (`55d7bdb2...`, denoiser SHA-256 `e5631ac1...`) passes two-step and standard 50-step image/stream gates using independent writable model copies; the full image visibly matches the orange-teapot prompt. Its Qwen/VAE companions are byte-identical to Base's, and all private payload hashes remain unchanged afterward. No native patch or default/runtime/catalog change was needed for SFT. Exact provenance, configs, telemetry, artifact paths, and reproduction instructions are in the [upgrade/MOSS plan](../../docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md).
+
+These are bounded prompt-following observations, not universal quality or cross-framework equivalence. Official packed 4-bit S, other resolutions, backward behavior, and promotion remain separate gates.
+
 ## Coverage And Limits
 
 ### Complete MOSS Block Capture
@@ -127,4 +133,4 @@ A 50-step CFG-1 diagnostic also returns a finite but unrelated image, so the spe
 
 On the RTX A3000/SM86, 60 RMSNorm and 108 gated-delta numerical cases passed, plus invalid/empty contract tests. Observed maximum errors were approximately `9.54e-7` for RMSNorm, `4.47e-8` for FP32 gated-delta state, and `6.10e-5` for gated-delta output including reduced-precision rounding. FP32 checks use absolute tolerance `2e-6` and relative tolerance `2e-5`; reduced-precision output checks use separately declared tolerances in the tests.
 
-These results establish tested operator correctness, linked-server integration, complete block-0 comparison, and one finite prompt-following full-profile MOSS Base image. Complete cross-framework model parity, repeatability, broader prompt/model/codec/layout coverage, and production readiness remain separate gates.
+These results establish tested operator correctness, linked-server integration, complete block-0 comparison, exact Base repeatability for one fixed profile, and finite prompt-following Base/SFT q8p images. Complete cross-framework model parity, broader prompt/resolution/codec/layout coverage, and production readiness remain separate gates.
