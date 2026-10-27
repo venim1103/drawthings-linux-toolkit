@@ -127,6 +127,14 @@ int dt_probe_native_tensor_dump(const void* tensor_pointer, void* synchronize, v
   return status;
 }
 
+int dt_probe_native_is_final_flow_step(const void* command_pointer)
+{
+  if (!command_pointer) return 0;
+  const ccv_nnc_cmd_t* command = command_pointer;
+  return command->cmd == CCV_NNC_ADD_FORWARD && command->info.blas.a[0] == 1 &&
+    command->info.blas.a[1] == -1;
+}
+
 int dt_probe_native_sdpa_parameters(const void* command_pointer)
 {
   const ccv_nnc_cmd_t* command = command_pointer;

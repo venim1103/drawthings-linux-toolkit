@@ -636,6 +636,32 @@ class NativeCaptureTests(unittest.TestCase):
             self.assertIn("spatial_periodicity_2x2", grid_report)
             self.assertGreater(grid_report["spatial_periodicity_2x2"]["checkerboard_ratio_h"], 100.0)
 
+    def test_inspect_capture_checks_all_batches_and_zero_tokens(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "batch"
+            values = np.array([[[1, 0], [0, 1], [1, 1]], [[2, 2], [2, 2], [0, 0]]], dtype=np.float32)
+            self.write_capture(prefix, "input_0", values)
+            report = inspect_capture_tensor(prefix.with_name("batch_input_0.bin"))
+            sequence = report["sequence_diagnostics"]
+            self.assertEqual(sequence["batches"], 2)
+            self.assertEqual(sequence["zero_norm_tokens"], 1)
+            self.assertEqual(len(sequence["per_batch"]), 2)
+            self.assertAlmostEqual(sequence["per_batch"][1]["adjacent_token_cosine_mean"], 1)
+            self.assertIn("channel_statistics", report)
+
+    def test_inspect_capture_does_not_label_nchw_as_spatial_nhwc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "layout"
+            self.write_capture(prefix, "input_0", np.ones((1, 4, 5, 6)))
+            path = prefix.with_name("layout_input_0.bin")
+            blob = bytearray(path.read_bytes())
+            struct.pack_into("<I", blob, 8, 1)
+            path.write_bytes(blob)
+            report = inspect_capture_tensor(path)
+            self.assertNotIn("spatial_periodicity_2x2", report)
+            self.assertEqual(report["channel_statistics"]["axis"], 1)
+            self.assertEqual(report["channel_statistics"]["channels"], 4)
+
 
 class NativeQwenReferenceTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("DT_RUN_CUDA_TESTS") == "1", "Set DT_RUN_CUDA_TESTS=1 for native CUDA execution")

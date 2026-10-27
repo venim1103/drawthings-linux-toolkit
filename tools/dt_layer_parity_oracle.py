@@ -570,25 +570,55 @@ def inspect_capture_tensor(path: Path) -> Dict[str, Any]:
         "zero_fraction": float(np.mean(flat == 0.0)),
     }
 
-    # If 2D/3D sequence-like [..., T, C], compute adjacent token cosine similarity to detect token collapse
+    if values.ndim >= 2:
+        channel_axis = 1 if header.tensor_format == 1 and values.ndim == 4 else values.ndim - 1
+        channels = np.moveaxis(values, channel_axis, -1).reshape(-1, values.shape[channel_axis])
+        channel_means = channels.mean(axis=0)
+        channel_stds = channels.std(axis=0)
+        report["channel_statistics"] = {
+            "axis": channel_axis,
+            "channels": int(values.shape[channel_axis]),
+            "mean_min": float(channel_means.min()),
+            "mean_max": float(channel_means.max()),
+            "std_min": float(channel_stds.min()),
+            "std_max": float(channel_stds.max()),
+            "constant_channels": int(np.count_nonzero(channel_stds <= 1e-12)),
+        }
+
     if values.ndim in (2, 3) and values.shape[-2] >= 2 and values.shape[-1] >= 2:
-        seq = values.reshape(-1, values.shape[-2], values.shape[-1])[0]
+        seq = values.reshape(-1, values.shape[-2], values.shape[-1])
         norms = np.linalg.norm(seq, axis=-1)
         valid = norms > 1e-12
-        if np.all(valid):
-            normalized = seq / norms[:, None]
-            adj_cos = np.sum(normalized[:-1] * normalized[1:], axis=-1)
-            report["sequence_diagnostics"] = {
-                "tokens": int(seq.shape[0]),
-                "channels": int(seq.shape[1]),
-                "token_norm_min": float(norms.min()),
-                "token_norm_max": float(norms.max()),
-                "adjacent_token_cosine_mean": float(adj_cos.mean()),
-                "adjacent_token_cosine_max": float(adj_cos.max()),
-            }
+        normalized = np.divide(seq, norms[..., None], out=np.zeros_like(seq), where=valid[..., None])
+        adj_cos = np.einsum("btc,btc->bt", normalized[:, :-1], normalized[:, 1:])
+        valid_pairs = valid[:, :-1] & valid[:, 1:]
+        valid_cosines = adj_cos[valid_pairs]
+        batches = []
+        for index in range(min(seq.shape[0], 64)):
+            batch_cosines = adj_cos[index][valid_pairs[index]]
+            batches.append({
+                "batch": index,
+                "zero_norm_tokens": int(np.count_nonzero(~valid[index])),
+                "token_norm_min": float(norms[index].min()),
+                "token_norm_max": float(norms[index].max()),
+                "adjacent_token_cosine_mean": float(batch_cosines.mean()) if batch_cosines.size else None,
+                "adjacent_token_cosine_max": float(batch_cosines.max()) if batch_cosines.size else None,
+            })
+        report["sequence_diagnostics"] = {
+            "batches": int(seq.shape[0]),
+            "tokens": int(seq.shape[1]),
+            "channels": int(seq.shape[2]),
+            "zero_norm_tokens": int(np.count_nonzero(~valid)),
+            "valid_adjacent_pairs": int(valid_cosines.size),
+            "token_norm_min": float(norms.min()),
+            "token_norm_max": float(norms.max()),
+            "adjacent_token_cosine_mean": float(valid_cosines.mean()) if valid_cosines.size else None,
+            "adjacent_token_cosine_max": float(valid_cosines.max()) if valid_cosines.size else None,
+            "per_batch": batches,
+            "per_batch_truncated": seq.shape[0] > len(batches),
+        }
 
-    # If 4D spatial NHWC [B, H, W, C] with H, W >= 4, check 2x2 checkerboard/unpatchify periodicity
-    if values.ndim == 4 and values.shape[1] >= 4 and values.shape[2] >= 4:
+    if header.tensor_format == 2 and values.ndim == 4 and values.shape[1] >= 4 and values.shape[2] >= 4:
         h_adj = float(np.mean(np.abs(values[:, 1:, :, :] - values[:, :-1, :, :])))
         w_adj = float(np.mean(np.abs(values[:, :, 1:, :] - values[:, :, :-1, :])))
         h_stride2 = float(np.mean(np.abs(values[:, 2:, :, :] - values[:, :-2, :, :])))
@@ -600,6 +630,8 @@ def inspect_capture_tensor(path: Path) -> Dict[str, Any]:
             "width_diff_stride2": w_stride2,
             "checkerboard_ratio_h": h_adj / max(h_stride2, 1e-12),
             "checkerboard_ratio_w": w_adj / max(w_stride2, 1e-12),
+            "axis_assumption": "NHWC spatial axes 1 and 2",
+            "interpretation": "Periodicity is not proof of a layout error",
         }
 
     return report

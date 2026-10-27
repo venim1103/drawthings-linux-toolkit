@@ -4,6 +4,22 @@
 **Baseline Reviewed:** `venim1103/drawthings-linux-toolkit` (`main` across `cf8baab..acd9b26`)  
 **Active Isolated CUDA Candidate:** `920bf727c5a27a7d1ad90735735c74b7edfbbc1459598cea018f71e2d713dd96`
 
+## Follow-Up Verification: October 27
+
+This review's capture-first plan is useful, but its original architecture counts and some conclusions were too strong. The pinned Qwen3.5-9B configuration has **32 layers, 248,320 vocabulary entries, and 4,096 hidden channels**. Full F16 embedding decode therefore needs 2,034,237,440 bytes, about **1.89 GiB**, rather than the original 1.24 GiB estimate. Sixty tests were the combined suite, not all tests in one file, and local operator checks do not close every original hybrid-tooling or full-model acceptance issue.
+
+The incoming `inspect-capture` implementation was retained and corrected: sequence diagnostics now cover every batch and report zero-norm tokens, channel summaries respect NCHW versus NHWC, and spatial periodicity is explicitly heuristic rather than proof of a reshape bug. Two new regressions first reproduced the batch/layout blind spots, then passed after repair. On the existing packed conditioning capture `[1,42,4096]`, there are no zero-norm tokens or constant channels; mean adjacent-token cosine is about 0.113. This does not certify full Qwen hidden-state parity.
+
+The review's fast hypotheses were tested at the owning boundaries:
+
+- **Periodicity:** the saved late `[1,64,64,32]` latent has stride-1/stride-2 ratios about 0.955 vertically and 0.851 horizontally, not a strong alternating 2x2 signature. Early values are about 1.582/1.476. These statistics alone neither establish nor exclude every layout error.
+- **Raw timestep:** an actual pre-`time_embedding.0` capture `[2,256]` matches sinusoidal times `[1000, 833.333...]` for the two-step shifted profile, within F16 rounding (maximum error 0.0004883); normalized `[1,0.8333...]` has RMS error about 0.893. The second projection's input is already an MLP hidden state and cannot directly identify the original timestep range.
+- **Sampler/VAE boundary:** paired one-step CFG-1 captures show an exact `x - prediction` sampler update. The sampler latent is F16 NHWC; the first VAE convolution receives F16 NCHW. After aligning those layouts, the actual VAE input matches the configured 128-channel F16 pack/scale/unpack computation exactly. This is a boundary check on a diagnostic replay, not proof of the complete trained denoiser or VAE decoder.
+
+No native reshape, timestep, sampler, or precision patch was justified by these results. The standard profile, model payloads, and on-disk candidate remain unchanged. The stronger next priorities are complete Qwen hidden-state/reference parity and full MOSS block-0 comparison, including checkpoint modulation/FFN mapping. The old LTX GEMM crash investigation remains deferred.
+
+Raw evidence and JSON reports are under `output/upgrades/moss-image-base-add235e9`: `review-conditioning-inspection.json`, `review-early-latent-inspection.json`, `review-late-latent-inspection.json`, `review-raw-timestep-comparison.json`, `review-latent-vae-affine-comparison.json`, and `review-vae-configured-normalization-comparison.json`. Failed/unmatched debugger probes were excluded from evidence and their owned inferiors cleaned up; the private Linux probe now requests parent-death cleanup.
+
 ---
 
 ## 1. Executive Summary
@@ -11,7 +27,7 @@
 Across the seven commits from `cf8baab` to `acd9b26`, the project completed two major engineering milestones:
 
 1. **Full Hardening of the Hybrid Tooling Suite (`560bc13`, `19d9bbd`):**
-   Every defect identified in `docs/WEELLM_HYBRID_REVIEW_2026-10-26.md` (`F01`–`F17`) was resolved and locked down with 60 unit, native-CPU, and CUDA-enabled tests in `tools/test_dt_weellm.py`:
+  Many defects identified in `docs/WEELLM_HYBRID_REVIEW_2026-10-26.md` (`F01`–`F17`) were addressed with 60 combined unit, native-CPU, and CUDA-enabled tests across the hybrid, configuration, and payload-validation suites. Full model/reference parity and broader acceptance gates remain open:
    * `contracts/moss_image.json` and `build_moss_image_contract()` were rebuilt from the pinned native `MOSSImage.swift` mapper, matching all **524** official target keys, shapes, and datatypes (`15df82ca64fb5a9469be36868e502f00fd0b0957aad242bb7af43aec9085931d`).
    * `DrawThingsCkptStore` (`tools/dt_weellm/sqlite_store.py`) now extracts codec identifiers from the upper 32 bits of `type`, validates external descriptors fail-closed, and implements native `tensor_splits` chunking (`format | (1 << 32)`), verified through CCV's `ccv_nnc_tensor_read` under LLDB.
    * `dt_direct_ckpt_builder.py`, `dt_layer_parity_oracle.py`, and `dt_lora_universal_bridge.py` work as standalone scripts outside the repository, validate JSON Schemas, check post-cast F16/BF16 finiteness, and stage all writes atomically.
@@ -41,7 +57,7 @@ Across the seven commits from `cf8baab` to `acd9b26`, the project completed two 
 
 ## 3. Code Audit Findings: Bugs, Subtle Risks & Optimization Opportunities
 
-### 3.1 `ccv_nnc_index_select_gpu_ref.cu`: 1.24 GiB Full-Table Workspace Decode vs. Row-Selective Decode
+### 3.1 `ccv_nnc_index_select_gpu_ref.cu`: 1.89 GiB Full-Table Workspace Decode vs. Row-Selective Decode
 In `DRAW_THINGS_PATCH/cuda/ccv/lib/nnc/cmd/index/gpu/ccv_nnc_index_select_gpu_ref.cu` (lines 73–78):
 ```cuda
 if (is_quantized)
@@ -52,8 +68,8 @@ if (is_quantized)
     a_data = (const unsigned char*)workspace;
 }
 ```
-* **Impact:** Correctness-wise, this is completely sound and passes `--execute-embedding`. However, for Qwen3.5's `[151936, 4096]` vocabulary table, `ccv_nnc_compat_qx_dense_data_size` allocates **$151,936 \times 4096 \times 2 = 1.24\text{ GiB}$** of GPU stream workspace and launches a full-table decode kernel just to extract $11\text{–}77$ prompt rows.
-* **Future Improvement (Post-M1):** Because `CCV_NNC_QX_8I_ROWWISE_Q5_K` and `Q6_K` are row-wise super-block formats (`256` elements per super-block, `16` super-blocks per `4096`-dim row) with an aligned per-row scale footer at the end of the buffer, a follow-up optimization can decode only the `b_rows` selected rows directly into `b`, reducing workspace from $1.24\text{ GiB}$ to $0\text{ B}$.
+* **Impact:** The tested cases pass `--execute-embedding`; this does not establish every codec/layout contract. For the pinned Qwen3.5-9B `[248320, 4096]` table, `ccv_nnc_compat_qx_dense_data_size` allocates **$248{,}320 \times 4096 \times 2 = 2{,}034{,}237{,}440$ bytes, approximately $1.89\text{ GiB}$**, and decodes the full table to extract a small set of prompt rows.
+* **Future Improvement (Post-M1):** Q5_K/Q6_K row-wise payloads have an aligned per-row scale footer. A row-selective decoder could avoid the full dense-table workspace. Its exact payload layout, precision, bounds, and row selection need independent tests; the existing full decode should remain the correctness control.
 
 ### 3.2 `ccv_nnc_index_select_gpu_ref.cu`: `CCV_16BF` Type Aliasing in `CCV_32S` vs `CCV_32F` Branches
 In `ccv_nnc_index_select_gpu_ref.cu` lines 85–86:
@@ -61,7 +77,7 @@ In `ccv_nnc_index_select_gpu_ref.cu` lines 85–86:
 * When `indices->info.datatype == CCV_32F` (interpolated float indices, lines 91–95), `CCV_16BF` properly uses `const __nv_bfloat16*` so arithmetic conversion `(float)a[...]` uses `__nv_bfloat16` rather than `__half`.
 
 ### 3.3 Diagnostic Tooling Enhancement: `inspect-capture` for Latent & Conditioning Tensors
-While `compare-capture` (`tools/dt_layer_parity_oracle.py`) verifies an operation's input-to-output math (`linear`, `rotary`, `sdpa`), diagnosing the "repeated green structure" also requires inspecting standalone captured tensors (such as the final 36-layer Qwen3.5 hidden states, the step-50 packed `[1, 32, 32, 128]` denoiser output, or the unpacked `[1, 64, 64, 32]` VAE latent) for:
+While `compare-capture` (`tools/dt_layer_parity_oracle.py`) verifies an operation's input-to-output math (`linear`, `rotary`, `sdpa`), diagnosing the "repeated green structure" also benefits from inspecting standalone captured tensors (such as the final 32-layer Qwen3.5 hidden states, the step-50 packed `[1, 32, 32, 128]` denoiser output, or the unpacked `[1, 64, 64, 32]` VAE latent) for:
 * Per-channel mean/std collapse or outlier spikes,
 * Token-to-token cosine similarity (detecting if all tokens collapsed to a constant vector), and
 * $2\times 2$ spatial block periodicity (detecting if `2x2` patch unpacking transposed spatial and channel axes, which directly produces a repeated $2\times 2$ grid artifact).
@@ -74,7 +90,7 @@ We have added the `inspect-capture` subcommand (`inspect_capture_tensor()`) to `
 
 Let us summarize what has been **proven working** versus where the remaining semantic/structural bug can hide:
 
-### What Is Proven Working (Ruled Out)
+### Locally Validated Boundaries (Not Full-Model Exclusions)
 1. **Qwen3.5 Token Embedding Lookup (`Q5_K`):** Verified exact against CPU decode (`--execute-embedding`).
 2. **Qwen3.5 `GatedDelta` & `RMSNormGated` Kernels:** Verified on SM86 across 168 test cases and verified finite on Layer 0 live calls.
 3. **MOSS `text_embedder.proj` (`4096 -> 3072`), First Text Refiner Attention, & Text 4-Axis Rotary:** Verified via `compare-capture` against CPU float64 math (`acd9b26`).
@@ -91,10 +107,10 @@ Let us summarize what has been **proven working** versus where the remaining sem
      .venv/bin/python tools/dt_layer_parity_oracle.py inspect-capture \
        --file output/upgrades/moss-image-base-add235e9/vae_input_capture.bin
      ```
-  2. Check `spatial_periodicity_2x2` in the report: if adjacent even/odd rows or columns have a large step jump compared to stride-2 neighbors, the $2\times 2$ unpack reshape order in `MOSSImage.swift` / `UNetProtocol.swift` does not match the checkpoint's `final_linear_video.weight` row ordering!
+  2. Check `spatial_periodicity_2x2` as a heuristic. Large parity jumps justify a controlled pre/post-unpack comparison; they do not by themselves prove that the reshape differs from the checkpoint's row ordering. The October 27 paired boundary check above passes.
 
-#### Suspect B: Full 36-Layer Qwen3.5 Output Drift (`Conv1d` / RoPE / Layer Index / Token Slicing)
-* **Symptom Match:** High. While Layer 0 `GatedDelta` and `RMSNormGated` are verified, Qwen3.5-9B runs 36 layers mixing linear attention (`Conv1d` causal depthwise convolution + `GatedDelta`) and full attention (every 4th layer with partial RoPE). Furthermore, `text_projection_capture_input_0.bin` captures the final Qwen3.5 output entering MOSS.
+#### Suspect B: Full 32-Layer Qwen3.5 Output Drift (`Conv1d` / RoPE / Layer Index / Token Slicing)
+* **Symptom Match:** High. While individual `GatedDelta` and `RMSNormGated` cases are verified, the pinned Qwen3.5-9B runs 32 layers mixing linear attention (`Conv1d` causal depthwise convolution + `GatedDelta`) and full attention (every 4th layer with partial RoPE). Furthermore, `text_projection_capture_input_0.bin` captures the final Qwen3.5 output entering MOSS.
 * **Fast Verification:**
   1. Run `inspect-capture` on the already-captured `text_projection_capture_input_0.bin`:
      ```bash
@@ -117,4 +133,4 @@ Let us summarize what has been **proven working** versus where the remaining sem
 #### Suspect D: Flow-Matching Timestep Scale (`condition_scale = 1000` vs `[0, 1]`) & Shift Formula
 * **Symptom Match:** Medium-High. If `time_embedding.0` sinusoidal embedding receives $t \in [0, 1]$ when it expects $t \in [0, 1000]$ (or vice-versa), or if the flow update step sign/scale mismatches, the trajectory fails to converge to the data manifold.
 * **Fast Verification:**
-  * Inspect the captured `time_projection_capture_input_0.bin` values across steps 0, 25, and 49 to confirm the sinusoidal frequencies span the expected $[0, 1000]$ timestep range of OpenMOSS's reference scheduler.
+  * Capture the sinusoidal input before `time_embedding.0`, or log the actual scalar timestep. `time_projection_capture_input_0.bin` is the input to the second MLP projection and is not the raw sinusoidal embedding. The October 27 raw-input capture above verifies the 1000-scale convention for the diagnostic profile.
