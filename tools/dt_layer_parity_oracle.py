@@ -42,8 +42,10 @@ from tools.dt_weellm.transforms import (
     DATATYPE_CODE_TO_NAME,
     DT_FLOAT32,
     apply_contract_rule_to_tensor,
+    bf16_bytes_to_f32,
     decode_dim_blob,
     encode_dim_blob,
+    f32_to_bf16_bytes,
     rotary_deinterleave,
     split_tensor_chunks,
 )
@@ -530,6 +532,215 @@ def compare_native_capture(prefix: Path, operation: str, atol: float, rtol: floa
             "atol": atol, "rtol": rtol, "scale": scale, "captures": captures, "comparisons": comparisons}
 
 
+def compare_moss_block_capture(directory: Path, atol: float = 0.01, rtol: float = 0.01) -> Dict[str, Any]:
+    if not all(math.isfinite(value) and value >= 0 for value in (atol, rtol)):
+        raise ValueError("Block tolerances must be finite and nonnegative")
+    directory = directory.resolve()
+    manifest_path = directory / "manifest.json"
+    if manifest_path.stat().st_size > 1024 * 1024:
+        raise ValueError("Block manifest exceeds the size limit")
+    manifest = json.loads(manifest_path.read_text())
+    operations = manifest.get("operations", [])
+    expected_names = ("RMSNORM MUL ADD DATATYPE_CONVERSION GEMM RMSNORM CMUL SCALAR_MUL "
+                      "GEMM RMSNORM CMUL GEMM SCALED_DOT_PRODUCT_ATTENTION GEMM DATATYPE_CONVERSION "
+                      "MUL ADD RMSNORM MUL ADD DATATYPE_CONVERSION GEMM GEMM TANH SIGMOID TANH "
+                      "MUL MUL GEMM DATATYPE_CONVERSION MUL ADD").split()
+    if manifest.get("complete") is not True or len(operations) != len(expected_names):
+        raise ValueError("Block reference requires a complete 32-operation capture")
+    files = set()
+    for ordinal, (operation, name) in enumerate(zip(operations, expected_names)):
+        if (operation.get("ordinal") != ordinal or operation.get("status") != 0
+                or operation.get("command", {}).get("name") != "CCV_NNC_" + name + "_FORWARD"):
+            raise ValueError("Unsupported or failed MOSS block topology")
+        if (name == "ADD" and operation["command"]["scalars"] != [1, 1]
+                or name == "MUL" and operation["command"]["scalars"] != [1, 0]
+                or name == "GEMM" and "input_2" in operation["tensors"]):
+            raise ValueError("Unsupported block affine or biased projection contract")
+            allowed_inputs = 3 if name == "SCALED_DOT_PRODUCT_ATTENTION" else 2 if name in ("RMSNORM", "MUL", "ADD", "GEMM", "CMUL") else 1
+            if (any(role.startswith("input_") and role not in {"input_" + str(index) for index in range(allowed_inputs)}
+                for role in operation["tensors"]) or "output_2" in operation["tensors"]):
+                raise ValueError("Unsupported optional block inputs or outputs")
+        files.update(info["file"] for info in operation["tensors"].values())
+    files.add(manifest["block_output"]["file"])
+    total_bytes = 0
+    for name in files:
+        path = (directory / name).resolve()
+        if not path.is_relative_to(directory) or not path.is_file() or path.stat().st_size > 64 * 1024 * 1024 + 68:
+            raise ValueError("Invalid block capture path or tensor size")
+        total_bytes += path.stat().st_size
+    if total_bytes > 2 * 1024 * 1024 * 1024:
+        raise ValueError("Block capture exceeds the 2 GiB total limit")
+    for operation in operations:
+        for info in operation["tensors"].values():
+            with (directory / info["file"]).open("rb") as stream:
+                header = _read_tensor_header(stream.read(68))
+            if list(header.dims) != info["shape"]:
+                raise ValueError("Block manifest shape differs from its tensor header")
+    captures = {}
+    checks = []
+
+    def load_file(name):
+        blob = (directory / name).read_bytes()
+        header = _read_tensor_header(blob)
+        if header.identifier or header.datatype not in (16384, 131072, 524288) or not header.dims:
+            raise ValueError("Block capture must contain raw floating-point tensors")
+        if struct.unpack("<12I", blob[20:68]) != header.dims + (0,) * (12 - len(header.dims)):
+            raise ValueError("Malformed block tensor dimension padding")
+        array = _tensor_to_numpy(blob, header, math.prod(header.dims)).reshape(header.dims).astype(np.float32)
+        if not np.isfinite(array).all():
+            raise ValueError("Non-finite block capture: " + name)
+        captures[name] = {"sha256": hashlib.sha256(blob).hexdigest(), "shape": list(header.dims), "datatype": header.datatype}
+        return array, header.datatype
+
+    def load(ordinal, role):
+        info = operations[ordinal]["tensors"][role]
+        array, _ = load_file(info["file"])
+        if list(array.shape) != info["shape"]:
+            raise ValueError("Block tensor metadata differs from capture shape")
+        return array
+
+    def rounded(ordinal, array):
+        name = operations[ordinal]["tensors"]["output_0"]["file"]
+        if name not in captures:
+            load_file(name)
+        datatype = captures[name]["datatype"]
+        if datatype == 131072:
+            array = array.astype(np.float16).astype(np.float32)
+        elif datatype == 524288:
+            array = bf16_bytes_to_f32(f32_to_bf16_bytes(array), array.shape)
+        if not np.isfinite(array).all():
+            raise ValueError("Non-finite whole-block reference")
+        return array
+
+    def check(name, ordinal, array):
+        actual = load(ordinal, "output_0")
+        if actual.size != array.size:
+            raise ValueError("Block output element count differs from reference")
+        actual = actual.reshape(array.shape)
+        difference = actual - array
+        relative_rms = float(np.sqrt(np.mean(difference.astype(np.float64) ** 2)) /
+                             max(np.sqrt(np.mean(actual.astype(np.float64) ** 2)), 1e-12))
+        checks.append({"name": name, "ordinal": ordinal, "max_absolute_error": float(np.max(np.abs(difference))),
+                       "mean_absolute_error": float(np.mean(np.abs(difference))), "relative_rms_error": relative_rms,
+                       "matches": bool(np.allclose(actual, array, atol=atol, rtol=rtol))})
+        return array
+
+    def norm(ordinal, array):
+        epsilon = operations[ordinal]["command"]["rms_epsilon"]
+        axes = operations[ordinal]["command"]["rms_axes"]
+        if epsilon <= 0 or operations[ordinal]["command"]["rms_axis_count"] != 1 or axes[0] != array.ndim - 1:
+            raise ValueError("Unsupported block normalization contract")
+        weight = load(ordinal, "input_1")
+        if weight.size != array.shape[-1] or weight.shape[-1] != array.shape[-1]:
+            raise ValueError("Block normalization weight must be one channel vector")
+        result = array / np.sqrt(np.mean(array ** 2, axis=-1, keepdims=True) + epsilon)
+        return rounded(ordinal, result * weight.reshape(-1))
+
+    def modulation(ordinal, channels):
+        value = load(ordinal, "input_1")
+        if value.size != channels or value.shape[-1] != channels:
+            raise ValueError("Block modulation must be one channel vector")
+        return value.reshape(1, 1, channels)
+
+    def linear(ordinal, array):
+        command = operations[ordinal]["command"]
+        weight = load(ordinal, "input_1")
+        if (weight.ndim != 2 or array.shape[-1] != weight.shape[1]
+                or command["transpose_a"] != [0, 0] or command["transpose_b"] != [0, 1]):
+            raise ValueError("Unsupported block linear contract")
+        return rounded(ordinal, array @ weight.T)
+
+    def rotate(ordinal, array):
+        rotation = load(ordinal, "input_1")
+        if np.broadcast_shapes(array.shape, rotation.shape) != array.shape:
+            raise ValueError("Block rotary tensor must broadcast to the attention shape")
+        result = np.empty_like(array)
+        result[..., 0::2] = array[..., 0::2] * rotation[..., 0::2] - array[..., 1::2] * rotation[..., 1::2]
+        result[..., 1::2] = array[..., 0::2] * rotation[..., 1::2] + array[..., 1::2] * rotation[..., 0::2]
+        return rounded(ordinal, result)
+
+    def cap_source(cap):
+        candidates = [item for item in operations if item["command"]["name"] == "CCV_NNC_TANH_FORWARD"
+                      and item["command"]["soft_cap"] == cap]
+        if len(candidates) != 1:
+            raise ValueError("Expected one soft-cap branch per FFN component")
+        operation = candidates[0]
+        source = operation["tensors"]["input_0"]["data"]
+        producers = [item for item in operations[:operation["ordinal"]]
+                     if item["command"]["name"] == "CCV_NNC_GEMM_FORWARD"
+                     and item["tensors"]["output_0"]["data"] == source]
+        if not producers:
+            raise ValueError("Soft-cap source projection is missing")
+        return producers[-1]["ordinal"], operation["ordinal"]
+
+    initial = load(0, "input_0")
+    head_shape = operations[5]["tensors"]["output_0"]["shape"]
+    if initial.ndim != 3 or len(head_shape) != 4 or head_shape[:2] != list(initial.shape[:2]):
+        raise ValueError("Invalid block batch/sequence geometry")
+    batch, tokens, channels = initial.shape
+    heads, head_dim = head_shape[2:]
+    if min(batch, tokens, heads, head_dim) < 1 or head_dim % 2 or heads * head_dim != channels:
+        raise ValueError("Invalid block attention geometry")
+    score_elements = batch * heads * tokens * tokens
+    work = batch * tokens * sum(math.prod(operation["tensors"]["input_1"]["shape"])
+               for operation in operations if operation["command"]["name"] == "CCV_NNC_GEMM_FORWARD")
+    if score_elements > 32_000_000 or work + 2 * score_elements * head_dim > 160_000_000_000:
+        raise ValueError("Block reference exceeds the CPU work budget")
+    hidden = check("norm1", 0, norm(0, initial))
+    hidden = check("attention_scale", 1, rounded(1, hidden * modulation(1, channels)))
+    hidden = check("attention_shift", 2, rounded(2, hidden + modulation(2, channels)))
+    hidden = rounded(3, hidden)
+    queries = linear(4, hidden).reshape(head_shape)
+    check("query_projection", 4, queries)
+    queries = check("query_norm", 5, norm(5, queries))
+    queries = check("query_rotary", 6, rotate(6, queries))
+    queries = check("query_scale", 7, rounded(7, queries * operations[7]["command"]["scalars"][0]))
+    keys = linear(8, hidden).reshape(head_shape)
+    check("key_projection", 8, keys)
+    keys = check("key_norm", 9, norm(9, keys))
+    keys = check("key_rotary", 10, rotate(10, keys))
+    values = linear(11, hidden).reshape(head_shape)
+    check("value_projection", 11, values)
+    scores = (queries.transpose(0, 2, 1, 3) @ keys.transpose(0, 2, 3, 1)) * operations[12]["command"]["attention_scale"]
+    scores -= scores.max(axis=-1, keepdims=True)
+    np.exp(scores, out=scores)
+    scores /= scores.sum(axis=-1, keepdims=True)
+    attention = rounded(12, (scores @ values.transpose(0, 2, 1, 3)).transpose(0, 2, 1, 3))
+    check("attention", 12, attention)
+    del scores
+    attention = check("attention_projection", 13, linear(13, attention.reshape(batch, tokens, channels)))
+    attention = rounded(14, attention)
+    attention = check("attention_gate", 15, rounded(15, attention * modulation(15, channels)))
+    residual = check("attention_residual", 16, rounded(16, initial + attention))
+    hidden = check("norm2", 17, norm(17, residual))
+    hidden = check("ffn_scale", 18, rounded(18, hidden * modulation(18, channels)))
+    hidden = check("ffn_shift", 19, rounded(19, hidden + modulation(19, channels)))
+    hidden = rounded(20, hidden)
+    gate_gemm, gate_cap = cap_source(4)
+    up_gemm, up_cap = cap_source(25)
+    if {gate_gemm, up_gemm} != {21, 22}:
+        raise ValueError("Unexpected FFN projection branches")
+    gate = check("ffn_gate_projection", gate_gemm, linear(gate_gemm, hidden))
+    up = check("ffn_up_projection", up_gemm, linear(up_gemm, hidden))
+    sigmoid = check("gate_sigmoid", 24, rounded(24, 1 / (1 + np.exp(-gate))))
+    gate = check("gate_tanh_cap", gate_cap, rounded(gate_cap, 4 * np.tanh(gate / 4)))
+    up = check("up_tanh_cap", up_cap, rounded(up_cap, 25 * np.tanh(up / 25)))
+    gated = check("situ_gate", 26, rounded(26, gate * sigmoid))
+    activated = check("situ_output", 27, rounded(27, gated * up))
+    down = check("ffn_down_projection", 28, linear(28, activated))
+    down = rounded(29, down)
+    down = check("ffn_gate", 30, rounded(30, down * modulation(30, channels)))
+    check("block_output", 31, rounded(31, residual + down))
+    boundary, _ = load_file(manifest["block_output"]["file"])
+    if not np.array_equal(boundary, load(31, "output_0")):
+        raise ValueError("Block exit differs from the next block input")
+    return {"result": "PASS" if all(item["matches"] for item in checks) else "FAIL",
+            "scope": "complete_block_formula_from_captured_boundary_and_runtime_parameters_not_full_model_parity",
+            "checkpoint_assignment_verified_by_this_command": False, "atol": atol, "rtol": rtol,
+            "initial_shape": list(initial.shape), "gate_gemm": gate_gemm, "up_gemm": up_gemm,
+            "block_relative_rms_error": checks[-1]["relative_rms_error"], "checks": checks, "captures": captures}
+
+
 def inspect_capture_tensor(path: Path) -> Dict[str, Any]:
     """Inspect a raw 68-byte-header native capture (.bin) for distribution, token similarity, and 2x2 grid artifacts."""
     resolved = path.expanduser().resolve()
@@ -735,6 +946,11 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="WeeLLM vs Draw Things Layer Parity Oracle")
     sub = parser.add_subparsers(dest="subcommand", required=True)
+    p_block = sub.add_parser("compare-moss-block", help="Propagate an independent CPU reference through a complete captured MOSS block")
+    p_block.add_argument("--capture-dir", required=True, type=Path)
+    p_block.add_argument("--atol", type=float, default=0.01)
+    p_block.add_argument("--rtol", type=float, default=0.01)
+    p_block.add_argument("--report", type=Path)
     p_capture = sub.add_parser("compare-capture", help="Compare captured native linear, rotary, or unmasked SDPA operations with CPU math")
     p_capture.add_argument("--prefix", required=True, type=Path)
     p_capture.add_argument("--operation", required=True, choices=("linear", "rotary", "sdpa"))
@@ -783,6 +999,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_cap_stat.add_argument("--report", type=Path)
 
     args = parser.parse_args(argv)
+    if args.subcommand == "compare-moss-block":
+        report = compare_moss_block_capture(args.capture_dir, args.atol, args.rtol)
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report, indent=2))
+        return 0 if report["result"] == "PASS" else 1
     if args.subcommand == "inspect-capture":
         report = inspect_capture_tensor(args.file)
         if args.report:

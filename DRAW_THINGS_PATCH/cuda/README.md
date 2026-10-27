@@ -79,6 +79,20 @@ Finite output is **not image-quality acceptance**. The 50-step result is a repea
 
 ## Coverage And Limits
 
+### Complete MOSS Block Capture
+
+`compare-moss-block --capture-dir <directory>` propagates an independent CPU calculation through the supported 32-operation captured MOSS block graph, starting from the original block input. It does not reset reference intermediates to native outputs. The command validates topology, status, tensor headers, paths, optional inputs, modulation shapes, and CPU work limits; reports contain per-stage errors and capture hashes. It is an executed-block arithmetic check, not full-model or source-checkpoint parity.
+
+```bash
+OPENBLAS_NUM_THREADS=16 .venv/bin/python tools/dt_layer_parity_oracle.py compare-moss-block \
+	--capture-dir output/upgrades/moss-image-base-add235e9/block0-trace-20261027 \
+	--report output/upgrades/moss-image-base-add235e9/block0-trace-20261027/oracle-block-reference.json
+```
+
+On the real `[1,1055,3072]` block-0 capture, all 28 checked stages pass `atol=0.01, rtol=0.01`; final relative RMS error is about `1.364e-4` (0.014%). The captured block exit exactly equals block 1's input. Separate read-only checks independently CPU-decode the named official checkpoint: all seven matrix weights and all four learned normalization vectors match runtime values exactly; the FFN up/gate roles agree, and all six modulation chunks match a CPU evaluation from timestep 1000 and named stored parameters. No runtime patch follows from this passing result. Tiny analytic, corrupted-output, incomplete-capture, unsafe-path, and non-finite tests bring the combined CUDA-enabled suite to **66 passing tests**.
+
+The private trace is about 1.02 GB and was bounded to 64 MiB per tensor and 2 GiB total. It includes typed command metadata, original tensor identities, decoded packed weights, and explicit inferior cleanup. The q8p CPU decoder is compiled from the pinned CCV source and independently checked against a known palette. The private checkpoint check also decodes only needed raw/ezm7 values with strict bounds; this does not add general ezm7 support to the public checkpoint reader.
+
 ### Captured Activation Checks
 
 `tools/dt_layer_parity_oracle.py compare-capture` compares bounded raw native captures with independent CPU linear, adjacent-pair rotary, or unmasked noncausal grouped-attention math. The prefix identifies `<prefix>_input_0.bin`, further inputs, and `<prefix>_output_0.bin`; optional attention output 1 is log-sum-exp. Reports record capture hashes, shapes, formats, datatypes, tolerances, and measured errors. Non-finite/malformed data, unsupported masked/projected attention, and excessive reference allocations fail explicitly. Capture scope is an individual operation, not full-model parity.

@@ -25,6 +25,7 @@ from tools.dt_keymap_compiler import (
 )
 from tools.dt_layer_parity_oracle import (
     compare_native_capture,
+    compare_moss_block_capture,
     inspect_capture_tensor,
     inspect_ckpt_health,
     reference_gated_delta_rule,
@@ -661,6 +662,119 @@ class NativeCaptureTests(unittest.TestCase):
             self.assertNotIn("spatial_periodicity_2x2", report)
             self.assertEqual(report["channel_statistics"]["axis"], 1)
             self.assertEqual(report["channel_statistics"]["channels"], 4)
+
+
+class MossBlockCaptureTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.directory = self.root / "block"
+        self.directory.mkdir()
+        self.operations = []
+        initial = np.arange(1, 9, dtype=np.float32).reshape(1, 2, 4) / 8
+        normalized = initial / np.sqrt(np.mean(initial ** 2, axis=-1, keepdims=True) + 1e-6)
+        zero = np.zeros_like(initial)
+        heads = zero.reshape(1, 2, 1, 4)
+        wide = np.zeros((1, 2, 8), dtype=np.float32)
+        ones = np.ones((1, 1, 4), dtype=np.float32)
+        zeros = np.zeros_like(ones)
+        square = np.zeros((4, 4), dtype=np.float32)
+        expansion = np.zeros((8, 4), dtype=np.float32)
+        rotation = np.array([1, 0, 1, 0], dtype=np.float32).reshape(1, 1, 1, 4)
+
+        def add(name, inputs, output, cap=0, source=None):
+            ordinal = len(self.operations)
+            prefix = self.directory / ("op_%03d" % ordinal)
+            tensors = {}
+            for role, array in [("input_" + str(index), value) for index, value in enumerate(inputs)] + [("output_0", output)]:
+                NativeCaptureTests.write_capture(prefix, role, array)
+                tensors[role] = {"file": prefix.name + "_" + role + ".bin", "shape": list(array.shape),
+                                 "data": ordinal * 100 + (90 if role == "output_0" else int(role[-1]))}
+            if source is not None:
+                tensors["input_0"]["data"] = self.operations[source]["tensors"]["output_0"]["data"]
+            command = {"name": "CCV_NNC_" + name + "_FORWARD", "soft_cap": cap,
+                       "rms_epsilon": 1e-6, "rms_axis_count": 1, "rms_axes": [inputs[0].ndim - 1, 0, 0],
+                       "transpose_a": [0, 0], "transpose_b": [0, 1], "attention_scale": 1,
+                       "scalars": [1, 1] if name == "ADD" else [1, 0] if name == "MUL" else [0.5, 0]}
+            self.operations.append({"ordinal": ordinal, "status": 0, "command": command, "tensors": tensors})
+
+        add("RMSNORM", [initial, ones], normalized)
+        add("MUL", [normalized, ones], normalized)
+        add("ADD", [normalized, zeros], normalized)
+        add("DATATYPE_CONVERSION", [normalized], normalized)
+        add("GEMM", [normalized, square], zero)
+        add("RMSNORM", [heads, ones.reshape(1, 1, 1, 4)], heads)
+        add("CMUL", [heads, rotation], heads)
+        add("SCALAR_MUL", [heads], heads)
+        add("GEMM", [normalized, square], zero)
+        add("RMSNORM", [heads, ones.reshape(1, 1, 1, 4)], heads)
+        add("CMUL", [heads, rotation], heads)
+        add("GEMM", [normalized, square], zero)
+        add("SCALED_DOT_PRODUCT_ATTENTION", [heads, heads, heads], heads)
+        add("GEMM", [zero, square], zero)
+        add("DATATYPE_CONVERSION", [zero], zero)
+        add("MUL", [zero, ones], zero)
+        add("ADD", [initial, zero], initial)
+        add("RMSNORM", [initial, ones], normalized)
+        add("MUL", [normalized, ones], normalized)
+        add("ADD", [normalized, zeros], normalized)
+        add("DATATYPE_CONVERSION", [normalized], normalized)
+        add("GEMM", [normalized, expansion], wide)
+        add("GEMM", [normalized, expansion], wide)
+        add("TANH", [wide], wide, cap=25, source=22)
+        add("SIGMOID", [wide], np.full_like(wide, 0.5))
+        add("TANH", [wide], wide, cap=4, source=21)
+        add("MUL", [wide, np.full_like(wide, 0.5)], wide)
+        add("MUL", [wide, wide], wide)
+        add("GEMM", [wide, expansion.T.copy()], zero)
+        add("DATATYPE_CONVERSION", [zero], zero)
+        add("MUL", [zero, ones], zero)
+        add("ADD", [initial, zero], initial)
+        NativeCaptureTests.write_capture(self.directory / "block", "output", initial)
+        self.manifest = {"complete": True, "operations": self.operations,
+                         "block_output": {"file": "block_output.bin"}}
+        self.save_manifest()
+
+    def save_manifest(self):
+        (self.directory / "manifest.json").write_text(json.dumps(self.manifest))
+
+    def test_complete_block_formula_and_cli(self):
+        report = compare_moss_block_capture(self.directory, 1e-6, 1e-6)
+        self.assertEqual(report["result"], "PASS")
+        self.assertEqual(len(report["checks"]), 28)
+        self.assertEqual(report["block_relative_rms_error"], 0)
+        self.assertFalse(report["checkpoint_assignment_verified_by_this_command"])
+        destination = self.root / "report.json"
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("dt_layer_parity_oracle.py")),
+                                 "compare-moss-block", "--capture-dir", str(self.directory), "--report", str(destination)],
+                                cwd=self.root, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), json.loads(destination.read_text()))
+
+    def test_block_output_corruption_fails_without_reference_reset(self):
+        changed = np.full((1, 2, 4), 7, dtype=np.float32)
+        NativeCaptureTests.write_capture(self.directory / "op_031", "output_0", changed)
+        NativeCaptureTests.write_capture(self.directory / "block", "output", changed)
+        report = compare_moss_block_capture(self.directory)
+        self.assertEqual(report["result"], "FAIL")
+        self.assertFalse(report["checks"][-1]["matches"])
+
+    def test_incomplete_unsafe_and_nonfinite_block_refusal(self):
+        self.manifest["complete"] = False
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "complete"):
+            compare_moss_block_capture(self.directory)
+        self.manifest["complete"] = True
+        self.operations[0]["tensors"]["input_0"]["file"] = "../outside.bin"
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "path"):
+            compare_moss_block_capture(self.directory)
+        self.operations[0]["tensors"]["input_0"]["file"] = "op_000_input_0.bin"
+        self.save_manifest()
+        NativeCaptureTests.write_capture(self.directory / "op_000", "input_0", np.full((1, 2, 4), np.nan))
+        with self.assertRaisesRegex(ValueError, "Non-finite"):
+            compare_moss_block_capture(self.directory)
 
 
 class NativeQwenReferenceTests(unittest.TestCase):

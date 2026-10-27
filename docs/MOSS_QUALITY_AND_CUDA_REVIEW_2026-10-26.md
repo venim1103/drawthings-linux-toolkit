@@ -22,6 +22,14 @@ Raw evidence and JSON reports are under `output/upgrades/moss-image-base-add235e
 
 ---
 
+## Complete Block Follow-Up: October 27
+
+The proposed main-block comparison has now been executed on block 0, not just its individual primitives. A complete 32-operation capture starts at `[1,1055,3072]` and ends exactly at block 1's input. An independent CPU forward pass propagating the original input through the whole attention/SiTU block passes all 28 checks at declared tolerance; final relative RMS error is about **0.014%**.
+
+Runtime parameter assignment was checked separately against the official named checkpoint to avoid a circular reference: all seven block matrices and all four norm vectors match independent CPU decoding exactly. FFN gate/up roles are correct for those named tensors. All six shared modulation chunks agree with a CPU time-MLP/modulation calculation at timestep 1000. This narrows suspect C for the checked block; it does not prove every later layer, original conversion semantic, or the complete Qwen/DiT is correct.
+
+The repeatable command is `compare-moss-block` in the existing oracle, with strict capture/topology/budget validation and tiny success/corruption/refusal tests. Private raw evidence and four reference reports are under `output/upgrades/moss-image-base-add235e9/block0-trace-20261027`. The full CUDA-enabled suite passes **66 tests**. The unchanged candidate is still `920bf727...`; MOSS quality remains unaccepted.
+
 ## 1. Executive Summary
 
 Across the seven commits from `cf8baab` to `acd9b26`, the project completed two major engineering milestones:

@@ -93,6 +93,16 @@ Nonuniform packed Q5_K/Q6_K GEMM tests initially exposed a small difference from
 
 Two diagnostic hypotheses were rejected without changing source or defaults. Forcing dense packed-weight fallback only inside a disposable debugger inferior makes encoder conditioning non-finite. Removing the negative branch with CFG 1 still produces an unrelated structured image after 50 steps (`output/q6p_canary_moss_base_q8p_512_cfg1_quality_diagnostic_20261026`), despite strict finite-image acceptance. The special skipped negative block is therefore not the sole quality cause. Next is a complete reference layer/model boundary comparison, not a sampler or precision change justified only by these passing primitives. M1 quality remains unaccepted.
 
+### Complete Block-0 Reference: October 27
+
+A bounded native trace now captures all 32 operations of MOSS main block 0, from its first full-width RMSNorm through the second residual addition, stopping at block 1's corresponding norm. The actual input is `[1,1055,3072]`; all native operation statuses are successful, and the block exit exactly equals the next block's input. The private capture is about 1.02 GB under `output/upgrades/moss-image-base-add235e9/block0-trace-20261027`.
+
+The new `compare-moss-block` oracle independently propagates the original input through normalization, modulation, Q/K/V projections, rotary, attention, gated residuals, and soft-capped SiTU FFN. All 28 checked intermediate/output stages pass declared `atol=0.01, rtol=0.01`; final relative RMS error is `0.00013639`. This is a complete executed-block arithmetic comparison, not a proof of the whole trained network or original pre-conversion source mapping.
+
+Separate named checkpoint checks close the circular-loading gap: independently compiled pinned CPU q8p decoding matches all seven runtime matrices bit-for-bit, including which FFN matrix feeds the gate/up soft caps. Four learned norm vectors also match exactly after expected runtime precision conversion. A CPU calculation of timestep 1000, the time MLP, and all six named modulation projections agrees with the captured chunks (relative RMS errors about `0.00021` to `0.00060`). Reports are `checkpoint-matrix-assignment.json`, `checkpoint-normalization-assignment.json`, and `checkpoint-modulation-assignment.json` in the capture directory.
+
+The public block oracle rejects incomplete/unsupported topology, native failures, malformed/unsafe captures, non-finite values, unrecognized affine/biased projections, oversized work, and accidental broadcast expansion. Small analytic and corrupted-output fixtures verify that later native captures cannot reset a wrong CPU reference. The combined CUDA-enabled suite passes **66 tests**. Runtime remains `920bf727...`; no quality fix, installation, promotion, or model/catalog mutation is claimed. Next priorities remain later/special denoiser boundaries and complete Qwen hidden-state reference parity.
+
 ### Commands
 
 ```bash

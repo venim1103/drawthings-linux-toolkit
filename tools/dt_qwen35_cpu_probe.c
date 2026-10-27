@@ -127,6 +127,67 @@ int dt_probe_native_tensor_dump(const void* tensor_pointer, void* synchronize, v
   return status;
 }
 
+const char* dt_probe_native_command_metadata(const void* command_pointer, void* command_name)
+{
+  static char metadata[1024];
+  const ccv_nnc_cmd_t* command = command_pointer;
+  const char* name = ((const char* (*)(uint32_t))command_name)(command->cmd);
+  if (!name) return 0;
+  const int is_norm = command->cmd == CCV_NNC_RMSNORM_FORWARD;
+  const int is_blas = command->cmd == CCV_NNC_ADD_FORWARD || command->cmd == CCV_NNC_MUL_FORWARD ||
+    command->cmd == CCV_NNC_SCALAR_MUL_FORWARD;
+  const int is_gemm = command->cmd == CCV_NNC_GEMM_FORWARD;
+  snprintf(metadata, sizeof(metadata),
+    "{\"code\":%u,\"name\":\"%s\",\"scalars\":[%.9g,%.9g],\"soft_cap\":%.9g,\"rms_epsilon\":%.9g,\"rms_axis_count\":%d,\"rms_axes\":[%d,%d,%d],\"attention_scale\":%.9g,\"transpose_a\":[%d,%d],\"transpose_b\":[%d,%d]}",
+    command->cmd, name, is_blas ? command->info.blas.a[0] : 0, is_blas ? command->info.blas.a[1] : 0,
+    command->cmd == CCV_NNC_TANH_FORWARD ? command->info.tanh.soft_cap : 0,
+    is_norm ? command->info.rmsnorm.epsilon : 0, is_norm ? command->info.rmsnorm.count : 0,
+    is_norm ? command->info.rmsnorm.axis[0] : 0, is_norm ? command->info.rmsnorm.axis[1] : 0,
+    is_norm ? command->info.rmsnorm.axis[2] : 0,
+    command->cmd == CCV_NNC_SCALED_DOT_PRODUCT_ATTENTION_FORWARD ? command->info.scaled_dot_product_attention.scale : 0,
+    is_gemm ? command->info.blas.transpose_a[0] : 0, is_gemm ? command->info.blas.transpose_a[1] : 0,
+    is_gemm ? command->info.blas.transpose_b[0] : 0, is_gemm ? command->info.blas.transpose_b[1] : 0);
+  return metadata;
+}
+
+const char* dt_probe_native_tensor_metadata(const void* tensor_pointer)
+{
+  static char metadata[1024];
+  const ccv_nnc_tensor_t* source = tensor_pointer;
+  snprintf(metadata, sizeof(metadata),
+    "{\"data\":%llu,\"memory\":%d,\"format\":%d,\"datatype\":%d,\"reserved\":%d,\"contiguous\":%d,\"dimensions\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]}",
+    (unsigned long long)(uintptr_t)source->data.u8, source->info.type, source->info.format,
+    source->info.datatype, source->info.reserved, !!CCV_IS_TENSOR_CONTIGUOUS(source),
+    source->info.dim[0], source->info.dim[1], source->info.dim[2], source->info.dim[3],
+    source->info.dim[4], source->info.dim[5], source->info.dim[6], source->info.dim[7],
+    source->info.dim[8], source->info.dim[9], source->info.dim[10], source->info.dim[11]);
+  return metadata;
+}
+
+int dt_probe_native_decoded_tensor_dump(const void* tensor_pointer, void* synchronize,
+  void* transfer, void* allocate_tensor, void* release_tensor, void* decode_tensor,
+  void* prefetch_tensor, const char* path, void* stream)
+{
+  const ccv_nnc_tensor_t* source = tensor_pointer;
+  if (CCV_GET_DATA_TYPE(source->info.datatype) != CCV_QX)
+    return dt_probe_native_tensor_dump(source, synchronize, transfer, path);
+  if (!CCV_IS_TENSOR_CONTIGUOUS(source)) return -33;
+  ccv_nnc_tensor_param_t parameters = source->info;
+  parameters.datatype = (parameters.datatype & 0xff) << 12;
+  parameters.reserved = 0;
+  const size_t size = (size_t)ccv_nnc_tensor_count(parameters) * (parameters.datatype == CCV_32F ? 4 : 2);
+  if (!size || size > 64 * 1024 * 1024 ||
+      (parameters.datatype != CCV_32F && parameters.datatype != CCV_16F && parameters.datatype != CCV_16BF)) return -34;
+  ccv_nnc_tensor_t* dense = ((ccv_nnc_tensor_t* (*)(void*, ccv_nnc_tensor_param_t, int))allocate_tensor)(0, parameters, 0);
+  if (!dense) return -31;
+  ((void (*)(ccv_nnc_tensor_t*, ccv_nnc_stream_context_t*))prefetch_tensor)((ccv_nnc_tensor_t*)source, stream);
+  ((void (*)(const void*, ccv_nnc_tensor_param_t, void*, ccv_nnc_stream_context_t*))decode_tensor)(
+    source->data.u8, source->info, dense->data.u8, stream);
+  const int status = dt_probe_native_tensor_dump(dense, synchronize, transfer, path);
+  ((void (*)(ccv_nnc_tensor_t*))release_tensor)(dense);
+  return status;
+}
+
 int dt_probe_native_is_final_flow_step(const void* command_pointer)
 {
   if (!command_pointer) return 0;
