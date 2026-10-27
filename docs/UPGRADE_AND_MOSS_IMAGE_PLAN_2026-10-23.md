@@ -624,6 +624,28 @@ Short/full i4x telemetry spans about 58/102 seconds including startup, sampled w
 
 This establishes official SFT 4-bit S inference for one tested subject/profile, not broad quantization-quality equivalence, custom i4x generation, other models/layouts, or promotion. Next: non-square and recommended-resolution coverage using the same private inputs and unchanged candidate.
 
+### M1 Default-Size And Non-Square Coverage: October 27
+
+The unchanged isolated candidate now passes full 50-step CFG-3/shift-5/seed-4242 teapot renders for SFT q8p at 768x512, and Base q8p, SFT q8p, and SFT 4-bit S at the native model-zoo default 1024x1024 size. Each produces one finite image at exactly the requested dimensions, no audio, complete stream/chunks and successful post-Echo. All four images visibly depict the teapot/table/plant/window scene; the landscape result has no obvious axis/aspect distortion. The larger final payloads also exercise multi-chunk delivery. All seven private Base/SFT payload hashes remain unchanged afterward.
+
+| Variant | Dimensions | Telemetry Span Including Startup | Sampled Device Peak | Maximum Temperature |
+|---|---|---|---|---|
+| SFT q8p | 768x512 | 258.792 s | 2,305 MiB | 65 C |
+| Base q8p | 1024x1024 | 382.225 s | 2,989 MiB | 66 C |
+| SFT q8p | 1024x1024 | 353.833 s | 2,989 MiB | 67 C |
+| SFT i4x | 1024x1024 | 307.820 s | 2,989 MiB | 67 C |
+
+Memory and temperature samples are complete. Landscape/default-size SFT q8p have two/one unavailable utilization readings; both remaining runs have complete readings. These are individual offloaded observations, not allocator-exact memory measurements, a controlled speed comparison, or a claim that the models need only 3 GiB of VRAM without offload.
+
+Artifacts follow `output/q6p_canary_moss_{base_q8p,sft_q8p,sft_i4x}_scaled_rmsnorm_1024x1024_50steps_20261027`; the non-square run is `output/q6p_canary_moss_sft_q8p_scaled_rmsnorm_768x512_50steps_20261027`. Exact config SHA-256 values are:
+
+- Landscape SFT q8p: `c26261ee119ff071decc1fea8145191ee234e664504b72a8bb0605e44a2b4e15`.
+- Default-size Base q8p: `eae9b1b08ad8689a7b403e00ba27e4c810dd3137985dbf6946f155f5e17f86ec`.
+- Default-size SFT q8p: `91c8026e51c172021c679313453535369c14d59c06c0fd0bc35d25d9cd60c9f1`.
+- Default-size SFT i4x: `d0d0d619637964d21ff1ce4b3b595a436214b401fc26250e8872ed650db1d9d4`.
+
+Reproduce with the preceding private-directory recipes, changing dimensions to the selected pair. No runtime/native-source/catalog/default change was made. This closes the tested geometry cases, not the full M2 workflow gate: requests so far use fresh server processes. Next test repeated requests and Base/SFT/packed-variant switching in one server process, comparing each result against its own fresh-process baseline. Text/tag/structured-layout prompts and custom conversion remain separate work.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].

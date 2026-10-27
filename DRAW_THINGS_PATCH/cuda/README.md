@@ -103,6 +103,12 @@ Official SFT `i4x` at the pinned revision passes separate two-step and 50-step i
 
 The i4x denoiser uses about 44.1% less disk space, but this offloaded run has the same observed 2,305 MiB whole-device peak as q8p. A single matched image supports this profile, not universal quality equivalence, performance certification, custom quantization, or default promotion. Exact hashes, configs, telemetry caveats and reproduction are in the upgrade/MOSS plan. Other resolutions remain the next gate.
 
+### Default-Resolution And Landscape Canaries: October 27
+
+On the same unchanged candidate, full 50-step prompt-following canaries now pass for SFT q8p at 768x512 and for Base q8p, SFT q8p, and SFT 4-bit S at 1024x1024. Final dimensions, finiteness, complete multi-chunk streams, zero audio, post-Echo and post-test model hashes pass. The offloaded default-size runs have observed whole-device peaks of 2,989 MiB; this is not a no-offload model-memory requirement. Exact configs, images, timing and missing-utilization-sample caveats are recorded in the [upgrade/MOSS plan](../../docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md).
+
+These are fresh-process canaries. Same-process request reuse and variant switching, text/layout prompt coverage, complete framework parity, custom conversion and production promotion remain separate gates.
+
 ## Coverage And Limits
 
 ### Complete MOSS Block Capture
