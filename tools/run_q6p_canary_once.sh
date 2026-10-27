@@ -11,6 +11,7 @@ MODELS_DIR="$ROOT/dt-models"
 DRY_RUN=0
 IMAGE_MODE=0
 REQUIRED_MODEL_FILES=()
+NEXT_MODELS=()
 
 MODEL_KEY="10_e_v1_bf16_regen_0_q6p.ckpt"
 HOST="127.0.0.1:7861"
@@ -53,6 +54,9 @@ Usage:
 
 Options:
   --model <file>            Model key from dt-models directory.
+  --next-model <file>       Image mode only: run another model on the same owned
+                            server with identical request settings; repeatable.
+                            Requires existing model files and strict failure mode.
   --host <host:port>        gRPC host (default: 127.0.0.1:7861).
   --grpc-bin <path|name>    gRPC server launcher binary
                             (default: DRAWTHINGS_GRPC_BIN or drawthings-grpc).
@@ -110,6 +114,7 @@ Options:
 Outputs:
   output/q6p_canary_<tag>/{config.bin,client.log,server.log}
   With --gpu-metrics: gpu.csv and gpu-monitor.log in the same directory.
+  With --next-model: request_001/, request_002/, ... and sequence_acceptance.json.
 EOF
 }
 
@@ -118,6 +123,10 @@ if [[ $# -gt 0 ]]; then
     case "$1" in
       --model)
         MODEL_KEY="${2:-}"
+        shift 2
+        ;;
+      --next-model)
+        NEXT_MODELS+=("${2:-}")
         shift 2
         ;;
       --host)
@@ -285,6 +294,19 @@ fi
 
 if [[ "$REQUIRE_COMPLETE_STREAM" == "1" && "$MAX_RESPONSES_EXPLICIT" != "1" ]]; then
   MAX_RESPONSES=0
+fi
+
+if [[ "${#NEXT_MODELS[@]}" -gt 0 ]]; then
+  if [[ "$IMAGE_MODE" != "1" || "$ALLOW_MISSING_MODEL" == "1" || "$SOFT_FAIL" == "1" ]]; then
+    echo "error: --next-model requires --image-mode without --allow-missing-model or --soft-fail" >&2
+    exit 1
+  fi
+  for requested_model in "$MODEL_KEY" "${NEXT_MODELS[@]}"; do
+    if [[ -z "$requested_model" || "$requested_model" != "$(basename "$requested_model")" || ! -f "$MODELS_DIR/$requested_model" ]]; then
+      echo "error: sequence model file missing or invalid: $requested_model" >&2
+      exit 1
+    fi
+  done
 fi
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -551,23 +573,35 @@ if [[ -n "$SERVER_WEIGHTS_CACHE" ]]; then
 fi
 server_args+=("$MODELS_DIR")
 
-"$PYTHON_BIN" "$ROOT/tools/dt_make_config.py" \
-  --bindings-dir "$BINDINGS_DIR" \
-  --models-dir "$MODELS_DIR" \
-  --out "$CONFIG_BIN" \
-  --model "$MODEL_KEY" \
-  --width "$WIDTH" \
-  --height "$HEIGHT" \
-  --steps "$STEPS" \
-  --sampler "$SAMPLER" \
-  --guidance-scale "$GUIDANCE" \
-  --shift "$SHIFT" \
-  --hires-fix false \
-  --num-frames "$NUM_FRAMES" \
-  --fps-id "$FPS_ID" \
-  --seed "$SEED" \
-  "${CONFIG_EXTRA_ARGS[@]}" \
-  "${LORA_ARGS[@]}"
+generate_config() {
+  "$PYTHON_BIN" "$ROOT/tools/dt_make_config.py" \
+    --bindings-dir "$BINDINGS_DIR" \
+    --models-dir "$MODELS_DIR" \
+    --out "$2/config.bin" \
+    --model "$1" \
+    --width "$WIDTH" \
+    --height "$HEIGHT" \
+    --steps "$STEPS" \
+    --sampler "$SAMPLER" \
+    --guidance-scale "$GUIDANCE" \
+    --shift "$SHIFT" \
+    --hires-fix false \
+    --num-frames "$NUM_FRAMES" \
+    --fps-id "$FPS_ID" \
+    --seed "$SEED" \
+    "${CONFIG_EXTRA_ARGS[@]}" \
+    "${LORA_ARGS[@]}"
+}
+
+REQUEST_MODELS=("$MODEL_KEY" "${NEXT_MODELS[@]}")
+REQUEST_DIRECTORIES=("$WORK_DIR")
+generate_config "$MODEL_KEY" "$WORK_DIR"
+for request_index in "${!NEXT_MODELS[@]}"; do
+  printf -v request_directory '%s/request_%03d' "$WORK_DIR" "$((request_index + 1))"
+  mkdir -p "$request_directory"
+  REQUEST_DIRECTORIES+=("$request_directory")
+  generate_config "${NEXT_MODELS[request_index]}" "$request_directory"
+done
 
 printf 'server_command='
 printf '%q ' "$GRPC_BIN" "${server_args[@]}"
@@ -640,122 +674,129 @@ if [[ "$READY" != "1" ]]; then
   exit 1
 fi
 
-set +e
-if [[ "$NO_TIMEOUT" == "1" ]]; then
-  "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
-      "${CLIENT_SCHEMA_ARGS[@]}" \
-      --host "$HOST" \
-      --max-recv-bytes 134217728 \
-      generate-raw \
-      --config-bin "$CONFIG_BIN" \
-      --prompt "$PROMPT" \
-      --negative-prompt "$NEG_PROMPT" \
-      --output-dir "$WORK_DIR" \
-      --chunked \
-      --save-preview \
-      --max-responses "$MAX_RESPONSES" > "$CLIENT_LOG" 2>&1
-  CANARY_RC=$?
-else
-  timeout -k 10s "${TIMEOUT_SEC}s" \
-    "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
-      "${CLIENT_SCHEMA_ARGS[@]}" \
-      --host "$HOST" \
-      --max-recv-bytes 134217728 \
-      generate-raw \
-      --config-bin "$CONFIG_BIN" \
-      --prompt "$PROMPT" \
-      --negative-prompt "$NEG_PROMPT" \
-      --output-dir "$WORK_DIR" \
-      --chunked \
-      --save-preview \
-      --max-responses "$MAX_RESPONSES" > "$CLIENT_LOG" 2>&1
-  CANARY_RC=$?
-fi
-timeout -k 5s 15s \
-  "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" --host "$HOST" echo --name "q6p-canary-post" >/dev/null 2>&1
-POST_ECHO_RC=$?
-set -e
-
-stop_server
-
-echo "canary_rc=$CANARY_RC"
-echo "post_echo_rc=$POST_ECHO_RC"
-echo "client_log=$CLIENT_LOG"
-echo "server_log=$SERVER_LOG"
-echo "--- client.log (tail) ---"
-tail -n 120 "$CLIENT_LOG" || true
-echo "--- server.log (tail) ---"
-tail -n 120 "$SERVER_LOG" || true
-
-if [[ "$CANARY_RC" == "124" ]]; then
-  echo "RESULT=FAIL canary timed out (${TIMEOUT_SEC}s)"
-  if [[ "$SOFT_FAIL" == "1" ]]; then
-    exit 0
-  fi
-  exit 1
-fi
-
-if [[ "$CANARY_RC" != "0" ]]; then
-  echo "RESULT=FAIL canary rc=$CANARY_RC"
-  if [[ "$SOFT_FAIL" == "1" ]]; then
-    exit 0
-  fi
-  exit 1
-fi
-
-if ! grep -q 'response #1' "$CLIENT_LOG"; then
-  echo "RESULT=FAIL no streamed responses observed"
-  if [[ "$SOFT_FAIL" == "1" ]]; then
-    exit 0
-  fi
-  exit 1
-fi
-
-if [[ "$REQUIRE_COMPLETE_STREAM" == "1" ]]; then
-  if ! grep -q '^generation stream finished$' "$CLIENT_LOG"; then
-    echo "RESULT=FAIL stream did not finish cleanly"
-    if [[ "$SOFT_FAIL" == "1" ]]; then
-      exit 0
-    fi
+run_request() {
+  local MODEL_KEY="$1" WORK_DIR="$2" LAST_REQUEST="$3"
+  local CONFIG_BIN="$WORK_DIR/config.bin" CLIENT_LOG="$WORK_DIR/client.log"
+  local REQUEST_SERVER_PID="$SERVER_PID"
+  if ! kill -0 "$REQUEST_SERVER_PID" 2>/dev/null; then
+    echo "RESULT=FAIL owned server exited before request"
     exit 1
   fi
 
-  if grep -q '^stopping early at max responses:' "$CLIENT_LOG"; then
-    echo "RESULT=FAIL stream stopped early by max response cap"
-    if [[ "$SOFT_FAIL" == "1" ]]; then
-      exit 0
-    fi
-    exit 1
-  fi
-
-  if grep -q '^warning: leftover partial .* chunk bytes:' "$CLIENT_LOG"; then
-    echo "RESULT=FAIL incomplete output chunks remain"
-    if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
-    exit 1
-  fi
-fi
-
-if [[ "$REQUIRE_FINAL_OUTPUT" == "1" ]]; then
-  IMAGE_COUNT="$(awk -F': ' '/^images written:/{value=$2} END{if (value == "") value = "0"; print value}' "$CLIENT_LOG")"
-  AUDIO_COUNT="$(awk -F': ' '/^audio written:/{value=$2} END{if (value == "") value = "0"; print value}' "$CLIENT_LOG")"
-
-  if [[ "$IMAGE_COUNT" -lt 1 && "$AUDIO_COUNT" -lt 1 ]]; then
-    echo "RESULT=FAIL no final generated output payloads observed"
-    if [[ "$SOFT_FAIL" == "1" ]]; then
-      exit 0
-    fi
-    exit 1
-  fi
-fi
-
-if [[ "$IMAGE_MODE" == "1" ]]; then
-  if [[ "$POST_ECHO_RC" != "0" ]]; then
-    echo "RESULT=FAIL image post-generation Echo failed"
-    if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
-    exit 1
-  fi
   set +e
-  "$PYTHON_BIN" - "$ROOT" "$WORK_DIR" "$WIDTH" "$HEIGHT" "$PROMPT" "$NEG_PROMPT" <<'PY'
+  if [[ "$NO_TIMEOUT" == "1" ]]; then
+    "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
+        "${CLIENT_SCHEMA_ARGS[@]}" \
+        --host "$HOST" \
+        --max-recv-bytes 134217728 \
+        generate-raw \
+        --config-bin "$CONFIG_BIN" \
+        --prompt "$PROMPT" \
+        --negative-prompt "$NEG_PROMPT" \
+        --output-dir "$WORK_DIR" \
+        --chunked \
+        --save-preview \
+        --max-responses "$MAX_RESPONSES" > "$CLIENT_LOG" 2>&1
+    CANARY_RC=$?
+  else
+    timeout -k 10s "${TIMEOUT_SEC}s" \
+      "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
+        "${CLIENT_SCHEMA_ARGS[@]}" \
+        --host "$HOST" \
+        --max-recv-bytes 134217728 \
+        generate-raw \
+        --config-bin "$CONFIG_BIN" \
+        --prompt "$PROMPT" \
+        --negative-prompt "$NEG_PROMPT" \
+        --output-dir "$WORK_DIR" \
+        --chunked \
+        --save-preview \
+        --max-responses "$MAX_RESPONSES" > "$CLIENT_LOG" 2>&1
+    CANARY_RC=$?
+  fi
+  timeout -k 5s 15s \
+    "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" --host "$HOST" echo --name "q6p-canary-post" >/dev/null 2>&1
+  POST_ECHO_RC=$?
+  set -e
+
+  if [[ "$LAST_REQUEST" == "1" ]]; then
+    stop_server
+  fi
+
+  echo "request_model=$MODEL_KEY"
+  echo "request_server_pid=$REQUEST_SERVER_PID"
+  echo "canary_rc=$CANARY_RC"
+  echo "post_echo_rc=$POST_ECHO_RC"
+  echo "client_log=$CLIENT_LOG"
+  echo "server_log=$SERVER_LOG"
+  echo "--- client.log (tail) ---"
+  tail -n 120 "$CLIENT_LOG" || true
+  echo "--- server.log (tail) ---"
+  tail -n 120 "$SERVER_LOG" || true
+
+  if [[ "$CANARY_RC" == "124" ]]; then
+    echo "RESULT=FAIL canary timed out (${TIMEOUT_SEC}s)"
+    if [[ "$SOFT_FAIL" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
+
+  if [[ "$CANARY_RC" != "0" ]]; then
+    echo "RESULT=FAIL canary rc=$CANARY_RC"
+    if [[ "$SOFT_FAIL" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
+
+  if ! grep -q 'response #1' "$CLIENT_LOG"; then
+    echo "RESULT=FAIL no streamed responses observed"
+    if [[ "$SOFT_FAIL" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
+
+  if [[ "$REQUIRE_COMPLETE_STREAM" == "1" ]]; then
+    if ! grep -q '^generation stream finished$' "$CLIENT_LOG"; then
+      echo "RESULT=FAIL stream did not finish cleanly"
+      if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
+
+    if grep -q '^stopping early at max responses:' "$CLIENT_LOG"; then
+      echo "RESULT=FAIL stream stopped early by max response cap"
+      if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
+
+    if grep -q '^warning: leftover partial .* chunk bytes:' "$CLIENT_LOG"; then
+      echo "RESULT=FAIL incomplete output chunks remain"
+      if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
+  fi
+
+  if [[ "$REQUIRE_FINAL_OUTPUT" == "1" ]]; then
+    IMAGE_COUNT="$(awk -F': ' '/^images written:/{value=$2} END{if (value == "") value = "0"; print value}' "$CLIENT_LOG")"
+    AUDIO_COUNT="$(awk -F': ' '/^audio written:/{value=$2} END{if (value == "") value = "0"; print value}' "$CLIENT_LOG")"
+
+    if [[ "$IMAGE_COUNT" -lt 1 && "$AUDIO_COUNT" -lt 1 ]]; then
+      echo "RESULT=FAIL no final generated output payloads observed"
+      if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
+  fi
+
+  if [[ "$IMAGE_MODE" == "1" ]]; then
+    if [[ "$POST_ECHO_RC" != "0" ]]; then
+      echo "RESULT=FAIL image post-generation Echo failed"
+      if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
+    set +e
+    "$PYTHON_BIN" - "$ROOT" "$WORK_DIR" "$WIDTH" "$HEIGHT" "$PROMPT" "$NEG_PROMPT" "$MODEL_KEY" "$REQUEST_SERVER_PID" <<'PY'
 import hashlib
 import json
 import sys
@@ -784,17 +825,46 @@ metadata = {
     "negative_prompt": sys.argv[6], "raw_image": images[0].name,
     "config_sha256": hashlib.sha256((work / "config.bin").read_bytes()).hexdigest(),
     "complete_stream": True, "complete_chunks": True, "post_echo": True,
+    "model": sys.argv[7], "server_pid": int(sys.argv[8]),
 }
 (work / "image_acceptance.json").write_text(json.dumps(metadata, indent=2) + "\n")
 print(f"validated_image={output}")
 PY
-  IMAGE_RC=$?
-  set -e
-  if [[ "$IMAGE_RC" != "0" ]]; then
-    echo "RESULT=FAIL image acceptance failed"
-    if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
-    exit 1
+    IMAGE_RC=$?
+    set -e
+    if [[ "$IMAGE_RC" != "0" ]]; then
+      echo "RESULT=FAIL image acceptance failed"
+      if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
   fi
+
+  echo "REQUEST_RESULT=PASS model=$MODEL_KEY"
+}
+
+for request_index in "${!REQUEST_MODELS[@]}"; do
+  last_request=0
+  if [[ "$request_index" -eq "$((${#REQUEST_MODELS[@]} - 1))" ]]; then
+    last_request=1
+  fi
+  run_request "${REQUEST_MODELS[request_index]}" "${REQUEST_DIRECTORIES[request_index]}" "$last_request"
+done
+
+if [[ "${#NEXT_MODELS[@]}" -gt 0 ]]; then
+  "$PYTHON_BIN" - "$WORK_DIR" "${REQUEST_DIRECTORIES[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+requests = [json.loads((Path(directory) / "image_acceptance.json").read_text())
+            for directory in sys.argv[2:]]
+if any(request["result"] != "PASS" for request in requests) or len({request["server_pid"] for request in requests}) != 1:
+    raise SystemExit("Sequence did not pass on one owned server process")
+report = {"result": "PASS", "scope": "finite_image_stream_same_server_only",
+          "repeatability_checked": False, "requests": requests,
+          "server_pid": requests[0]["server_pid"]}
+(Path(sys.argv[1]) / "sequence_acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+PY
 fi
 
 echo "RESULT=PASS"

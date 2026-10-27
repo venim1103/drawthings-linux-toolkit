@@ -109,6 +109,10 @@ On the same unchanged candidate, full 50-step prompt-following canaries now pass
 
 These are fresh-process canaries. Same-process request reuse and variant switching, text/layout prompt coverage, complete framework parity, custom conversion and production promotion remain separate gates.
 
+### Stateful Request Drift: Paused WIP, October 27
+
+The new image-only `--next-model` canary sequence passes finite-image/stream checks on one owned server, but repeated requests are not yet byte-repeatable. Its report explicitly says repeatability was not checked. Native tracing localizes the first difference to the 11-token negative-Qwen first GEMM: identical inputs/packed weights change from activation-quantized GEMM to dense fallback when packed execution fails. A diagnostic-only clear of pending CUDA error 101 restores packed execution; the error's producer is not identified. Sampled file-read fallbacks return with no pending error, so they are not established as the cause. No production error-clear, native patch, binary promotion or default change has been made. Exact evidence and resume gates are recorded at the pause point in the [upgrade/MOSS plan](../../docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md).
+
 ## Coverage And Limits
 
 ### Complete MOSS Block Capture
