@@ -105,6 +105,12 @@ Current candidate SHA-256 is `1d27f8d444d6211322496d3ce20871173b5d7d5942401bbe07
 
 This supersedes the earlier current-candidate quality-failure status for this specific Base canary, not historical evidence. It does not certify every prompt, seed, resolution, quantization, SFT model, performance condition, or framework parity. Installed/default runtime and canonical models/catalogs remain protected. Next: repeatability and a second prompt before any wider model testing or promotion.
 
+### Base Repeatability And Prompt Generalization: October 27
+
+The corrected Base candidate `1d27f8d...` reproduces the accepted teapot render exactly in a new server process: identical config, raw final payload, decoded values, and PNG; tensor MAE/max error are zero. The raw payload SHA-256 is `c307642f2b15eff92552b64f077455663bb3dc7fe7575289a510c00bc11c5b56`. A second 50-step prompt/seed asks for a blue vase, three white daisies, and a red book; the finite output visibly follows that request. Both retain CFG 3, shift 5, 512x512 and complete stream/chunks/post-Echo. Private run directories end in `50steps_repeat_20261027` and `second_prompt_20261027`; the repeat summary is `output/upgrades/moss-image-base-add235e9/base-repeatability-summary.json`.
+
+Observed repeat/second-prompt durations are about 135/127 seconds including startup, peak sampled device memory 2,305 MiB, maximum 65 C, no missing samples. These are bounded observations on two subjects/seeds and one resolution, not universal certification or default-promotion authorization. A directly reproducible private-directory command is recorded in the upgrade/MOSS plan. Next: independently pinned SFT q8p bring-up, using the same proven companion files and isolated runtime.
+
 ### Complete Block-0 Reference: October 27
 
 A bounded native trace now captures all 32 operations of MOSS main block 0, from its first full-width RMSNorm through the second residual addition, stopping at block 1's corresponding norm. The actual input is `[1,1055,3072]`; all native operation statuses are successful, and the block exit exactly equals the next block's input. The private capture is about 1.02 GB under `output/upgrades/moss-image-base-add235e9/block0-trace-20261027`.

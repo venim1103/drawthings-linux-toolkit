@@ -570,6 +570,36 @@ The isolated candidate is SHA-256 `1d27f8d444d6211322496d3ce20871173b5d7d5942401
 
 This is the first prompt-following M1 Base bring-up observation, not production/default promotion or universal image-quality certification. Repeatability, another prompt, SFT, quantization-quality comparisons, and broader framework parity remain separate gates. The isolated reference packages did not change normal toolkit dependencies or download new model weights. Existing installed binaries, CPU tools, and canonical payloads/catalogs remain preserved; the old LTX GEMM crash investigation remains deferred.
 
+### M1 Base Repeatability And Second Subject: October 27
+
+The accepted teapot profile was repeated in a fresh server process on candidate `1d27f8d...`. Config, raw final tensor payload, decoded tensor values, and PNG are all byte-identical; mean/max absolute tensor error are both zero. Raw final SHA-256 is `c307642f2b15eff92552b64f077455663bb3dc7fe7575289a510c00bc11c5b56`. Evidence: `output/q6p_canary_moss_base_q8p_scaled_rmsnorm_50steps_repeat_20261027` and `output/upgrades/moss-image-base-add235e9/base-repeatability-summary.json`.
+
+A second prompt and seed (`4243`) requested a blue glass vase with three white daisies on a red book. The 512x512, 50-step CFG-3/shift-5 result is finite and visibly depicts those objects/colors, with complete stream/chunks/post-Echo and zero audio. Evidence: `output/q6p_canary_moss_base_q8p_scaled_rmsnorm_second_prompt_20261027`; its config SHA-256 is `ac4856ce713a3a67dfa63c24fa9aba99f7aea09cc3041c6198c164e29b19c6b2`.
+
+Repeat/second-prompt telemetry spans about 135/127 seconds including startup, both with sampled whole-device peak 2,305 MiB and maximum 65 C, no missing readings. This establishes repeatability for one fixed profile and prompt-following observations on two subjects/seeds, not universal model quality, exact cross-framework parity, higher-resolution coverage, SFT, or promotion. Runtime and canonical payload/catalog hashes remain protected. Next model gate is SFT q8p at the separately pinned official artifact.
+
+The already-prepared isolated setup can reproduce the Base quality canary without selecting the live model directory:
+
+```bash
+models="$PWD/output/upgrades/moss-image-base-add235e9/models"
+schema="$PWD/output/upgrades/schemas/0621d819"
+candidate="$PWD/output/upgrades/community-0621d819-qwen35-cuda"
+LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}" \
+bash tools/run_q6p_canary_once.sh \
+	--grpc-bin "$candidate/bazel-bin/Apps/gRPCServerCLI" \
+	--proto "$candidate/Libraries/GRPC/Models/Sources/imageService/imageService.proto" \
+	--cache-dir "$schema" --bindings-dir "$schema/flatbuffers" \
+	--models-dir "$models" --model moss_image_base_q8p.ckpt \
+	--require-model-file qwen_3.5_9b_i5x.ckpt --require-model-file flux_2_vae_f16.ckpt \
+	--host 127.0.0.1:7862 --image-mode --width 512 --height 512 --steps 50 \
+	--sampler DDIMTrailing --guidance-scale 3 --shift 5 --seed 4242 \
+	--prompt 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.' \
+	--negative-prompt '' --server-cpu-offload --server-fread-preferred \
+	--server-weights-cache 0 --gpu-metrics --final-mode --timeout-sec 3600
+```
+
+The canary's automatic timestamp tag avoids overwriting the verification runs above. It starts an explicitly selected local candidate only for the test and cleans it up afterward; it does not install or promote a default server.
+
 ## Sources
 
 - [Pinned community source][upstream-head] and [320-commit comparison][upstream-compare].
