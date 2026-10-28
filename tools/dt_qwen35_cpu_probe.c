@@ -498,6 +498,98 @@ static float dt_probe_float_value(const unsigned char* data, const int datatype,
   return value;
 }
 
+int dt_probe_native_empty_forward(void* execute_command, void* synchronize, void* peek_error,
+  void* clear_error, void* set_device, void* device_count)
+{
+  typedef int (*execute_fn)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
+    ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*);
+  const int datatypes[] = {CCV_32F, CCV_16F, CCV_16BF};
+  const uint32_t operations[] = {CCV_NNC_DATATYPE_CONVERSION_FORWARD, CCV_NNC_CMUL_FORWARD,
+    CCV_NNC_GEMM_FORWARD, CCV_NNC_TANH_FORWARD, CCV_NNC_TANH_FORWARD};
+  int devices = 0;
+  if (((int (*)(int*))device_count)(&devices) || devices < 1 || ((int (*)(int))set_device)(0)) return -72;
+  ((int (*)(void))clear_error)();
+  const ccv_nnc_hint_t hint = {0};
+  for (int operation_index = 0; operation_index < 5; operation_index++)
+    for (int datatype_index = 0; datatype_index < 3; datatype_index++)
+      for (int output_datatype_index = 0; output_datatype_index < 3; output_datatype_index++)
+      {
+        const int binary_operation = operation_index == 1 || operation_index == 2;
+        if (binary_operation && output_datatype_index != datatype_index) continue;
+        if (operation_index >= 3 && (datatype_index == 2 || output_datatype_index == 2)) continue;
+        const int tensor_size = binary_operation ? 3 : 2;
+        for (int mask = 0; mask < (1 << tensor_size) - 1; mask++)
+        {
+          ccv_nnc_tensor_t tensors[3] = {0};
+          for (int index = 0; index < tensor_size; index++)
+          {
+            tensors[index].info.type = CCV_TENSOR_GPU_MEMORY;
+            tensors[index].info.format = CCV_TENSOR_FORMAT_NHWC;
+            tensors[index].info.datatype = !binary_operation && index == 1 ? datatypes[output_datatype_index] : datatypes[datatype_index];
+            if (mask & (1 << index))
+              tensors[index].info.dim[0] = 2;
+          }
+          ccv_nnc_tensor_t* inputs[] = {tensors, tensors + 1};
+          ccv_nnc_tensor_t* outputs[] = {tensors + tensor_size - 1};
+          ccv_nnc_cmd_t command = {.cmd = operations[operation_index], .algorithm = -1};
+          if (operation_index == 2) command.info.blas.transpose_b[1] = 1;
+          if (operation_index == 3) command.info.tanh.soft_cap = 5;
+          const int expected = mask == 0 || (operation_index == 2 && mask == 2) ? CCV_NNC_EXEC_SUCCESS : CCV_NNC_EXEC_INVALID;
+          int status = ((execute_fn)execute_command)(command, hint, 0, inputs, binary_operation ? 2 : 1, outputs, 1, 0);
+          if (status != expected || ((int (*)(void))peek_error)() || ((int (*)(void))synchronize)())
+          {
+            ((int (*)(void))clear_error)();
+            return -70;
+          }
+          if (expected == CCV_NNC_EXEC_SUCCESS)
+          {
+            const int injected = ((int (*)(int))set_device)(devices);
+            if (!injected || ((int (*)(void))peek_error)() != injected) return -72;
+            status = ((execute_fn)execute_command)(command, hint, 0, inputs, binary_operation ? 2 : 1, outputs, 1, 0);
+            const int preserved = ((int (*)(void))peek_error)();
+            ((int (*)(void))clear_error)();
+            if (status != expected || preserved != injected) return -71;
+          }
+        }
+      }
+  return 0;
+}
+
+int dt_probe_native_memory_advice(void* allocate_managed, void* release_memory, void* advise_memory,
+  void* transfer, void* synchronize, void* peek_error, void* clear_error, void* set_device, void* device_count)
+{
+  const uint32_t expected[] = {0x11223344, 0xdeadbeef, 0, 0xffffffff};
+  uint32_t actual[4] = {0};
+  int devices = 0;
+  if (((int (*)(int*))device_count)(&devices) || devices < 1 || ((int (*)(int))set_device)(0)) return -80;
+  ((int (*)(void))clear_error)();
+  void* memory = ((void* (*)(int, size_t))allocate_managed)(0, sizeof(expected));
+  if (!memory) return -80;
+  int status = ((int (*)(void*, const void*, size_t, int))transfer)(memory, expected, sizeof(expected), 1);
+  if (!status)
+  {
+    ((void (*)(int, void*, size_t))advise_memory)(0, memory, sizeof(expected));
+    if (((int (*)(void))peek_error)() || ((int (*)(void))synchronize)()) status = -81;
+  }
+  if (!status)
+  {
+    status = ((int (*)(void*, const void*, size_t, int))transfer)(actual, memory, sizeof(actual), 2);
+    if (!status && memcmp(expected, actual, sizeof(actual))) status = -82;
+  }
+  if (!status)
+  {
+    const int injected = ((int (*)(int))set_device)(devices);
+    if (!injected || ((int (*)(void))peek_error)() != injected) status = -83;
+    else {
+      ((void (*)(int, void*, size_t))advise_memory)(0, memory, sizeof(expected));
+      if (((int (*)(void))peek_error)() != injected) status = -83;
+    }
+  }
+  ((int (*)(void))clear_error)();
+  ((void (*)(int, void*))release_memory)(0, memory);
+  return status;
+}
+
 int dt_probe_native_scaled_rmsnorm(void* allocate_tensor, void* release_tensor, void* execute_command)
 {
   typedef ccv_nnc_tensor_t* (*allocate_fn)(void*, ccv_nnc_tensor_param_t, int);

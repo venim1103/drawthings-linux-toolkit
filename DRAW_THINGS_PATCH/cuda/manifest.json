@@ -12,6 +12,11 @@
     "lib/nnc/cmd/rmsnorm_gated/gpu/ccv_nnc_rmsnorm_gated_gpu_ref.cu": null,
     "lib/nnc/cmd/scaled_dot_product_attention/gpu/ccv_nnc_scaled_dot_product_attention_flash_attn.cu": "19c282c100908acc4d2dfc55ef9f257608e593541f2ee2f7256057c215641e30",
     "lib/nnc/cmd/index/gpu/ccv_nnc_index_select_gpu_ref.cu": "6dcf4b4b2820fb53568cfdc5bff74244a6a5dae5fd82f296fed08f5a4a500837",
-    "lib/nnc/cmd/norm/gpu/ccv_nnc_rmsnorm_gpu_cudnn.cu": "b005ccbb21d6437ba5233d65fdcfa518312d75142dd59684d164080dc213a9ff"
+    "lib/nnc/cmd/norm/gpu/ccv_nnc_rmsnorm_gpu_cudnn.cu": "b005ccbb21d6437ba5233d65fdcfa518312d75142dd59684d164080dc213a9ff",
+    "lib/nnc/gpu/ccv_nnc_compat.cu": "40797738266f00f611989bd6670a94cf714c37afd38f8a77f0eec0802337d394",
+    "lib/nnc/cmd/util/gpu/ccv_nnc_util_gpu_ref.cu": "c023b717ca28ec1ca2a97c8b0d374925314bd67829d51365663b74949e0f919f",
+    "lib/nnc/cmd/blas/gpu/ccv_nnc_cmul_gpu_ref.cu": "c6d52ddcf97e89d916d9d18accea0d29488581a6582d188bf6fc98ce14b0db02",
+    "lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu": "a6e43f72f7f6d5635fdd1b98935dce52cc01043f26ad9ff6ce8f0637164c21cd",
+    "lib/nnc/cmd/tanh/gpu/ccv_nnc_tanh_gpu_cudnn.cu": "9e5226953e899bb190831b17c921ff9f31c1aa46faca6009ccbec7a80934ce56"
   }
 }

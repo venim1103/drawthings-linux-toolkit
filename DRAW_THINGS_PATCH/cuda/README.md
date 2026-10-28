@@ -1,8 +1,8 @@
 # Qwen3.5 CUDA Forward Patch Profile
 
-This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty-forward SDPA handling, decoded packed-embedding lookup, and scaled RMSNorm forward support without changing Package files, assertion settings, CPU backends, or the installed runtime.
+This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty forward operations, decoded packed-embedding lookup, scaled RMSNorm forward support, and capability-checked managed-memory advice without changing Package files, assertion settings, CPU backends, or the installed runtime.
 
-The manifest pins community, s4nnc, and CCV revisions and SHA-256 hashes for the two modified registration files and original CUDA SDPA/index-select/RMSNorm sources. The `ccv/` tree contains patched snapshots; `patches/ccv.patch` is the generated unified diff. The patch tool never falls back to copying snapshots over unexpected upstream files.
+The manifest pins community, s4nnc, and CCV revisions and SHA-256 hashes for every modified original source. The `ccv/` tree contains patched snapshots; `patches/ccv.patch` is the generated unified diff. The patch tool never falls back to copying snapshots over unexpected upstream files.
 
 ## Validate
 
@@ -38,15 +38,16 @@ Ruby is a native-build prerequisite. Before Bazel runs, the helper automatically
 ```bash
 DRAWTHINGS_CANDIDATE_DIR="$PWD/output/upgrades/community-0621d819-qwen35-cuda" \
 DRAWTHINGS_BAZEL_ROOT="$PWD/.cache/bazel-qwen35-cuda" \
-DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-scaled-rmsnorm" \
-DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-scaled-rmsnorm \
+DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-forward-safety-v2" \
+DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-forward-safety-v2 \
 DT_BUILD_JOBS=16 bash tools/drawthings_build_candidate.sh build
 
 .venv/bin/python tools/dt_layer_parity_oracle.py native-backends \
 	--binary output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI \
-	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-scaled-rmsnorm \
+	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-forward-safety-v2 \
 	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding --execute-packed-gemm --execute-scaled-rmsnorm \
-	--report output/upgrades/native-backends-qwen35-scaled-rmsnorm.json
+	--execute-empty-forward --execute-memory-advice \
+	--report output/upgrades/native-backends-qwen35-forward-safety-v2.json
 ```
 
 Create the detached community checkout and independent CCV copy before this command; apply the profile only to that private CCV copy. An earlier applied profile is not an upgrade base: create a fresh copy of the pinned pristine CCV source when the profile changes. The report checks six CUDA precision selections, CPU/SDPA controls, the binary hash, and optionally real linked-runtime GPU operations against CPU values. The pristine server is a tested negative control: the required-Qwen-CUDA gate rejects it even though CPU and SDPA controls are present. Integration is accepted only after both the full build and the positive linked-runtime check pass.
@@ -112,6 +113,20 @@ These are fresh-process canaries. Same-process request reuse and variant switchi
 ### Stateful Request Drift: Paused WIP, October 27
 
 The new image-only `--next-model` canary sequence passes finite-image/stream checks on one owned server, but repeated requests are not yet byte-repeatable. Its report explicitly says repeatability was not checked. Native tracing localizes the first difference to the 11-token negative-Qwen first GEMM: identical inputs/packed weights change from activation-quantized GEMM to dense fallback when packed execution fails. A diagnostic-only clear of pending CUDA error 101 restores packed execution; the error's producer is not identified. Sampled file-read fallbacks return with no pending error, so they are not established as the cause. No production error-clear, native patch, binary promotion or default change has been made. Exact evidence and resume gates are recorded at the pause point in the [upgrade/MOSS plan](../../docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md).
+
+### CUDA Error Producers And Forward Safety: October 28
+
+After the restart, the preserved candidate reproduced the same request drift. A private read-only API interceptor identified `cudaMemAdviseSetPreferredLocation` returning CUDA error 101 on this WSL device, which reports no concurrent managed access. The error originated in the model-file managed-memory path, not in the file-read fallback itself. Empty skipped work also launched zero-dimensional datatype-conversion, CMUL and packed-decoding kernels, producing error 9. These pending errors could make an otherwise eligible CUTLASS call report failure and switch to dense GEMM, changing activation-quantization semantics between requests.
+
+The native profile fixes the producers instead of clearing errors: optional managed-memory advice is skipped on devices without the required capability; matching empty conversion and TANH pairs are no-ops; all-empty CMUL is a no-op; GEMM with empty activations/output returns before packed decoding, with or without a retained weight matrix. The TANH guard covers normal and soft-capped execution. Incompatible mixed-empty contracts are rejected. Nonempty paths and prior CUDA errors are not cleared or hidden. The original GEMM null-input LTX crash remains outside this change.
+
+Five additional original sources are hash-pinned. Strict application, snapshot equality, and repeat-apply idempotence pass. The final isolated 16-job build produces SHA-256 `71878a22c08fe7a38a55946d993b35771406c6d13501824e516bfca26c35dcaa`; the original binary is preserved at `output/upgrades/gRPCServerCLI-0621d819-before-cuda-forward-safety`, and the intermediate `135e0999...` binary at `output/upgrades/gRPCServerCLI-0621d819-before-empty-tanh`. `--execute-empty-forward` checks 93 empty/mixed contracts: conversion/CMUL/GEMM across F32/F16/BF16, normal/soft-capped TANH across its supported F32/F16 pairs, and prior-error preservation. `--execute-memory-advice` checks a real managed allocation, unchanged data and prior-error preservation. The pre-fix and intermediate controls are rejected. All **75 CUDA-enabled regression tests** pass.
+
+The intermediate correction made three native same-process two-step Base requests byte-identical, but its full 50-step Base/SFT q8p/SFT i4x/Base sequence retained 0.27% relative RMS difference on the return to Base. A Base-only 50-step control reproduced that difference and identified the remaining zero-grid soft-capped TANH launch. These failed exactness artifacts are retained under `output/q6p_canary_moss_stateful_forward_safety_50steps_20261028` and `output/q6p_canary_moss_base_repeat_forward_safety_50steps_20261028`; all images were finite and prompt-following, which did not override the failed byte-exact gate.
+
+The TANH-complete 50-step sequence passes all four finite-image/stream gates on one server PID, and the return to Base is byte-identical in raw payload, decoded tensor and PNG. All three variants visibly follow the teapot prompt. Fresh-process SFT q8p and SFT i4x controls match their sequence results exactly. A small Base fresh-process difference remains (MAE 0.001588, max 0.04834, approximately 0.27% relative RMS); read-only CUDA API traces show no remaining API failures, and the sampled prompt GEMM trace records no dense fallbacks. Its origin is not certified, so global Base cross-process bit repeatability remains open rather than being hidden by a relaxed threshold.
+
+Artifacts: `output/q6p_canary_moss_stateful_forward_safety_v2_50steps_20261028`; exactness/fresh comparisons: `output/upgrades/moss-image-stateful-20261027/forward-safety-v2-{50steps,fresh-50steps}-20261028-comparison.json`. The sequence telemetry spans 640.692 seconds including startup, peak sampled whole-device memory 2,323 MiB, maximum 67 C and no missing readings. Canonical/private model hashes, installed runtime, legacy CPU tools and active catalogs are verified unchanged. This accepts the tested same-process switching profile, not all M2 prompt/layout coverage, cross-framework parity or default promotion.
 
 ## Coverage And Limits
 

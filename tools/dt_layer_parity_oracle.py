@@ -850,7 +850,8 @@ def inspect_capture_tensor(path: Path) -> Dict[str, Any]:
 
 def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False,
                           execute_sdpa: bool = False, execute_embedding: bool = False,
-                          execute_packed_gemm: bool = False, execute_scaled_rmsnorm: bool = False) -> Dict[str, Any]:
+                          execute_packed_gemm: bool = False, execute_scaled_rmsnorm: bool = False,
+                          execute_empty_forward: bool = False, execute_memory_advice: bool = False) -> Dict[str, Any]:
     compiler, debugger = shutil.which("cc"), shutil.which("lldb")
     if not compiler or not debugger or not binary.is_file():
         raise ValueError("Native backend inspection requires a compiler, LLDB, and candidate executable")
@@ -876,7 +877,7 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
                     'script assert all(result.GetError().Success() for result in selected), str([str(result.GetError()) for result in selected])',
                     'script print("DT_BACKENDS=" + __import__("json").dumps([result.GetValueAsUnsigned(0) for result in selected]))',
                     "process kill"]
-        if execute_qwen or execute_sdpa or execute_embedding or execute_packed_gemm or execute_scaled_rmsnorm:
+        if execute_qwen or execute_sdpa or execute_embedding or execute_packed_gemm or execute_scaled_rmsnorm or execute_empty_forward or execute_memory_advice:
             commands[-1:-1] = [
                 'script execution_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["ccv_nnc_tensor_new", "ccv_nnc_tensor_free", "ccv_nnc_cmd_exec"]]',
                 'script execution_options = lldb.SBExpressionOptions(); execution_options.SetLanguage(lldb.eLanguageTypeC); execution_options.SetIgnoreBreakpoints(True); execution_options.SetStopOthers(False); execution_options.SetUnwindOnError(False); execution_options.SetTimeoutInMicroSeconds(60000000)'
@@ -907,6 +908,18 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
         if execute_scaled_rmsnorm:
             commands[-1:-1] = [
                 'script scaled_ready = all(address != lldb.LLDB_INVALID_ADDRESS for address in execution_addresses); scaled = lldb.frame.EvaluateExpression("dt_probe_native_scaled_rmsnorm(" + ",".join("(void*)%d" % address for address in execution_addresses) + ")", execution_options) if scaled_ready else None; print("DT_SCALED_RMSNORM_EXECUTION=" + str(scaled.GetValueAsSigned(-99) if scaled is not None and scaled.GetError().Success() else -98)); print("DT_SCALED_RMSNORM_ERROR=" + (str(scaled.GetError()) if scaled is not None else "Native symbols missing"))'
+            ]
+        if execute_empty_forward or execute_memory_advice:
+            commands[-1:-1] = [
+                'script status_api_names = ["cudaDeviceSynchronize", "cudaPeekAtLastError", "cudaGetLastError", "cudaSetDevice", "cudaGetDeviceCount", "cudaMemcpy"]; status_api = [lldb.frame.EvaluateExpression("((void *(*)(void*,const char*))dlsym)((void*)0,%s)" % __import__("json").dumps(name)).GetValueAsUnsigned(0) for name in status_api_names]'
+            ]
+        if execute_empty_forward:
+            commands[-1:-1] = [
+                'script empty_arguments = [execution_addresses[2]] + status_api[:5]; empty_ready = all(address not in (0, lldb.LLDB_INVALID_ADDRESS) for address in empty_arguments); empty_forward = lldb.frame.EvaluateExpression("dt_probe_native_empty_forward(" + ",".join("(void*)%d" % address for address in empty_arguments) + ")", execution_options) if empty_ready else None; print("DT_EMPTY_FORWARD_EXECUTION=" + str(empty_forward.GetValueAsSigned(-99) if empty_forward is not None and empty_forward.GetError().Success() else -98)); print("DT_EMPTY_FORWARD_ERROR=" + (str(empty_forward.GetError()) if empty_forward is not None else "Native symbols missing"))'
+            ]
+        if execute_memory_advice:
+            commands[-1:-1] = [
+                'script advice_addresses = [lldb.target.FindSymbols(name).GetContextAtIndex(0).GetSymbol().GetStartAddress().GetLoadAddress(lldb.target) for name in ["cumallocmanaged", "cufree", "cumemadvisereadmostly"]]; advice_arguments = advice_addresses + [status_api[5]] + status_api[:5]; advice_ready = all(address not in (0, lldb.LLDB_INVALID_ADDRESS) for address in advice_arguments); advice = lldb.frame.EvaluateExpression("dt_probe_native_memory_advice(" + ",".join("(void*)%d" % address for address in advice_arguments) + ")", execution_options) if advice_ready else None; print("DT_MEMORY_ADVICE_EXECUTION=" + str(advice.GetValueAsSigned(-99) if advice is not None and advice.GetError().Success() else -98)); print("DT_MEMORY_ADVICE_ERROR=" + (str(advice.GetError()) if advice is not None else "Native symbols missing"))'
             ]
         invocation = [debugger, "--batch"]
         for command in commands:
@@ -939,6 +952,14 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
         scaled_status = int(scaled_match.group(1)) if scaled_match else None
         if execute_scaled_rmsnorm and scaled_status != 0:
             raise ValueError("Native scaled RMSNorm validation did not pass: " + result.stdout[-6000:])
+        empty_match = re.search(r"^DT_EMPTY_FORWARD_EXECUTION=(-?\d+)$", result.stdout, re.M)
+        empty_status = int(empty_match.group(1)) if empty_match else None
+        if execute_empty_forward and empty_status != 0:
+            raise ValueError("Native empty forward validation did not pass: " + result.stdout[-6000:])
+        advice_match = re.search(r"^DT_MEMORY_ADVICE_EXECUTION=(-?\d+)$", result.stdout, re.M)
+        advice_status = int(advice_match.group(1)) if advice_match else None
+        if execute_memory_advice and advice_status != 0:
+            raise ValueError("Native memory advice validation did not pass: " + result.stdout[-6000:])
     expected = [0x5f19790a] * 7 + [0x3d9883e5] * 2
     return {"binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
             "qwen_cuda_registered": selected == expected,
@@ -947,6 +968,8 @@ def native_backend_report(binary: Path, source: Path, execute_qwen: bool = False
             "packed_embedding_cuda_execution": embedding_status,
             "packed_gemm_cuda_execution": packed_status,
             "scaled_rmsnorm_cuda_execution": scaled_status,
+            "empty_forward_cuda_execution": empty_status,
+            "memory_advice_cuda_execution": advice_status,
             "checks": [{"operation": operation, "datatype": datatype, "memory": memory,
                         "backend": hex(backend), "expected": hex(wanted)}
                        for (operation, datatype, memory, _), backend, wanted in zip(checks, selected, expected)]}
@@ -977,6 +1000,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_backends.add_argument("--execute-embedding", action="store_true", help="Validate packed Q5_K/Q6_K row lookup across F32/F16/BF16")
     p_backends.add_argument("--execute-packed-gemm", action="store_true", help="Compare packed Q4_K/Q5_K/Q6_K FP16 GEMM, including Q4_K Hadamard-256, with native CPU decoding")
     p_backends.add_argument("--execute-scaled-rmsnorm", action="store_true", help="Verify non-affine scaled RMSNorm used by Qwen query/key normalization")
+    p_backends.add_argument("--execute-empty-forward", action="store_true", help="Verify empty CUDA conversion/CMUL/GEMM/TANH contracts and preserve prior errors")
+    p_backends.add_argument("--execute-memory-advice", action="store_true", help="Verify native managed-memory advice preserves data and prior CUDA errors")
 
     p_fix = sub.add_parser(
         "qwen35-linear-attn-fixture",
@@ -1031,7 +1056,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(report, indent=2))
         return 0 if report["result"] == "PASS" else 1
     if args.subcommand == "native-backends":
-        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa, args.execute_embedding, args.execute_packed_gemm, args.execute_scaled_rmsnorm)
+        report = native_backend_report(args.binary.resolve(), args.ccv_source.resolve(), args.execute_qwen, args.execute_sdpa, args.execute_embedding, args.execute_packed_gemm, args.execute_scaled_rmsnorm, args.execute_empty_forward, args.execute_memory_advice)
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
