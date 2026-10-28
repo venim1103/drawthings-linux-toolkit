@@ -284,7 +284,17 @@ class CheckpointSafetyTests(unittest.TestCase):
                 store.write_tensor("external", np.zeros(4))
                 store.con.execute(
                     "UPDATE tensors SET type=?, data=? WHERE name='external'",
-                    ((0x10000000 << 32) | 1, struct.pack("<QQQ", 0, 16, 8)),
+                    ((0x10000000 << 32) | 1, struct.pack("<QQ", 16, 8)),
+                )
+                store.write_tensor("external_bad", np.zeros(4))
+                store.con.execute(
+                    "UPDATE tensors SET type=?, data=? WHERE name='external_bad'",
+                    ((0x10000000 << 32) | 1, struct.pack("<IIQQ", 0, 0, 16, 8)),
+                )
+                store.write_tensor("external_encoded", np.zeros(4))
+                store.con.execute(
+                    "UPDATE tensors SET type=?, data=? WHERE name='external_encoded'",
+                    ((0x108a1e8b << 32) | 1, struct.pack("<IIQQ", 16384, 0, 16, 8)),
                 )
             Path(str(path) + "-tensordata").write_bytes(
                 bytes(16) + np.arange(4, dtype="<f2").tobytes()
@@ -294,6 +304,9 @@ class CheckpointSafetyTests(unittest.TestCase):
                 np.testing.assert_array_equal(store.read_f32("split")[1], expected)
                 self.assertTrue(store.read_metadata("external").is_external)
                 np.testing.assert_array_equal(store.read_f32("external")[1], np.arange(4))
+                with self.assertRaisesRegex(ValueError, "invalid external descriptor"):
+                    store.read_f32("external_bad")
+                self.assertEqual(store.read_raw_tensor("external_encoded")[1], np.arange(4, dtype="<f2").tobytes())
             Path(str(path) + "-tensordata").unlink()
             with DrawThingsCkptStore(path) as store:
                 with self.assertRaisesRegex(ValueError, "Missing sidecar"):
@@ -1257,6 +1270,20 @@ class MossConversionBundleTests(unittest.TestCase):
             stream.write(b"\xff\xff\xff\xff")
         with self.assertRaisesRegex(ValueError, "trailer offset"):
             self.module.validate_moss_checkpoint(private)
+
+    def test_native_raw_descriptor_matches_pinned_decoder(self):
+        self.prepare()
+        private = self.destination / "models" / self.source.name
+        with DrawThingsCkptStore(self.source) as original, DrawThingsCkptStore(private) as prepared:
+            for name in original.list_keys():
+                descriptor = prepared.con.execute("SELECT data FROM tensors WHERE name=?", (name,)).fetchone()[0]
+                self.assertEqual(len(descriptor), 16)
+                offset, length = struct.unpack("<QQ", descriptor)
+                expected = original.read_raw_tensor(name)[1]
+                self.assertEqual(length, len(expected))
+                with private.open("rb") as stream:
+                    stream.seek(prepared.trailer_offset + offset)
+                    self.assertEqual(stream.read(length), expected)
 
     def test_bundle_refuses_low_space_and_nonfinite_payload(self):
         from types import SimpleNamespace

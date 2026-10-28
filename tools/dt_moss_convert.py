@@ -58,10 +58,10 @@ def validate_moss_checkpoint(path):
             data_len = metadata.data_len
             if metadata.is_external:
                 descriptor = store.con.execute("SELECT data FROM tensors WHERE name=?", (name,)).fetchone()[0]
-                if not store.trailer_offset or len(descriptor) != 24 or metadata.has_splits:
+                if not store.trailer_offset or len(descriptor) != 16 or metadata.has_splits:
                     raise ValueError(f"Invalid native trailer descriptor: {name}")
-                block_size, padding, offset, data_len = struct.unpack("<IIQQ", descriptor)
-                if block_size or padding or offset % 16384 or store.trailer_offset + offset + data_len > path.stat().st_size:
+                offset, data_len = struct.unpack("<QQ", descriptor)
+                if offset % 16384 or store.trailer_offset + offset + data_len > path.stat().st_size:
                     raise ValueError(f"Invalid native trailer payload range: {name}")
             if metadata.shape != shape or metadata.datatype != datatype or metadata.codec_identifier not in (0, 0x10000000) or metadata.reserved or data_len != expected_bytes:
                 raise ValueError(f"Converted MOSS tensor schema mismatch: {name}")
@@ -91,7 +91,7 @@ def prepare_native_trailer(source, target):
                 offset = (payload_stream.tell() + alignment - 1) // alignment * alignment
                 payload_stream.write(b"\0" * (offset - payload_stream.tell()))
                 payload_stream.write(payload)
-                descriptor = struct.pack("<IIQQ", 0, 0, offset, len(payload))
+                descriptor = struct.pack("<QQ", offset, len(payload))
                 metadata_store.con.execute(
                     "INSERT INTO tensors (name, type, format, datatype, dim, data) VALUES (?, ?, ?, ?, ?, ?)",
                     (name, metadata.tensor_type | (0x10000000 << 32), metadata.tensor_format,
