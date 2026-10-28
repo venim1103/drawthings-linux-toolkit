@@ -6,6 +6,8 @@ CANDIDATE="$ROOT/output/upgrades/community-0621d819-qwen35-cuda"
 SCHEMA="$ROOT/output/upgrades/schemas/0621d819"
 MODELS="$ROOT/output/upgrades/moss-image-stateful-20261027/models"
 MODEL="sft-i4x"
+MODEL_EXPLICIT=0
+BUNDLE=""
 MODE="offload"
 PROMPT=""
 PROMPT_SET=0
@@ -18,12 +20,16 @@ PORT=7862
 TAG=""
 DRY_RUN=0
 METRICS=0
+PREFLIGHT_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage: bash tools/dt_image.sh [options] "Your prompt"
 
   --model sft-i4x|sft-q8p|base-q8p  Model (default: sft-i4x).
+  --bundle PATH                    Converted MOSS inference bundle under output/.
+                                  Cannot be combined with --model.
+                                  Unquantized bundles currently require offload.
   --mode offload|gpu               Weight policy (default: offload).
                                   gpu omits forced CPU weight offload; it is
                                   not a promise of zero CPU or host-memory use.
@@ -36,6 +42,7 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --tag NAME                      Output tag (default: automatic timestamp).
   --metrics                       Save sampled GPU telemetry.
   --dry-run                       Generate config and show the server command.
+  --check                         Check native model selection without generation.
   -h, --help                      Show help.
 
 Starts the verified private candidate, writes a validated PNG and run metadata
@@ -53,10 +60,12 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage; exit 0 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --metrics) METRICS=1; shift ;;
-    --model|--mode|--size|--width|--height|--steps|--seed|--negative-prompt|--port|--tag)
+    --check) PREFLIGHT_ONLY=1; shift ;;
+    --model|--bundle|--mode|--size|--width|--height|--steps|--seed|--negative-prompt|--port|--tag)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       case "$1" in
-        --model) MODEL="$2" ;;
+        --model) MODEL="$2"; MODEL_EXPLICIT=1 ;;
+        --bundle) BUNDLE="$2"; [[ -n "$BUNDLE" ]] || fail "bundle path cannot be empty" ;;
         --mode) MODE="$2" ;;
         --size) WIDTH="$2"; HEIGHT="$2" ;;
         --width) WIDTH="$2" ;;
@@ -76,12 +85,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${PROMPT//[[:space:]]/}" ]] || fail "provide a nonempty quoted prompt"
-case "$MODEL" in
-  sft-i4x) MODEL_FILE="moss_image_sft_i4x.ckpt" ;;
-  sft-q8p) MODEL_FILE="moss_image_sft_q8p.ckpt" ;;
-  base-q8p) MODEL_FILE="moss_image_base_q8p.ckpt" ;;
-  *) fail "model must be sft-i4x, sft-q8p, or base-q8p" ;;
-esac
+if [[ -n "$BUNDLE" ]]; then
+  [[ "$MODEL_EXPLICIT" == "0" ]] || fail "--bundle cannot be combined with --model"
+  [[ "$MODE" == "offload" ]] || fail "unquantized MOSS bundles currently require --mode offload; GPU-only residency is not validated"
+  [[ -d "$BUNDLE" ]] || fail "bundle directory does not exist: $BUNDLE"
+  BUNDLE="$(cd "$BUNDLE" && pwd)"
+  MODEL_FILE="$("$ROOT/.venv/bin/python" "$ROOT/tools/dt_moss_convert.py" --bundle-model "$BUNDLE")"
+  MODELS="$BUNDLE/models"
+  MODEL="bundle:$MODEL_FILE"
+else
+  case "$MODEL" in
+    sft-i4x) MODEL_FILE="moss_image_sft_i4x.ckpt" ;;
+    sft-q8p) MODEL_FILE="moss_image_sft_q8p.ckpt" ;;
+    base-q8p) MODEL_FILE="moss_image_base_q8p.ckpt" ;;
+    *) fail "model must be sft-i4x, sft-q8p, or base-q8p" ;;
+  esac
+fi
 case "$MODE" in
   offload) MODE_ARGUMENTS=(--server-cpu-offload) ;;
   gpu) MODE_ARGUMENTS=() ;;
@@ -95,6 +114,8 @@ if [[ -z "$TAG" ]]; then TAG="image_$(date +%Y%m%d_%H%M%S_%N)"; fi
 [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "tag must contain only letters, digits, dot, underscore, or hyphen"
 [[ ! -e "$ROOT/output/q6p_canary_$TAG" && ! -L "$ROOT/output/q6p_canary_$TAG" ]] || fail "output tag already exists: $TAG"
 EXTRA_ARGUMENTS=()
+if [[ -n "$BUNDLE" ]]; then EXTRA_ARGUMENTS+=(--require-model-version moss_image); fi
+if [[ "$PREFLIGHT_ONLY" == "1" ]]; then EXTRA_ARGUMENTS+=(--preflight-only); fi
 if [[ "$DRY_RUN" == "1" ]]; then EXTRA_ARGUMENTS+=(--dry-run); fi
 if [[ "$METRICS" == "1" ]]; then EXTRA_ARGUMENTS+=(--gpu-metrics); fi
 if [[ -n "$TAG" ]]; then EXTRA_ARGUMENTS+=(--tag "$TAG"); fi

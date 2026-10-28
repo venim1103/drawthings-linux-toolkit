@@ -55,6 +55,16 @@ class DrawThingsCkptStore:
         if chunk_bytes < 1:
             raise ValueError("chunk_bytes must be positive")
         self.chunk_bytes = chunk_bytes
+        self.trailer_offset = 0
+        if self.ckpt_path.is_file():
+            with self.ckpt_path.open("rb") as stream:
+                header = stream.read(64)
+            if len(header) == 64:
+                self.trailer_offset = struct.unpack(">I", header[60:64])[0]
+            if self.trailer_offset and not 100 <= self.trailer_offset <= self.ckpt_path.stat().st_size:
+                raise ValueError("Invalid native trailer offset")
+            if self.trailer_offset and writable:
+                raise ValueError("Native trailer stores are read-only")
         self.con = sqlite3.connect(
             str(self.ckpt_path) if writable else self.ckpt_path.as_uri() + "?mode=ro",
             uri=not writable,
@@ -72,7 +82,9 @@ class DrawThingsCkptStore:
                 "name TEXT, part INTEGER, data BLOB, PRIMARY KEY (name, part))"
             )
         self._sidecar_fd: Optional[int] = None
-        if self.sidecar_path.is_file():
+        if self.trailer_offset:
+            self._sidecar_fd = os.open(str(self.ckpt_path), os.O_RDONLY)
+        elif self.sidecar_path.is_file():
             self._sidecar_fd = os.open(str(self.sidecar_path), os.O_RDONLY)
 
     def list_keys(self) -> List[str]:
@@ -149,7 +161,7 @@ class DrawThingsCkptStore:
         if meta.is_external:
             if len(data_bytes) != 24 or self._sidecar_fd is None:
                 raise ValueError(f"Missing sidecar or invalid external descriptor for {name}")
-            offset = struct.unpack("<Q", data_bytes[8:16])[0]
+            offset = self.trailer_offset + struct.unpack("<Q", data_bytes[8:16])[0]
             length = struct.unpack("<Q", data_bytes[16:24])[0]
             if offset + length > os.fstat(self._sidecar_fd).st_size:
                 raise ValueError(f"External tensor exceeds sidecar bounds: {name}")

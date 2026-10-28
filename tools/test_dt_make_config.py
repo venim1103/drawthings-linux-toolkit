@@ -174,6 +174,50 @@ class ImageCanarySequenceTests(unittest.TestCase):
             os.kill(process_id, 0)
         self.assertFalse((self.root / "output/q6p_canary_sequence-test/sequence_acceptance.json").exists())
 
+    def test_timed_out_request_preserves_progress_and_cleans_up_owned_server(self):
+        self.client.write_text(
+            "import signal, sys\n"
+            "if 'echo' not in sys.argv:\n"
+            "    print('current signpost: fixture_progress')\n"
+            "    signal.pause()\n"
+        )
+        result = self.run_canary(models=(), dry_run=False, extra=("--timeout-sec", "1"))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("RESULT=FAIL canary timed out (1s)", result.stdout)
+        work = self.root / "output/q6p_canary_sequence-test"
+        self.assertIn("current signpost: fixture_progress", (work / "client.log").read_text())
+        self.assertFalse((work / "image_acceptance.json").exists())
+        process_id = int(next(line.split("=", 1)[1] for line in result.stdout.splitlines()
+                              if line.startswith("server_pid=")))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(process_id, 0)
+
+    def test_native_model_preflight_checks_decoded_metadata_without_generation(self):
+        self.client.write_text(
+            "import base64, json, sys\n"
+            "if 'echo' not in sys.argv: raise SystemExit('generation must not run')\n"
+            "models = [{'file': 'first.ckpt', 'version': 'moss_image'}]\n"
+            "print(json.dumps({'override': {'models': base64.b64encode(json.dumps(models).encode()).decode()}}))\n"
+        )
+        result = self.run_canary(models=(), dry_run=False,
+                                 extra=("--preflight-only", "--require-model-version", "moss_image"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("RESULT=PREFLIGHT_PASS", result.stdout)
+        work = self.root / "output/q6p_canary_sequence-test"
+        self.assertEqual(json.loads((work / "model-selection.json").read_text())["result"], "PASS")
+        self.assertFalse((work / "image_acceptance.json").exists())
+
+    def test_native_model_preflight_rejects_missing_catalog_entry(self):
+        self.client.write_text(
+            "import base64, json\n"
+            "print(json.dumps({'override': {'models': base64.b64encode(b'[]').decode()}}))\n"
+        )
+        result = self.run_canary(models=(), dry_run=False,
+                                 extra=("--preflight-only", "--require-model-version", "moss_image"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not decode", result.stderr)
+        self.assertNotIn("RESULT=PREFLIGHT_PASS", result.stdout)
+
 
 class ImageHelperTests(unittest.TestCase):
     def setUp(self):
@@ -188,6 +232,11 @@ class ImageHelperTests(unittest.TestCase):
         (tools / "run_q6p_canary_once.sh").write_text(
             f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(code)} "$@"\n'
         )
+        python = self.root / ".venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+        python.chmod(0o755)
+        (tools / "dt_moss_convert.py").write_text("print('my_moss_f16.ckpt')\n")
 
     def run_helper(self, *arguments):
         return subprocess.run(["bash", str(self.script), *arguments], cwd=self.root,
@@ -256,6 +305,22 @@ class ImageHelperTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("output tag already exists", result.stderr)
         self.assertEqual(payload.read_bytes(), b"existing image")
+
+    def test_verified_bundle_selects_its_private_model_directory(self):
+        bundle = self.root / "output/moss-models/custom"
+        (bundle / "models").mkdir(parents=True)
+        result = self.run_helper("--bundle", str(bundle), "--dry-run", "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        self.assertEqual(arguments[arguments.index("--model") + 1], "my_moss_f16.ckpt")
+        self.assertEqual(arguments[arguments.index("--models-dir") + 1], str(bundle / "models"))
+        self.assertEqual(arguments[arguments.index("--require-model-version") + 1], "moss_image")
+        result = self.run_helper("--bundle", str(bundle), "--model", "base-q8p", "A blue vase")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot be combined", result.stderr)
+        result = self.run_helper("--bundle", str(bundle), "--mode", "gpu", "A blue vase")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("require --mode offload", result.stderr)
 
 
 if __name__ == "__main__":

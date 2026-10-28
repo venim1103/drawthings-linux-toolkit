@@ -1169,6 +1169,112 @@ class SeekerAndDequantTests(unittest.TestCase):
         np.testing.assert_allclose(arr_e5m2, np.array([1.0, -1.0], dtype=np.float32))
 
 
+class MossConversionBundleTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        from tools import dt_moss_convert
+
+        self.module = dt_moss_convert
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "custom_f16.ckpt"
+        self.companions = self.root / "companions"
+        self.companions.mkdir()
+        self.destination = self.root / "output/custom"
+        self.expected_companions = {}
+        for name, payload in (("encoder.ckpt", b"encoder fixture"), ("vae.ckpt", b"vae fixture")):
+            (self.companions / name).write_bytes(payload)
+            self.expected_companions[name] = hashlib.sha256(payload).hexdigest()
+        self.contract = {"tensors": {
+            "weight": {"dt_names": ["__dit__[t-weight]"], "target_shapes": [[2, 2]], "f16_store_datatype": "F16"},
+            "time_embedding.2.weight": {"dt_names": ["__dit__[t-time]"], "target_shapes": [[2]], "f16_store_datatype": "F32"},
+        }}
+        with DrawThingsCkptStore(self.source, writable=True) as store:
+            store.write_tensor("__dit__[t-weight]", np.ones((2, 2), dtype=np.float32), datatype=DT_FLOAT16)
+            store.write_tensor("__dit__[t-time]", np.array([1e-9, -1e-9], dtype=np.float32), datatype=DT_FLOAT32)
+        for attribute, value in (("ROOT", self.root), ("COMPANIONS", self.expected_companions)):
+            replacement = patch.object(dt_moss_convert, attribute, value)
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        replacement = patch.object(dt_moss_convert, "build_moss_image_contract", return_value=self.contract)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+
+    def prepare(self):
+        return self.module.prepare_moss_bundle(self.source, self.destination, self.companions)
+
+    def test_bundle_is_independent_and_existing_destination_is_preserved(self):
+        self.assertEqual(self.prepare()["result"], "PASS")
+        self.assertEqual(self.module.verify_moss_bundle(self.destination), self.source.name)
+        private = self.destination / "models" / self.source.name
+        catalog = json.loads((self.destination / "models/custom.json").read_text())[0]
+        self.assertIs(catalog["upcast_attention"], False)
+        self.assertEqual(catalog["version"], "moss_image")
+        with DrawThingsCkptStore(self.source) as original, DrawThingsCkptStore(private) as prepared:
+            self.assertGreater(prepared.trailer_offset, 0)
+            self.assertEqual(original.trailer_offset, 0)
+            for name in original.list_keys():
+                self.assertEqual(original.read_raw_tensor(name)[1], prepared.read_raw_tensor(name)[1])
+        self.assertFalse(Path(str(private) + "-tensordata").exists())
+        self.assertNotEqual(private.stat().st_ino, self.source.stat().st_ino)
+        self.assertEqual(private.stat().st_nlink, 1)
+        with self.assertRaises(FileExistsError):
+            self.prepare()
+        self.assertEqual(self.module.verify_moss_bundle(self.destination), self.source.name)
+
+    def test_bundle_rejects_changed_payload_and_catalog(self):
+        self.prepare()
+        payload = self.destination / "models/encoder.ckpt"
+        payload.write_bytes(b"changed encoder")
+        with self.assertRaisesRegex(ValueError, "payload changed"):
+            self.module.verify_moss_bundle(self.destination)
+        payload.write_bytes(b"encoder fixture")
+        (self.destination / "models/custom.json").write_text("[]")
+        with self.assertRaisesRegex(ValueError, "catalog changed"):
+            self.module.verify_moss_bundle(self.destination)
+
+    def test_bundle_refuses_outside_output_and_malformed_precision(self):
+        with self.assertRaisesRegex(ValueError, "under this workspace"):
+            self.module.prepare_moss_bundle(self.source, self.root / "live", self.companions)
+        with DrawThingsCkptStore(self.source, writable=True) as store:
+            store.write_tensor("__dit__[t-time]", np.zeros(2, dtype=np.float32), datatype=DT_FLOAT16)
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+
+    def test_native_trailer_preserves_source_and_rejects_bad_descriptor(self):
+        source_hash = self.module.file_digest(self.source)
+        self.prepare()
+        self.assertEqual(self.module.file_digest(self.source), source_hash)
+        private = self.destination / "models" / self.source.name
+        with self.assertRaises(FileExistsError):
+            self.module.prepare_native_trailer(self.source, private)
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            DrawThingsCkptStore(private, writable=True)
+        with private.open("r+b") as stream:
+            stream.seek(60)
+            stream.write(b"\xff\xff\xff\xff")
+        with self.assertRaisesRegex(ValueError, "trailer offset"):
+            self.module.validate_moss_checkpoint(private)
+
+    def test_bundle_refuses_low_space_and_nonfinite_payload(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        with patch.object(self.module.shutil, "disk_usage", return_value=SimpleNamespace(free=0)):
+            with self.assertRaisesRegex(ValueError, "Insufficient filesystem space"):
+                self.prepare()
+        self.assertFalse(self.destination.exists())
+        with DrawThingsCkptStore(self.source, writable=True) as store:
+            store.con.execute("UPDATE tensors SET data=? WHERE name=?", (
+                np.full((2, 2), np.nan, dtype="<f2").tobytes(), "__dit__[t-weight]"))
+        with self.assertRaisesRegex(ValueError, "nonfinite tensor"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(list(self.destination.parent.glob(".custom.tmp.*")), [])
+
+
 class ContractAndAuditorTests(unittest.TestCase):
     def test_auditor_checks_generic_head_parameters_and_importer_support(self):
         text = (
@@ -1195,6 +1301,61 @@ class ContractAndAuditorTests(unittest.TestCase):
                 for rule in rules.values() for index, name in enumerate(rule["dt_names"])}
         digest = hashlib.sha256(json.dumps(sorted(metadata.items()), separators=(",", ":")).encode()).hexdigest()
         self.assertEqual(digest, "15df82ca64fb5a9469be36868e502f00fd0b0957aad242bb7af43aec9085931d")
+
+    def test_moss_source_preflight_requires_complete_architecture(self):
+        from types import SimpleNamespace
+        from tools.dt_moss_convert import inspect_moss_source
+
+        contract = build_moss_image_contract()
+        metadata = {name: SimpleNamespace(shape=rule["source_shape"])
+                    for name, rule in contract["tensors"].items()}
+        seeker = SimpleNamespace(tensors=metadata, keys=lambda: list(metadata),
+                                 resolve_key=lambda name, **options: name if name in metadata else None)
+        report = inspect_moss_source(seeker)
+        self.assertEqual(report["source_tensors"], 462)
+        self.assertEqual(report["target_tensors"], 524)
+        self.assertIn("time_embedding.2.weight", report["fp32_preserved_tensors"])
+        metadata["rope.bands"] = SimpleNamespace(shape=[16])
+        seeker.read_f32 = lambda name: np.power(10000.0, -np.arange(16) / 16).astype(np.float32)
+        self.assertEqual(inspect_moss_source(seeker)["validated_generated_buffers"], ["rope.bands"])
+        seeker.read_f32 = lambda name: np.ones(16, dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "rotary frequencies"):
+            inspect_moss_source(seeker)
+        del metadata["rope.bands"]
+        metadata["layers.0.proj.q.weight"] = SimpleNamespace(shape=[3072, 1024])
+        with self.assertRaisesRegex(ValueError, "shape_mismatches"):
+            inspect_moss_source(seeker)
+        del metadata["layers.0.proj.q.weight"]
+        with self.assertRaisesRegex(ValueError, "missing_count"):
+            inspect_moss_source(seeker)
+        metadata["layers.0.proj.q.weight"] = SimpleNamespace(shape=[3072, 3072])
+        metadata["unexpected.weight"] = SimpleNamespace(shape=[1])
+        with self.assertRaisesRegex(ValueError, "unmapped_examples"):
+            inspect_moss_source(seeker)
+
+    def test_moss_preflight_rejects_incompatible_config_and_quantized_source(self):
+        from types import SimpleNamespace
+        from tools.dt_moss_convert import inspect_moss_config, inspect_moss_source
+
+        config = {"dim": 3072, "ffn_dim": 8192, "freq_dim": 256, "latent_channels": 128,
+                  "num_heads": 24, "num_layers": 42, "rope_base": 10000.0, "text_dim": 4096}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps(config))
+            self.assertEqual(inspect_moss_config(path)["validated"]["num_layers"], 42)
+            config["num_layers"] = 40
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "config is incompatible"):
+                inspect_moss_config(path)
+        contract = build_moss_image_contract()
+        metadata = {name: SimpleNamespace(shape=rule["source_shape"], dtype="BF16")
+                    for name, rule in contract["tensors"].items()}
+        first = next(iter(metadata))
+        metadata[first].dtype = "F8_E4M3"
+        seeker = SimpleNamespace(tensors=metadata, keys=lambda: list(metadata),
+                                 resolve_key=lambda name, **options: name if name in metadata else None)
+        with self.assertRaisesRegex(ValueError, "learned-weight precision"):
+            inspect_moss_source(seeker)
 
     def test_ltx23_contract_matches_exact_verified_counts(self):
         contract = build_ltx23_contract()

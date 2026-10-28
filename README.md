@@ -24,6 +24,29 @@ Options include `--model sft-i4x|sft-q8p|base-q8p`, `--width 768 --height 512`, 
 
 Both outputs were finite and visibly prompt-following, with complete streams/chunks and post-Echo; no telemetry readings were missing. These are individual observations, not controlled performance benchmarks or GPU-mode certification for q8p variants. Offload remains the conservative default. Evidence: `output/upgrades/moss-image-stateful-20261027/image-helper-gpu-i4x-50steps-20261028-summary.json` and the corresponding `image_helper_gpu_i4x_*_50steps_20261028` canaries. Wider model/quality limits remain in the [MOSS integration plan](docs/UPGRADE_AND_MOSS_IMAGE_PLAN_2026-10-23.md).
 
+### Custom MOSS conversion (experimental)
+
+Use full-precision BF16/F16/F32 safetensors from the supported 42-layer MOSS Image architecture, either a single file or an explicit sharded index. Quantized inputs, incomplete architectures and incompatible rotary frequencies are rejected. Adjacent `config.json` is checked when present; `--config` selects it explicitly.
+
+The original BF16 transformer downloaded in this workspace is `OpenMOSS-Team/MOSS-Image-Base` at revision `85975793d8b3d432f1b6e27f352abaa4c2a4c0d3`. Use its explicit index below, or replace `SOURCE` with a custom full-precision safetensors file/index:
+
+```bash
+SOURCE=dt-models/moss-image-base-source-85975793/transformer/diffusion_pytorch_model.safetensors.index.json
+.venv/bin/python tools/dt_moss_convert.py "$SOURCE" --inspect
+.venv/bin/python tools/dt_moss_convert.py "$SOURCE" \
+	--output dt-models/my_moss_f16.ckpt \
+	--prepare-inference output/moss-models/my-moss
+bash tools/dt_image.sh --bundle output/moss-models/my-moss --check "Model selection check"
+```
+
+Conversion writes 524 native tensors using only the supplied learned values. The timestep-output projection is preserved as F32; other tensors are F16. Bundle preparation packs native trailer storage offline and creates independent writable copies of the pinned Qwen encoder and Flux VAE from `dt-models`. It never registers the model in an active catalog or replaces an existing output. `bundle.json` records source and packaged hashes. To prepare an already converted checkpoint, use `--prepare-existing dt-models/my_moss_f16.ckpt --prepare-inference output/moss-models/my-moss` instead of a source/`--output`.
+
+`--check` verifies bundle integrity and the model's decoded native catalog entry, then exits without generation. Custom bundles require `--mode offload`; it is not GPU-only certification. Remove `--check` and provide an image prompt to request generation. Native loading, finiteness and prompt-following quality are separate gates.
+
+Original-source validation on 2026-10-28: the offline trailer bundle passed native model selection and a two-step finite 512x512 image check without a sidecar rewrite. This is only loading/finiteness acceptance. The 50-step offloaded request timed out after 1,800 seconds, with one dominant CPU worker despite 20 allowed logical CPUs and no CPU quota or thread-limit environment settings. A bounded 60-second unbuffered probe reaches `textEncoded` and `imageEncoded`, but no sampling signpost. The hot function is not yet identified; custom prompt-following quality and practical full inference remain unaccepted. Client progress is now unbuffered so future timeouts retain received signposts.
+
+Budget about 18 GiB for one original-sized inference bundle and about 27 GiB peak free space during preparation, in addition to the source and converted checkpoint. Preparation checks filesystem headroom, but cannot measure Windows host capacity from this container. Keep canonical weights and diagnostic reports; obsolete independent test copies are the first cleanup candidates. Deleting files inside WSL/Docker frees Linux blocks but may not immediately shrink its virtual disk on Windows. Do not delete the virtual disk or reset Docker to reclaim it.
+
 ## Current recommended flow (LTX2.3 custom models)
 
 Use the streamlined 3-command pipeline:

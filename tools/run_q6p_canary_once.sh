@@ -9,6 +9,8 @@ PROTO_CACHE_DIR="$ROOT/.cache/dt_proto"
 BINDINGS_DIR="$ROOT/.cache/dt_flatbuf_py"
 MODELS_DIR="$ROOT/dt-models"
 DRY_RUN=0
+PREFLIGHT_ONLY=0
+REQUIRED_MODEL_VERSION=""
 IMAGE_MODE=0
 REQUIRED_MODEL_FILES=()
 NEXT_MODELS=()
@@ -72,6 +74,9 @@ Options:
                             no audio, and post-Echo; export image.png and metadata.
                             Uses one frame and disables resolution-dependent shift.
   --dry-run                 Generate config and print the server command only.
+  --preflight-only          Start server, validate requested model metadata, then stop.
+  --require-model-version <version>
+                            Require every requested model in decoded server metadata.
   --server-gpu <n>          GPU id passed to server launcher (default: 0).
   --server-cpu-offload      Pass --cpu-offload to server launcher.
   --server-fread-preferred  Pass --fread-preferred to server launcher.
@@ -164,6 +169,15 @@ if [[ $# -gt 0 ]]; then
       --dry-run)
         DRY_RUN=1
         shift
+        ;;
+      --preflight-only)
+        PREFLIGHT_ONLY=1
+        shift
+        ;;
+      --require-model-version)
+        REQUIRED_MODEL_VERSION="${2:-}"
+        [[ -n "$REQUIRED_MODEL_VERSION" ]] || { echo "error: model version cannot be empty" >&2; exit 1; }
+        shift 2
         ;;
       --server-gpu)
         SERVER_GPU="${2:-}"
@@ -674,6 +688,39 @@ if [[ "$READY" != "1" ]]; then
   exit 1
 fi
 
+if [[ -n "$REQUIRED_MODEL_VERSION" ]]; then
+  timeout -k 5s 15s "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" \
+    --host "$HOST" echo --name "model-selection-preflight" > "$WORK_DIR/server-metadata.json"
+  "$PYTHON_BIN" - "$WORK_DIR" "$REQUIRED_MODEL_VERSION" "${REQUEST_MODELS[@]}" <<'PY'
+import base64
+import json
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+reply = json.loads((work / "server-metadata.json").read_text())
+encoded = reply.get("override", {}).get("models")
+if not isinstance(encoded, str):
+    raise SystemExit("Server did not return decoded model specifications")
+specifications = json.loads(base64.b64decode(encoded, validate=True))
+if not isinstance(specifications, list):
+    raise SystemExit("Server model specifications are not a list")
+selected = []
+for filename in sys.argv[3:]:
+    matches = [item for item in specifications if isinstance(item, dict) and item.get("file") == filename]
+    if len(matches) != 1 or matches[0].get("version") != sys.argv[2]:
+        raise SystemExit(f"Server did not decode {filename!r} as required model version {sys.argv[2]!r}")
+    selected.append(matches[0])
+(work / "model-selection.json").write_text(json.dumps({"result": "PASS", "models": selected}, indent=2) + "\n")
+print("validated_server_model_selection=" + sys.argv[2])
+PY
+fi
+if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
+  stop_server
+  echo "RESULT=PREFLIGHT_PASS"
+  exit 0
+fi
+
 run_request() {
   local MODEL_KEY="$1" WORK_DIR="$2" LAST_REQUEST="$3"
   local CONFIG_BIN="$WORK_DIR/config.bin" CLIENT_LOG="$WORK_DIR/client.log"
@@ -685,7 +732,7 @@ run_request() {
 
   set +e
   if [[ "$NO_TIMEOUT" == "1" ]]; then
-    "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
+    "$PYTHON_BIN" -u "$ROOT/tools/dt_api_client.py" \
         "${CLIENT_SCHEMA_ARGS[@]}" \
         --host "$HOST" \
         --max-recv-bytes 134217728 \
@@ -700,7 +747,7 @@ run_request() {
     CANARY_RC=$?
   else
     timeout -k 10s "${TIMEOUT_SEC}s" \
-      "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" \
+      "$PYTHON_BIN" -u "$ROOT/tools/dt_api_client.py" \
         "${CLIENT_SCHEMA_ARGS[@]}" \
         --host "$HOST" \
         --max-recv-bytes 134217728 \
