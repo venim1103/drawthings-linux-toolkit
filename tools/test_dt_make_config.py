@@ -175,5 +175,88 @@ class ImageCanarySequenceTests(unittest.TestCase):
         self.assertFalse((self.root / "output/q6p_canary_sequence-test/sequence_acceptance.json").exists())
 
 
+class ImageHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        tools = self.root / "tools"
+        tools.mkdir()
+        self.script = tools / "dt_image.sh"
+        shutil.copyfile(Path(__file__).with_name(self.script.name), self.script)
+        code = "import json, os, sys; print(json.dumps({'args': sys.argv[1:], 'library_path': os.environ.get('LD_LIBRARY_PATH', '')}))"
+        (tools / "run_q6p_canary_once.sh").write_text(
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(code)} "$@"\n'
+        )
+
+    def run_helper(self, *arguments):
+        return subprocess.run(["bash", str(self.script), *arguments], cwd=self.root,
+                              capture_output=True, text=True, timeout=10)
+
+    def test_default_profile_uses_private_candidate_and_offload(self):
+        result = self.run_helper("A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout.splitlines()[-1])
+        arguments = report["args"]
+        self.assertEqual(arguments[arguments.index("--model") + 1], "moss_image_sft_i4x.ckpt")
+        self.assertEqual(arguments[arguments.index("--sampler") + 1], "DDIMTrailing")
+        self.assertEqual(arguments[arguments.index("--steps") + 1], "50")
+        self.assertEqual(arguments[arguments.index("--negative-prompt") + 1], "")
+        self.assertIn("--server-cpu-offload", arguments)
+        self.assertIn("--image-mode", arguments)
+        self.assertRegex(arguments[arguments.index("--tag") + 1], r"^image_\d{8}_\d{6}_\d+$")
+        self.assertEqual(arguments[arguments.index("--models-dir") + 1],
+                         str(self.root / "output/upgrades/moss-image-stateful-20261027/models"))
+        self.assertTrue(arguments[arguments.index("--grpc-bin") + 1].startswith(str(self.root / "output/upgrades")))
+        self.assertIn("/usr/lib/wsl/lib", report["library_path"])
+
+    def test_gpu_mode_and_models_forward_without_forced_offload(self):
+        for model, filename in (("sft-i4x", "moss_image_sft_i4x.ckpt"),
+                                ("sft-q8p", "moss_image_sft_q8p.ckpt"),
+                                ("base-q8p", "moss_image_base_q8p.ckpt")):
+            with self.subTest(model=model):
+                result = self.run_helper("--mode", "gpu", "--model", model,
+                                         "--size", "1024", "--seed", "123", "--metrics", "--dry-run", "A blue vase")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+                self.assertNotIn("--server-cpu-offload", arguments)
+                self.assertEqual(arguments[arguments.index("--model") + 1], filename)
+                self.assertEqual(arguments[arguments.index("--width") + 1], "1024")
+                self.assertEqual(arguments[arguments.index("--height") + 1], "1024")
+                self.assertIn("--dry-run", arguments)
+                self.assertIn("--gpu-metrics", arguments)
+
+    def test_prompt_metacharacters_and_negative_text_remain_literal(self):
+        marker = self.root / "must-not-exist"
+        prompt = f"A blue vase; $(touch {marker}), 'glass' and $HOME"
+        result = self.run_helper("--negative-prompt", "blur; $HOME", "--width", "768", "--height", "512", prompt)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        self.assertEqual(arguments[arguments.index("--prompt") + 1], prompt)
+        self.assertEqual(arguments[arguments.index("--negative-prompt") + 1], "blur; $HOME")
+        self.assertFalse(marker.exists())
+
+    def test_invalid_options_and_dimensions_are_rejected(self):
+        cases = (("",), ("  ",), ("", "second"), ("--mode", "invalid", "prompt"),
+                 ("--model", "../model.ckpt", "prompt"), ("--size", "513", "prompt"),
+                 ("--width", "0", "prompt"), ("--tag", "../escape", "prompt"),
+                 ("--unknown", "prompt"), ("--mode",), ("first", "second"))
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_helper(*arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("error:", result.stderr)
+
+    def test_existing_output_tag_is_not_reused(self):
+        directory = self.root / "output/q6p_canary_keep"
+        directory.mkdir(parents=True)
+        payload = directory / "image.png"
+        payload.write_bytes(b"existing image")
+        result = self.run_helper("--tag", "keep", "prompt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("output tag already exists", result.stderr)
+        self.assertEqual(payload.read_bytes(), b"existing image")
+
+
 if __name__ == "__main__":
     unittest.main()
