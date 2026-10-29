@@ -42,7 +42,21 @@ def file_digest(path):
     return digest.hexdigest()
 
 
-def validate_moss_checkpoint(path):
+MOSS_I4X_IDENTIFIER = 0x018A1EAB
+
+
+def moss_i4x_eligible(name, shape, datatype):
+    return (datatype == DATATYPE_NAME_TO_CODE["F16"] and len(shape) == 2 and min(shape) > 1
+            and shape[1] % 256 == 0
+            and not any(token in name for token in ("embedder", "ada_ln", "final_linear")))
+
+
+def moss_i4x_bytes(shape):
+    rows, columns = shape
+    return ((rows * (columns // 256) * 144 + 127) // 128) * 128 + rows * 2
+
+
+def validate_moss_checkpoint(path, *, allow_i4x=False):
     path = Path(path).resolve()
     if not path.is_file() or Path(str(path) + "-tensordata").exists():
         raise ValueError("Expected an existing converted checkpoint without a sidecar")
@@ -54,7 +68,9 @@ def validate_moss_checkpoint(path):
             raise ValueError("Converted MOSS keyset differs from the complete native contract")
         for name, (shape, datatype) in expected.items():
             metadata = store.read_metadata(name)
-            expected_bytes = math.prod(shape) * (4 if datatype == DATATYPE_NAME_TO_CODE["F32"] else 2)
+            packed = allow_i4x and moss_i4x_eligible(name, shape, datatype)
+            identifier = MOSS_I4X_IDENTIFIER if packed else 0
+            expected_bytes = moss_i4x_bytes(shape) if packed else math.prod(shape) * (4 if datatype == DATATYPE_NAME_TO_CODE["F32"] else 2)
             data_len = metadata.data_len
             if metadata.is_external:
                 descriptor = store.con.execute("SELECT data FROM tensors WHERE name=?", (name,)).fetchone()[0]
@@ -63,7 +79,7 @@ def validate_moss_checkpoint(path):
                 offset, data_len = struct.unpack("<QQ", descriptor)
                 if offset % 16384 or store.trailer_offset + offset + data_len > path.stat().st_size:
                     raise ValueError(f"Invalid native trailer payload range: {name}")
-            if metadata.shape != shape or metadata.datatype != datatype or metadata.codec_identifier not in (0, 0x10000000) or metadata.reserved or data_len != expected_bytes:
+            if metadata.shape != shape or metadata.datatype != datatype or metadata.codec_identifier not in (identifier, identifier | 0x10000000) or metadata.reserved or data_len != expected_bytes:
                 raise ValueError(f"Converted MOSS tensor schema mismatch: {name}")
         if store.con.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise ValueError("Converted checkpoint failed SQLite checking")
@@ -71,7 +87,7 @@ def validate_moss_checkpoint(path):
     return {"result": "PASS", "tensor_count": len(expected), "storage_format": storage_format}
 
 
-def prepare_native_trailer(source, target):
+def prepare_native_trailer(source, target, *, allow_i4x=False):
     if target.exists():
         raise FileExistsError(f"Trailer output already exists: {target}")
     alignment = 16384
@@ -81,13 +97,17 @@ def prepare_native_trailer(source, target):
         with DrawThingsCkptStore(source) as original, DrawThingsCkptStore(metadata_path, writable=True) as metadata_store, payload_path.open("xb") as payload_stream:
             for name in original.list_keys():
                 metadata, payload = original.read_raw_tensor(name)
-                if metadata.codec_identifier & ~0x10000000 or metadata.reserved:
+                identifier = metadata.codec_identifier & ~0x10000000
+                packed = allow_i4x and identifier == MOSS_I4X_IDENTIFIER
+                if (identifier and not packed) or metadata.reserved:
                     raise ValueError(f"Trailer packaging requires raw tensors: {name}")
                 if metadata.datatype not in (DATATYPE_NAME_TO_CODE["F16"], DATATYPE_NAME_TO_CODE["F32"]):
                     raise ValueError(f"Unsupported trailer tensor precision: {name}")
                 dtype = "<f4" if metadata.datatype == DATATYPE_NAME_TO_CODE["F32"] else "<f2"
-                if not np.isfinite(np.frombuffer(payload, dtype=dtype)).all():
+                if not packed and not np.isfinite(np.frombuffer(payload, dtype=dtype)).all():
                     raise ValueError(f"Cannot package nonfinite tensor: {name}")
+                if packed and (not moss_i4x_eligible(name, metadata.shape, metadata.datatype) or len(payload) != moss_i4x_bytes(metadata.shape)):
+                    raise ValueError(f"Invalid packed MOSS tensor: {name}")
                 offset = (payload_stream.tell() + alignment - 1) // alignment * alignment
                 payload_stream.write(b"\0" * (offset - payload_stream.tell()))
                 payload_stream.write(payload)
@@ -111,7 +131,7 @@ def prepare_native_trailer(source, target):
             os.fsync(output_stream.fileno())
 
 
-def prepare_moss_bundle(checkpoint, destination, companions_dir):
+def prepare_moss_bundle(checkpoint, destination, companions_dir, *, quantization=None):
     checkpoint = Path(checkpoint).resolve()
     destination = Path(destination).expanduser().resolve()
     companions_dir = Path(companions_dir).resolve()
@@ -123,7 +143,9 @@ def prepare_moss_bundle(checkpoint, destination, companions_dir):
         raise ValueError("Bundle checkpoint basename must use letters, digits, dot, underscore or hyphen")
     if checkpoint.name in COMPANIONS:
         raise ValueError("Converted model basename collides with a companion")
-    validation = validate_moss_checkpoint(checkpoint)
+    if quantization not in (None, "i4x"):
+        raise ValueError("Unsupported MOSS bundle quantization")
+    validation = validate_moss_checkpoint(checkpoint, allow_i4x=quantization == "i4x")
     sources = [checkpoint] + [companions_dir / name for name in COMPANIONS]
     for source in sources:
         if not source.is_file() or source.is_symlink():
@@ -143,8 +165,8 @@ def prepare_moss_bundle(checkpoint, destination, companions_dir):
                 raise ValueError(f"Companion hash differs from the validated payload: {source.name}")
             target = models / source.name
             if source == checkpoint:
-                prepare_native_trailer(source, target)
-                validation = validate_moss_checkpoint(target)
+                prepare_native_trailer(source, target, allow_i4x=quantization == "i4x")
+                validation = validate_moss_checkpoint(target, allow_i4x=quantization == "i4x")
             else:
                 subprocess.run(["cp", "--reflink=auto", "--no-clobber", "--", str(source), str(target)], check=True)
             target.chmod(0o600)
@@ -165,6 +187,8 @@ def prepare_moss_bundle(checkpoint, destination, companions_dir):
         catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
         report = {"schema_version": 1, "profile": "moss_image", "model": checkpoint.name,
                   "validation": validation, "files": records, "catalog_sha256": file_digest(catalog_path)}
+        if quantization is not None:
+            report["quantization"] = quantization
         (staging / "bundle.json").write_text(json.dumps(report, indent=2) + "\n")
         for path in (catalog_path, staging / "bundle.json"):
             with path.open("rb") as stream:
@@ -216,7 +240,10 @@ def verify_moss_bundle(destination):
                 "objective": {"u": {"condition_scale": 1000}}}
     if not isinstance(specification, dict) or not isinstance(specification.get("name"), str) or any(specification.get(key) != value for key, value in required.items()):
         raise ValueError("Private model catalog is incompatible with the native MOSS specification")
-    if validate_moss_checkpoint(models / model)["storage_format"] != "native_trailer":
+    quantization = report.get("quantization")
+    if quantization not in (None, "i4x"):
+        raise ValueError("Unsupported MOSS bundle quantization")
+    if validate_moss_checkpoint(models / model, allow_i4x=quantization == "i4x")["storage_format"] != "native_trailer":
         raise ValueError("Regenerate the inference bundle with offline native trailer storage")
     return model
 
@@ -280,9 +307,12 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, help="Source transformer config (otherwise validate adjacent config.json if present)")
     parser.add_argument("--prepare-inference", type=Path, help="Publish an independent inference bundle under output/")
     parser.add_argument("--prepare-existing", type=Path, help="Prepare a previously converted inline MOSS checkpoint")
+    parser.add_argument("--quantization", choices=["i4x"], help="Explicit packed profile for --prepare-existing")
     parser.add_argument("--companions-dir", type=Path, default=ROOT / "dt-models")
     parser.add_argument("--bundle-model", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.quantization is not None and args.prepare_existing is None:
+        parser.error("--quantization requires --prepare-existing")
     if args.bundle_model is not None:
         if args.source is not None or args.output is not None or args.prepare_existing is not None:
             parser.error("bundle verification cannot be combined with conversion")
@@ -291,7 +321,8 @@ def main(argv=None):
     if args.prepare_existing is not None:
         if args.source is not None or args.output is not None or args.prepare_inference is None:
             parser.error("--prepare-existing requires --prepare-inference and no source/--output")
-        print(json.dumps(prepare_moss_bundle(args.prepare_existing, args.prepare_inference, args.companions_dir), indent=2))
+        print(json.dumps(prepare_moss_bundle(args.prepare_existing, args.prepare_inference, args.companions_dir,
+                           quantization=args.quantization), indent=2))
         return 0
     if args.source is None:
         parser.error("source is required")

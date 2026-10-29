@@ -1198,6 +1198,66 @@ class SeekerAndDequantTests(unittest.TestCase):
         np.testing.assert_allclose(arr_e5m2, np.array([1.0, -1.0], dtype=np.float32))
 
 
+class MossI4xQuantizationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from tools.dt_moss_quantize import NativeI4xEncoder
+
+        root = Path(__file__).resolve().parents[1]
+        sources = list(root.glob(".cache/bazel-upgrade/*/external/ccv"))
+        source = Path(os.environ["DT_CCV_SOURCE_DIR"]) if "DT_CCV_SOURCE_DIR" in os.environ else (sources[0] if sources else None)
+        if source is None or shutil.which("cc") is None:
+            raise unittest.SkipTest("Pinned native CCV source and C compiler are required")
+        cls.native_build = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.native_build.cleanup)
+        cls.encoder = NativeI4xEncoder(source, cls.native_build.name)
+
+    def test_native_roundtrip_matches_independent_regular_hadamard(self):
+        base = np.array([[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]], dtype=np.float32)
+        rotation = np.kron(np.kron(np.kron(base, base), base), base) / 16
+        for columns in (256, 512):
+            values = np.random.default_rng(42).normal(size=(4, columns)).astype(np.float16)
+            payload, error = self.encoder.encode(values)
+            decoded = self.encoder.decode_rotated(payload, values.shape)
+            restored = (decoded.astype(np.float32).reshape(-1, 256) @ rotation).reshape(values.shape)
+            self.assertLess(float(np.linalg.norm(restored - values) / np.linalg.norm(values.astype(np.float32))), 0.15)
+            self.assertLess(error, 0.15)
+            self.assertLess(len(payload), values.nbytes)
+            with self.assertRaisesRegex(ValueError, "payload length"):
+                self.encoder.decode_rotated(payload[:-1], values.shape)
+        for values in (np.ones((2, 255)), np.full((2, 256), np.nan)):
+            with self.assertRaises(ValueError):
+                self.encoder.encode(values)
+
+    def test_quantization_preserves_sensitive_values_and_refuses_overwrite(self):
+        from unittest.mock import patch
+        from tools import dt_moss_convert, dt_moss_quantize
+
+        contract = {"tensors": {
+            "weight": {"dt_names": ["__dit__[t-weight]"], "target_shapes": [[2, 256]], "f16_store_datatype": "F16"},
+            "time_embedding.2.weight": {"dt_names": ["__dit__[t-time]"], "target_shapes": [[2]], "f16_store_datatype": "F32"},
+        }}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(dt_moss_convert, "build_moss_image_contract", return_value=contract):
+            source = Path(temporary) / "source.ckpt"
+            output = Path(temporary) / "custom_i4x.ckpt"
+            with DrawThingsCkptStore(source, writable=True) as store:
+                store.write_tensor("__dit__[t-weight]", np.random.default_rng(7).normal(size=(2, 256)), datatype=DT_FLOAT16)
+                store.write_tensor("__dit__[t-time]", np.array([1e-9, -1e-9]), datatype=DT_FLOAT32)
+            before = dt_moss_convert.file_digest(source)
+            report = dt_moss_quantize.quantize_moss_checkpoint(source, output, self.encoder, jobs=2)
+            self.assertEqual((report["quantized_tensors"], report["preserved_tensors"]), (1, 1))
+            self.assertEqual(dt_moss_convert.file_digest(source), before)
+            self.assertEqual(output.stat().st_nlink, 1)
+            with DrawThingsCkptStore(source) as original, DrawThingsCkptStore(output) as quantized:
+                self.assertEqual(original.read_raw_tensor("__dit__[t-time]"), quantized.read_raw_tensor("__dit__[t-time]"))
+                self.assertEqual(quantized.read_metadata("__dit__[t-weight]").codec_identifier, 0x018A1EAB)
+            with self.assertRaises(FileExistsError):
+                dt_moss_quantize.quantize_moss_checkpoint(source, output, self.encoder)
+            with self.assertRaisesRegex(ValueError, "schema mismatch"):
+                dt_moss_convert.validate_moss_checkpoint(output)
+            self.assertEqual(dt_moss_convert.validate_moss_checkpoint(output, allow_i4x=True)["result"], "PASS")
+
+
 class MossConversionBundleTests(unittest.TestCase):
     def setUp(self):
         from unittest.mock import patch
@@ -1316,6 +1376,30 @@ class MossConversionBundleTests(unittest.TestCase):
             self.prepare()
         self.assertFalse(self.destination.exists())
         self.assertEqual(list(self.destination.parent.glob(".custom.tmp.*")), [])
+
+    def test_i4x_bundle_requires_explicit_profile_and_compact_native_descriptor(self):
+        self.contract["tensors"]["weight"]["target_shapes"] = [[2, 256]]
+        with DrawThingsCkptStore(self.source, writable=True) as store:
+            store.write_tensor("__dit__[t-weight]", np.zeros((2, 256)), datatype=DT_FLOAT16)
+            store.con.execute("UPDATE tensors SET type=type | ?, data=? WHERE name=?",
+                              (0x018A1EAB << 32, bytes(388), "__dit__[t-weight]"))
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            self.prepare()
+        self.module.prepare_moss_bundle(self.source, self.destination, self.companions, quantization="i4x")
+        self.assertEqual(self.module.verify_moss_bundle(self.destination), self.source.name)
+        private = self.destination / "models" / self.source.name
+        with DrawThingsCkptStore(private) as store:
+            metadata, payload = store.read_raw_tensor("__dit__[t-weight]")
+            self.assertEqual(metadata.codec_identifier, 0x118A1EAB)
+            self.assertEqual(payload, bytes(388))
+            descriptor = store.con.execute("SELECT data FROM tensors WHERE name=?", ("__dit__[t-weight]",)).fetchone()[0]
+            self.assertEqual(len(descriptor), 16)
+        manifest = self.destination / "bundle.json"
+        report = json.loads(manifest.read_text())
+        report.pop("quantization")
+        manifest.write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            self.module.verify_moss_bundle(self.destination)
 
 
 class ContractAndAuditorTests(unittest.TestCase):

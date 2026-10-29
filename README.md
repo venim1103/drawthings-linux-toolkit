@@ -45,6 +45,16 @@ bash tools/dt_image.sh --bundle output/moss-models/my-moss \
 
 Conversion writes 524 native tensors using only the supplied learned values. The timestep-output projection is preserved as F32; other tensors are F16. Bundle preparation packs native trailer storage offline using the raw codec's 16-byte offset/length descriptor and creates independent writable copies of the pinned Qwen encoder and Flux VAE from `dt-models`. It never registers the model in an active catalog or replaces an existing output. `bundle.json` records source and packaged hashes. To prepare an already converted checkpoint, use `--prepare-existing dt-models/my_moss_f16.ckpt --prepare-inference output/moss-models/my-moss` instead of a source/`--output`.
 
+To create genuine packed `i4x` from a validated full-precision MOSS checkpoint, use the separate experimental quantizer, not the LTX-oriented `dt_quantize.sh` or palettized `q4p`:
+
+```bash
+.venv/bin/python tools/dt_moss_quantize.py dt-models/my_moss_f16.ckpt \
+	--output dt-models/my_moss_i4x.ckpt --ccv-source /path/to/pristine/pinned/ccv \
+	--jobs 16 --prepare-inference output/moss-models/my-moss-i4x
+```
+
+The native CPU encoder is hash-pinned to CCV `69b1ed1f` and writes Q4_K with regular Hadamard-256 for 308 core matrices. The other 216 sensitive tensors retain their own F16/F32 bytes, a more conservative policy than the official mixed-codec artifact. This is not a renamed `q4p` checkpoint or a requantization of official low-bit weights. Outputs must be new paths; canonical inputs and active catalogs are not modified. Matrix workers affect only CPU quantization, not inference threading. An already produced artifact can be bundled with `--prepare-existing ... --quantization i4x --prepare-inference ...`; the declaration enables strict packed-schema validation, not blanket acceptance of encoded tensors. Numerical codec/storage tests do not replace a checkpoint-specific full-image test.
+
 `--check` verifies bundle integrity and the model's decoded native catalog entry, then exits without generation. Custom bundles require `--mode offload`; it is not GPU-only certification. The explicit `--grpc-bin` selects the patched private candidate, or an executable resource guard, without changing the helper's existing default or installing anything. Build the current profile using the [CUDA integration instructions](DRAW_THINGS_PATCH/cuda/README.md#isolated-server-integration). Remove `--check` and provide an image prompt to request generation. Native loading, finiteness and prompt-following quality are separate gates.
 
 **Original-source end-to-end bring-up now passes.** On 2026-10-29, our conversion of the pinned original BF16 source completed a 512x512, 50-step DDIMTrailing request in **289.534 seconds including startup/cleanup** on the RTX A3000 Laptop GPU with CPU offload. The viewed image follows the orange-teapot, white-table, green-plant and window-light prompt. Native `moss_image` selection, one finite final image, complete stream/chunks and post-Echo all pass. Local result: `output/q6p_canary_moss_original_raw_actual_managed_staging_50steps_20261029_a/image.png`.

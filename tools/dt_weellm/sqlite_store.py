@@ -159,11 +159,11 @@ class DrawThingsCkptStore:
             data_bytes = b"".join(chunks)
 
         if meta.is_external:
-            raw_external = meta.codec_identifier == 0x1000_0000
-            descriptor_size = 16 if raw_external else 24
+            compact_external = meta.codec_identifier in (0x1000_0000, 0x118A_1EAB)
+            descriptor_size = 16 if compact_external else 24
             if len(data_bytes) != descriptor_size or self._sidecar_fd is None:
                 raise ValueError(f"Missing sidecar or invalid external descriptor for {name}")
-            relative_offset, length = struct.unpack("<QQ", data_bytes if raw_external else data_bytes[8:24])
+            relative_offset, length = struct.unpack("<QQ", data_bytes if compact_external else data_bytes[8:24])
             offset = self.trailer_offset + relative_offset
             if offset + length > os.fstat(self._sidecar_fd).st_size:
                 raise ValueError(f"External tensor exceeds sidecar bounds: {name}")
