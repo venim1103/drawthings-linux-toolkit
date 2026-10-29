@@ -1,10 +1,34 @@
 # MOSS Conversion Handover
 
-Date: 2026-10-28. This is the current handover, not a claim that custom MOSS inference is complete.
+Created: 2026-10-28. Updated: 2026-10-29. This is the current handover, not a claim that custom MOSS inference is complete.
+
+## October 29 Resume
+
+The user resumed after restarting the computer. Commit `475912fc4e35a462398f03ba5d7ec808a296f692` matched `origin/main`, the worktree was clean, the candidate hash matched, the GPU was idle and bundle integrity passed. This supersedes the pause instruction below, not the preservation/no-subagent constraints or the requirement for new commit/push authorization.
+
+- The first repaired-bundle two-step check timed out at 180 seconds, with post-Echo passing and no final image. It reached `textEncoded`, `imageEncoded` and the initial `sampling` callback. In `DDIMSampler`, feedback occurs before the iteration executes; that callback alone is not a completed denoising step.
+- A separate 120-second read-only copy trace also timed out. Its first 512 logged copies all succeeded: 15,467,090,944 bytes and 64.518422 seconds summed inside `cudaMemcpy`. The tracer hit its 512-copy cap; those are incomplete totals, and no pending logged copy does not establish that later transfers finished. Later copies slowed markedly. Neither timeout establishes a deadlock or justifies a threading/precision workaround.
+- A bounded 32 MiB transfer probe compared file-mapped, heap and pinned sources with both ordinary device and managed destinations. All 18 baseline transfers passed byte-exact readback, taking approximately 3.3-8.2 ms. With a fixed 4 GiB managed reservation, managed-destination transfers took approximately 33-39 ms regardless of source, while ordinary device transfers remained approximately 3.2-8.3 ms. This reproduces some allocation-state scaling, not the complete native slowdown, and does not justify replacing the mapped-file path.
+- One unchanged guarded two-step check with a 480-second request cap completed in **203.905 seconds wall time including startup/cleanup**. Decoded model selection was `moss_image`; one finite 512x512 image, zero audio, complete stream/chunks and post-Echo all passed. Its viewed image is blurred with an orange form in a light/green scene, not full-quality acceptance. All 379 GPU memory readings were present, sampled peak was 2,305 MiB, no resource abort was logged, and cleanup returned the GPU to 0 MiB/0%.
+- The unchanged guarded **50-step request timed out at 900 seconds** (`canary_rc=124`, post-Echo 0; 913.259 seconds wall time including startup/cleanup). It emitted 38 sampling callbacks and 25 previews, but no final image or acceptance JSON. All 1,794 memory/temperature readings were present: sampled peak 2,305 MiB, maximum 62 C; one utilization sample was missing. No resource abort was logged. The last preview was finite and viewed, but is a 64x64 intermediate projection, not a full-resolution VAE-decoded image or prompt-quality acceptance. Cleanup returned GPU memory/use to zero.
+- A nearby source check confirms raw on-demand file tensors use `cumallocmanaged` through `ccv_nnc_tensor_new_from_file`. A bounded standalone cuBLAS probe compared the same 8192x3072 weight matrix and 3072x1055 input using FP16 inputs/output and FP32 accumulation. Every result exactly matched the analytic value. After warm-up, ordinary-device weights took 1.640-1.690 ms versus managed weights 51.519-52.534 ms. With 128 additional managed 32 MiB reservations (4 GiB total), ordinary-device weights took 45.646-46.696 ms and managed weights 81.040-84.603 ms. Timings include the GEMM call and device synchronization, not isolated GPU kernel time. This establishes allocation-related cost in the probe, not the complete native bottleneck, a production staging fix, or permission to force the entire model into VRAM.
+- No native implementation, model payload, precision, threading or sampler change was made. The same private candidate, repaired bundle, CPU offload, `--fread-preferred`, weights cache zero, DDIMTrailing/CFG 3/shift 5/seed 4242 and teapot prompt were retained. No full-size copies/downloads were made. Full 50-step completion, practical full inference and prompt-following acceptance remain unverified. Do not repeat an unchanged long request merely with a larger deadline.
+
+Local evidence:
+
+- `output/q6p_canary_moss_original_raw_fixed_guarded_2steps_20261029_a/`: initial timeout.
+- `output/q6p_canary_moss_original_raw_fixed_copy_trace_20261029_a/`: bounded transfer trace.
+- `output/q6p_canary_moss_original_raw_fixed_guarded_2steps_20261029_b/`: passing strict acceptance JSON, raw image, PNG, client/server logs and GPU samples.
+- `output/q6p_canary_moss_original_raw_fixed_guarded_50steps_20261029_a/`: full-request timeout, progress, GPU samples and last intermediate preview PNG; no accepted final image.
+- `output/upgrades/moss-image-stateful-20261027/file-copy-probe-20261029-{a,4g}.log`: exact-readback probe results; probe source/binary remain ignored diagnostics.
+- `output/upgrades/moss-image-stateful-20261027/file-copy-gemm-probe-20261029-{a,4g}.log`: exact-output GEMM/allocation-state controls.
+- `output/upgrades/moss-image-stateful-20261027/raw-fixed-preservation-20261029.json`: all nine protected hashes unchanged after native cleanup, plus private-file identities and full-request outcome.
+
+Bundle verification passed again after full-request cleanup; all three payload sizes and single-link regular-file identities are unchanged. All nine protected runtime/CPU/catalog/canonical-model/candidate hashes matched the October 28 baseline. Only the README and this handover are tracked changes; no commit/push was requested or performed. No native/GPU jobs remain active. Run hashing strictly serial to inference.
 
 ## User Pause And WIP Checkpoint
 
-The user requested pausing for today and committing/pushing the work. Do not resume native testing automatically after that checkpoint. The document was created after published commit `fc26076` and is included in this WIP checkpoint.
+Historical October 28 checkpoint: the user requested pausing for the day and committing/pushing the work. That request was completed as `475912f`; the user explicitly resumed on October 29. The document was created after published commit `fc26076` and is included in the WIP checkpoint.
 
 The investigation identified a concrete packaging defect, not a threading or precision fix:
 
@@ -14,7 +38,7 @@ The investigation identified a concrete packaging defect, not a threading or pre
 - Targeted post-encoding sampling reached libc `read` at file address `0x11496c`. A full stack located `DynamicGraph._Store.loadBytes` through `decodeWithExternalEagerFile`, `Store.read` and `UNetFixedEncoder`. The selected thread accumulated approximately 99% of one core. This supports the oversized-read diagnosis; it is not post-fix performance certification.
 - Fixed raw packaging, validation and reading in the toolkit. A new independent descriptor test first failed `24 != 16`, then passed. Raw sidecar coverage now rejects the malformed layout while retaining 24-byte palettized handling. All 66 CPU-focused tests pass in 6.694 seconds.
 - Repaired all 524 descriptors in the existing private bundle without a new model copy. Only its 114,688-byte metadata region and manifest changed; the 10,186,162,176-byte denoiser file size and complete trailer payload-region hash are unchanged. Metadata/manifest backups and rollback support were used.
-- **No native inference has run on the repaired bundle.** The old two-step finite image used malformed storage and is not correct-weight loading acceptance. Full inference, prompt-following quality and resolution of the timeout remain unverified.
+- **At the October 28 pause, no native inference had run on the repaired bundle.** The old two-step finite image used malformed storage and is not correct-weight loading acceptance. See the October 29 results above for the first repaired-bundle finite-output pass and subsequent full-request timeout; full-quality acceptance remains unverified.
 
 Current repaired denoiser SHA-256: `fa67bb5fd28c1a182567bc4f1bfd476902bd11b061b1be355fb4d60343ce2fef`.
 
@@ -36,7 +60,7 @@ All those diagnostic runs were deliberately bounded, used the existing private b
 
 The goal is easy, correct conversion of a custom full-precision MOSS Image model, or the original BF16 model, into Draw Things format and successful prompt-following inference on Linux/CUDA.
 
-Conversion and private bundle tooling are implemented. The raw-descriptor defect is corrected and the existing private bundle metadata is repaired, but native acceptance has not been rerun. After the user resumes work, start with a short guarded native check of the repaired bundle before considering a bounded 50-step quality control. Do not repeat profiling or the long render merely to reproduce the superseded state.
+Conversion and private bundle tooling are implemented. The raw-descriptor defect is corrected and the existing private bundle metadata is repaired. The October 29 guarded two-step loading/finite-output gate passes, but the full request timed out after active denoising progress. Continue from the bounded managed-allocation controls above; do not repeat pre-repair profiling or an unchanged long render merely to reproduce the existing state.
 
 Pre-investigation published checkpoint:
 
@@ -56,17 +80,18 @@ The next chat should inspect current git/process/GPU state, then read saved evid
 | Original BF16 source | Pinned download, source manifest and hashes verified |
 | Conversion | 462 learned source tensors to 524 native tensors; exact native metadata contract |
 | Precision | F16 except the timestep-output projection weight/bias, preserved as F32 from original values |
-| Private bundle | Raw descriptors repaired to native format; independent payloads and pinned companions verified; post-repair native check pending |
+| Private bundle | Raw descriptors repaired to native format; independent payloads and pinned companions verified; post-repair two-step check passed |
 | Native model selection | Decoded server metadata confirms `moss_image`, rather than merely finding a filename |
 | Pre-repair two-step request | One finite 512x512 noisy image, complete stream; malformed raw descriptors invalidate correct-weight loading acceptance |
-| Post-repair native/quality | Not run before user pause; no prompt-following acceptance |
+| Post-repair two-step request | One finite 512x512 blurred image; complete stream/chunks/post-Echo; 203.905 s wall time including startup/cleanup |
+| Post-repair full request | Timeout at 900 s after 38 sampling callbacks/25 previews; post-Echo passed; no accepted final image or full-quality result |
 | Pre-repair full 50-step request | Timed out at 1,800 seconds; post-request Echo passed; no accepted final image |
 | Pre-repair short stage probe | Reached `textEncoded`, then `imageEncoded`; no sampling signpost within 60 seconds |
 | CPU-focused tests | 66 passed in 6.694 seconds after descriptor correction |
-| Preservation | Earlier 24-file hash baseline retained; metadata-only repair verifies identical full trailer payload hash and current bundle integrity |
+| Preservation | Earlier 24-file baseline retained; metadata-only repair preserved payload bytes; post-run bundle integrity and all nine current protected hashes pass |
 | Full current CUDA suite | Not rerun/certified for this increment |
 
-**Do not equate finite output, schema validity, a live CPU worker, or a passing Echo with correct image generation.** The read-path/descriptor defect is identified; post-fix loading, performance and full custom-model quality remain unverified.
+**Do not equate finite output, schema validity, a live CPU worker, or a passing Echo with correct image generation.** The read-path/descriptor defect is identified and post-fix finite output passes; full-quality performance and custom-model quality remain unverified.
 
 ## Constraints
 
@@ -196,7 +221,7 @@ The canonical inline checkpoint and packaged trailer have different file hashes 
 
 1. The first bundle catalog omitted required `upcast_attention`. Native Codable silently dropped the specification; a finite noisy image from that attempt was not valid MOSS acceptance. Current catalog generation/validation requires `upcast_attention: false`, `version: moss_image`, the pinned companions and objective `{"u":{"condition_scale":1000}}`. The authoritative gate decodes `Echo.override.models`; `Echo.files` alone is insufficient.
 2. The corrected inline bundle faulted before generation. Native loading had rewritten the private checkpoint into about 1 MiB SQLite metadata plus a roughly 10 GB `-tensordata` sidecar. Sampled GPU peak was only 115 MiB, no cgroup OOM kill was recorded, and the kernel recorded SIGSEGV. This does not establish the cause of the earlier whole-host restart, and does not prove a GPU OOM.
-3. Offline raw native trailer packaging bypasses `TensorData.makeExternalData` rewriting. The original package produced a finite two-step image without a sidecar, but used incorrect 24-byte raw descriptors. That is not correct-weight loading acceptance. Current raw descriptors are corrected; native validation remains pending.
+3. Offline raw native trailer packaging bypasses `TensorData.makeExternalData` rewriting. The original package produced a finite two-step image without a sidecar, but used incorrect 24-byte raw descriptors. That is not correct-weight loading acceptance. Corrected raw descriptors now pass a guarded two-step finite-output check; the post-repair full request timed out, so full quality remains unverified.
 4. Client progress previously buffered to redirected stdout. Both timed and untimed generation launches now use Python `-u`; a one-second fixture verifies that received signposts survive timeout and owned-server cleanup. The old long-run four-line client log cannot establish which steps actually completed.
 
 Native trailer details: SQLite header bytes 60:64 contain the big-endian UInt32 trailer base; base/payload alignment is 16,384. Raw external codec is `0x10000000`; its descriptor is little-endian `<QQ>`: relative offset, byte length. Palettized external codecs use `<IIQQ>`: block size, padding, relative offset, byte length. Confusing these layouts caused the defect. Source of truth is pinned s4nnc `nnc/Store.swift` and its unchanged CCV decode callback boundary.
@@ -205,7 +230,7 @@ Native trailer details: SQLite header bytes 60:64 contain the big-endian UInt32 
 
 The long-run process had 20 allowed logical CPUs, cgroup `cpu.max = max 100000`, and no inherited OMP/OpenBLAS/MKL/BLIS thread-limit settings. It had 12 native threads; one worker accumulated about 96% of total CPU time. Approximately 101% in `top` therefore meant one core's worth of CPU, not a one-core container limit. Roughly 16 GiB resident memory matched the user's observation.
 
-Loaded CPU libraries included `libomp.so.5` and `libcblas.so.3.10.3`. Their presence does not prove that setting `OMP_NUM_THREADS=16` would help. The later bounded profiles identified the native raw read path and malformed descriptors described above; no BLAS/threading workaround was applied. The remaining post-fix behavior is unverified.
+Loaded CPU libraries included `libomp.so.5` and `libcblas.so.3.10.3`. Their presence does not prove that setting `OMP_NUM_THREADS=16` would help. The later bounded profiles identified the native raw read path and malformed descriptors described above; no BLAS/threading workaround was applied. Post-fix copy diagnostics and the first finite-output pass are recorded in the October 29 section.
 
 A bounded live LLDB attach was rejected by Yama `ptrace_scope=1`. No privileged workaround was attempted. If a debugger is needed, prefer launching the owned candidate as its child through the existing parent-launch approach, with an explicit time/stop budget, detach/kill handling and final GPU/process cleanup. Do not leave an orphan inferior behind.
 
@@ -273,12 +298,10 @@ The one replacement bundle contains 19,100,000,256 payload bytes. Net reclaimed 
 
 ## Next Investigation
 
-1. Wait for the user to resume. Confirm current worktree, candidate identity, no owned native jobs and idle GPU; do not treat historical PIDs as live jobs.
-2. Read the pause checkpoint and metadata-repair report. Reuse the repaired bundle with denoiser hash `fa67bb5f...`; do not recreate/download/copy model payloads. Leave diagnostic interposition/profiling variables unset.
-3. Run a short resource-guarded native two-step check using the corrected descriptors and existing schema/companion choices. Require decoded `moss_image`, complete finite output, cleanup and bundle integrity. Two-step noise alone is not quality acceptance.
-4. If that passes without a new blocker, run one explicitly bounded 50-step quality control. Inspect the actual image for the prompt, not just acceptance JSON; distinguish loading, completion, practical timing and image quality.
-5. If a local failure remains, form one nearby falsifiable hypothesis and immediately validate a small fix. Do not blindly change threading, precision or transforms. Any actual native implementation change must follow the pinned patch workflow.
-6. Recheck protected resources and private payload integrity after native cleanup; record actual results before claiming inference accepted.
+1. The resumed two-step gate passed; the 50-step request then timed out after active progress. Start with a bounded native allocation/offload experiment grounded in the exact-output managed/device GEMM controls. Validate any proposed per-operation staging or loading-policy change on a small case before a full request. The standalone probe does not prove which native call dominates, and forcing all raw weights into VRAM is not a safe workaround.
+2. Reuse denoiser hash `fa67bb5f...`; do not recreate/download/copy payloads. Leave diagnostic interposition/profiling variables unset for acceptance. Confirm current worktree, candidate identity and resource/port/process state before a new workload; historical PIDs are not live jobs.
+3. If a local failure remains, form one nearby falsifiable hypothesis and immediately validate a small fix. Do not blindly change threading, precision or transforms. Any actual native implementation change must follow the pinned patch workflow.
+4. Require a completed finite full-resolution image and inspect it for the prompt before accepting quality. Recheck protected resources and private payload integrity after native cleanup; record actual results and practical timing separately.
 
 Success means a coherent prompt-following image from our original/custom source conversion, practical completion, finite/complete output, protected resources unchanged, and honest separation of what was tested from what remains open. Custom q8p/i4x quantization is later work, not implemented/certified here.
 
