@@ -1,6 +1,34 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-10-29. Original-source end-to-end bring-up now passes; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-10-29. Original-source and one custom merged-SFT end-to-end test now pass; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+
+## Custom Merged SFT Result: October 29
+
+The user supplied `dt-models/mosskr2_image_sft_bf16_v1.safetensors`, described by its creator as a MOSS SFT attention/MLP merge influenced by Krea2. This local file passes the unchanged supported source contract: 462 learned tensors, expected rotary buffer and 42-layer MOSS structure. Its SHA-256 is `ba2c3713c81aa446378b1b0a863ac28f167ceb8a1f27e3bcf96bc44fb3b51806`. No remote provenance or causal explanation of the graft was independently verified.
+
+The existing converter writes `dt-models/mosskr2_image_sft_v1_ourconvert_f16.ckpt`: 524 native tensors, F16 except original-value F32 timestep-output projection weight/bias. The canonical conversion hash is `bda9cabe3388831bfeb8694b761a22c15c4c7f4c93153ad7a1ccfca67305a49f`; packaged trailer denoiser hash is `1cb64a3e8b9a2c7b50340d653a00cbe535148f4ec600476d8c078b91d6614699`. Private bundle: `output/moss-models/mosskr2-sft-v1`, with independent pinned Qwen/VAE companions. Preparation had completed before the user's sudden restart: the final conversion report and published manifest were intact, all bundle hashes verified, no native jobs remained and the GPU was idle. No repacking or replacement model copy was needed after restart.
+
+Using the existing `acafef3d...` patched server and local resource guard, CPU offload, `--fread-preferred`, weights cache zero, 512x512, DDIMTrailing/CFG 3/shift 5/seed 4242 and the same teapot prompt:
+
+- Two-step smoke test passes decoded native `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo. Tag: `mosskr2_sft_2steps_after_restart_20261029_a`; 480-second request cap. All 319 memory/temperature samples are present, peak 2,305 MiB and maximum 61 C; five utilization readings are unavailable.
+- Standard 50-step request passes all the same strict checks in **284.303 seconds wall time including startup/cleanup**, within a 900-second request cap. The viewed final image clearly shows the requested orange ceramic teapot on a white table beside a green plant, with bright window light. Tag: `mosskr2_sft_50steps_after_restart_20261029_a`. All 523 memory/temperature samples are present, peak 2,305 MiB and maximum 66 C; five utilization readings are unavailable. Config SHA-256: `4e7fd4264e6c63db0a58eeab20fafc70b4b9b37ecddecf60122e6e5d3bb55de4`.
+- Neither run triggered the resource guard; both owned server processes are gone and GPU memory/use returned to zero. Post-run private bundle integrity, source hash, canonical conversion hash, accepted server hash and all nine protected resource hashes pass.
+
+This checkpoint works through the existing converter/backend **without merge-specific patches, Turbo/DMD extras or additional LoRA**. Base and SFT share the supported architecture/backend; official SFT q8p/i4x already passed before this test, so SFT itself does not require a separate tokenizer or runtime. This one prompt/profile is not proof of the creator's quality claims, wider prompt/geometry reliability, reference-framework parity, 8-12-step Turbo use or custom low-bit conversion. Timing is an individual observation, not a benchmark. No native implementation or installed/default/catalog change was made for this merge.
+
+To generate from the already prepared local bundle, using the existing ignored resource guard described below:
+
+```bash
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  bash tools/dt_image.sh --bundle output/moss-models/mosskr2-sft-v1 \
+    --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
+    --metrics 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
+```
+
+The helper verifies bundle integrity before starting, supplies the WSL/CUDA library path, defaults to the tested offload/512/50-step profile, and uses a fresh tag. Its normal timeout is 3,600 seconds; the acceptance requests above explicitly used the canary's shorter 480/900-second caps. Confirm resources first and do not rerun merely to reproduce the accepted result.
+
+Evidence under `output/upgrades/moss-image-stateful-20261027/`: `mosskr2-conversion-20261029.json`, `mosskr2-source-before-20261029.sha256`, `mosskr2-{2steps,50steps}-after-restart-20261029.log`, `mosskr2-acceptance-after-restart-20261029.json` and `mosskr2-preservation-after-restart-20261029.json`. Both canary output directories retain config/model selection, raw final tensor, PNG, strict acceptance, client/server logs and telemetry. Final image: `output/q6p_canary_mosskr2_sft_50steps_after_restart_20261029_a/image.png`.
 
 ## Current Result: Original-Source Full Inference Passes
 
@@ -162,6 +190,7 @@ The next chat should inspect current git/process/GPU state, then read saved evid
 | Pre-staging repaired full request | Timeout at 900 s after 38 sampling callbacks/25 previews; no accepted final image |
 | Allocation-aware two-step request | Strict pass in 184.610 s; config/raw/PNG byte-identical to preserved guard-only control |
 | Allocation-aware full request | Strict finite/stream/post-Echo pass in 289.534 s; viewed 512x512 image follows the teapot/table/plant/window prompt |
+| Custom merged SFT | MOSSkr2 local BF16 source converts without model-specific changes; two-step and full 50-step pass; viewed prompt-following image in 284.303 s |
 | Pre-repair full 50-step request | Timed out at 1,800 seconds; post-request Echo passed; no accepted final image |
 | Pre-repair short stage probe | Reached `textEncoded`, then `imageEncoded`; no sampling signpost within 60 seconds |
 | CPU-focused tests | 66 passed in 6.694 seconds after descriptor correction |
