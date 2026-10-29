@@ -1,6 +1,36 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-10-29. Original-source, custom merged-SFT and full-precision MoodyMOSS end-to-end tests now pass, including our own i4x quantization of the merge; MoodyMOSS i4x, arbitrary custom checkpoints and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-10-29. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+
+## MoodyMOSS i4x Result: October 29
+
+Genuine custom i4x quantization of the accepted MoodyMOSS F16 conversion now passes both guarded native bring-up and a full prompt-following image test. It uses this checkpoint's own learned values, not official low-bit weights or a renamed palettized `q4p` artifact.
+
+- Canonical checkpoint: `dt-models/moodymoss_v10_turbo_ourconvert_i4x.ckpt`, **3,026,944,000 bytes** (3.03 GB), **70.3% smaller** than its F16 conversion. SHA-256 `a277d41521563c3d22e0ce0ecd1679e44b3730d768b9182f3859976fe46e66ea`.
+- Private bundle: `output/moss-models/moodymoss-v10-turbo-i4x`. Its native-trailer denoiser is 3,028,375,552 bytes, SHA-256 `af9088a16630048ccaaa911c5cbdedfbdd230f777cfb6399fd018f595a3621cf`; companions and catalog are independent writable regular files.
+- Policy: 308 core matrices use native Q4_K/Hadamard-256, with all 216 sensitive F16/F32 tensors preserved byte-exact. Actual post-inference comparisons confirm every preserved tensor's metadata and payload. The pinned CCV CPU encoder ran with 16 matrix workers; inference threading and the native server were unchanged. Full native decode is finite; independent regular-Hadamard sampled-row checks have maximum relative RMS error 0.0671285, not an image-quality score.
+- Regression suite: all **100 tests in 65.022 seconds** passed with the fused-QKV converter support before model conversion. This model-specific acceptance required no subsequent code/runtime changes.
+
+The profile matches the accepted F16 baseline: `acafef3d...` private server and existing resource guard, CPU offload, `--fread-preferred`, weights cache zero, 512x512, DDIMTrailing/CFG 3/shift 5/seed 4242, empty negative prompt and the orange-teapot prompt.
+
+- Two steps: **64.971 seconds including startup/cleanup**, 480-second request cap; tag `moodymoss_i4x_2steps_20261029_a`. All 106 memory/temperature samples are present; peak 2,305 MiB, maximum 62 C; two utilization readings are unavailable.
+- Full 50 steps: **141.988 seconds including startup/cleanup**, 900-second request cap; tag `moodymoss_i4x_50steps_20261029_a`. All 249 memory/temperature samples are present; peak 2,305 MiB, maximum 66 C; one utilization reading is unavailable. Config SHA-256 `893c625e389ad5770cc4d9e25f82183fc4bf5d3c7b97d685639e45321c253d9a`.
+- Both pass decoded native `moss_image` selection, one finite final 512x512 image, zero audio, complete stream/chunks and post-Echo. The viewed full image clearly shows the requested orange ceramic teapot, white table, green plant and bright window light. Final image: `output/q6p_canary_moodymoss_i4x_50steps_20261029_a/image.png`.
+- Neither run triggered the resource guard; owned native processes are gone, the port is free and GPU memory/use returned to zero. All nine protected hashes and nine source/conversion/companion/candidate hashes pass unchanged, including the original MoodyMOSS BF16, both MoodyMOSS conversions and MOSSkr2 originals/conversions. Both MoodyMOSS bundles and the working MOSSkr2 i4x bundle pass post-run integrity checks. Installed defaults, active catalogs, canonical full-precision models and the working MOSSkr2 model are preserved.
+
+This verifies the custom checkpoint at this one prompt/profile, not lossless F16 parity, broad quantization-quality parity, wider prompts/resolutions, GPU-only inference or low-step Turbo quality. Individual timings are not a controlled benchmark. Existing CUFILE diagnostics occur during successful reads.
+
+Generate from the prepared i4x bundle without registering it or changing defaults:
+
+```bash
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  bash tools/dt_image.sh --bundle output/moss-models/moodymoss-v10-turbo-i4x \
+    --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
+    --metrics 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
+```
+
+Confirm resources first; do not overlap inference with another native/GPU workload, conversion, copying or large model hashing. The helper supplies the WSL/CUDA library path and uses its normal 3,600-second timeout; acceptance above used explicit 480/900-second caps. Evidence under `output/upgrades/moss-image-stateful-20261027/`: `moodymoss-i4x-quantization-20261029.{json,log}`, `moodymoss-i4x-{2steps,50steps}-20261029-a.log`, `moodymoss-i4x-acceptance-20261029.json` and `moodymoss-i4x-preservation-20261029.json`. Model artifacts and reports remain local and are not committed.
 
 ## MoodyMOSS Full-Precision Result: October 29
 
@@ -19,7 +49,7 @@ Both requests used the accepted `acafef3d...` private server and existing resour
 - Both pass decoded native `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo. Neither triggered the guard; owned native processes are gone and GPU memory/use returned to zero before quantization started.
 - The viewed full image clearly shows an orange ceramic teapot on a white table beside a green plant, with bright window light. Final image: `output/q6p_canary_moodymoss_f16_50steps_20261029_a/image.png`.
 
-The genuine i4x encoding is in progress from this accepted F16 checkpoint using 16 CPU workers, targeting `dt-models/moodymoss_v10_turbo_ourconvert_i4x.ckpt` and `output/moss-models/moodymoss-v10-turbo-i4x`. That output has not yet passed native image acceptance. Post-quantization bundle/preservation checks and i4x two-step/full-image runs remain pending. Individual timings above are observations, not a controlled benchmark; broader prompts/resolutions, framework parity, GPU-only inference and low-step Turbo quality remain unverified. Existing CUFILE diagnostics occur during successful reads, as in the earlier accepted runs.
+The [genuine i4x conversion and native image acceptance](#moodymoss-i4x-result-october-29) also pass, with post-run bundle and preservation checks complete. Individual timings above are observations, not a controlled benchmark; broader prompts/resolutions, framework parity, GPU-only inference and low-step Turbo quality remain unverified. Existing CUFILE diagnostics occur during successful reads, as in the earlier accepted runs.
 
 Repeat generation from the full-precision bundle without registering it or changing defaults:
 
@@ -31,7 +61,7 @@ env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
     --metrics 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
 ```
 
-Do not overlap this command with the active quantization or another native/GPU workload. The helper supplies the WSL/CUDA library path and uses its normal 3,600-second timeout; acceptance above used explicit 480/900-second caps. Evidence under `output/upgrades/moss-image-stateful-20261027/`: `moodymoss-conversion-20261029.json`, `moodymoss-f16-{2steps,50steps}-20261029-a.log`, `moodymoss-f16-acceptance-20261029.json` and `moodymoss-fused-qkv-regression-20261029.log`. Model artifacts and reports remain local and are not committed.
+Do not overlap this command with conversion, quantization or another native/GPU workload. The helper supplies the WSL/CUDA library path and uses its normal 3,600-second timeout; acceptance above used explicit 480/900-second caps. Evidence under `output/upgrades/moss-image-stateful-20261027/`: `moodymoss-conversion-20261029.json`, `moodymoss-f16-{2steps,50steps}-20261029-a.log`, `moodymoss-f16-acceptance-20261029.json` and `moodymoss-fused-qkv-regression-20261029.log`. Model artifacts and reports remain local and are not committed.
 
 ## Custom Merged SFT i4x Result: October 29
 
