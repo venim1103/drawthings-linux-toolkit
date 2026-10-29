@@ -1460,6 +1460,66 @@ class ContractAndAuditorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unmapped_examples"):
             inspect_moss_source(seeker)
 
+    def test_moss_fused_qkv_preflight_requires_unambiguous_complete_shapes(self):
+        from types import SimpleNamespace
+        from tools.dt_moss_convert import inspect_moss_source
+
+        contract = build_moss_image_contract()
+        metadata = {name: SimpleNamespace(shape=rule["source_shape"], dtype="BF16")
+                    for name, rule in contract["tensors"].items()}
+        for layer in range(42):
+            for projection in ("q", "k", "v"):
+                del metadata[f"layers.{layer}.proj.{projection}.weight"]
+            metadata[f"layers.{layer}.proj.qkv.weight"] = SimpleNamespace(shape=[9216, 3072], dtype="BF16")
+        seeker = SimpleNamespace(tensors=metadata, keys=lambda: list(metadata),
+                                 resolve_key=lambda name, **options: name if name in metadata else None)
+        report = inspect_moss_source(seeker)
+        self.assertEqual((report["source_tensors"], report["target_tensors"], report["fused_qkv_layers"]),
+                         (378, 524, 42))
+        metadata["layers.0.proj.q.weight"] = SimpleNamespace(shape=[3072, 3072], dtype="BF16")
+        with self.assertRaisesRegex(ValueError, "Ambiguous fused and separate"):
+            inspect_moss_source(seeker)
+        del metadata["layers.0.proj.q.weight"]
+        metadata["layers.0.proj.qkv.weight"].shape = [3072, 9216]
+        with self.assertRaisesRegex(ValueError, "shape_mismatches"):
+            inspect_moss_source(seeker)
+
+    def test_moss_fused_qkv_conversion_preserves_qkv_order_and_rotary_policy(self):
+        from unittest.mock import patch
+        from tools.dt_moss_convert import moss_source_contract
+
+        contract = build_moss_image_contract()
+        keys = [f"layers.0.proj.{projection}.weight" for projection in ("q", "k", "v")]
+        contract["tensors"] = {key: contract["tensors"][key] for key in keys}
+        contract["expected_ckpt_tensor_count"] = 3
+        contract["source_required_keys"] = [keys[0]]
+        for rule in contract["tensors"].values():
+            rule.update(source_shape=[8, 4], target_shapes=[[8, 4]])
+            if rule["rotary_interleaved"]:
+                rule.update(num_heads=2, head_dim=4)
+        values = np.arange(96, dtype=np.float32).reshape(24, 4) / 8
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.safetensors"
+            target = Path(temporary) / "converted.ckpt"
+            contract_path = Path(temporary) / "contract.json"
+            write_mock_safetensors(source, {"model.diffusion_model.layers.0.proj.qkv.weight":
+                                           ("F32", values.shape, values.tobytes())})
+            with SafetensorsSeeker(source) as seeker, patch("tools.dt_moss_convert.build_moss_image_contract", return_value=contract):
+                adapted = moss_source_contract(seeker)
+            self.assertEqual(adapted["source_required_keys"], ["layers.0.proj.qkv.weight"])
+            rule = adapted["tensors"]["layers.0.proj.qkv.weight"]
+            contract_path.write_text(json.dumps(adapted))
+            result = convert_source_to_ckpt(source, contract_path, target)
+            self.assertEqual((result["source_tensors_processed"], result["ckpt_tensors_written"]), (1, 3))
+            with DrawThingsCkptStore(target) as store:
+                for index, name in enumerate(rule["dt_names"]):
+                    expected = values[index * 8:(index + 1) * 8]
+                    if index < 2:
+                        expected = expected[[0, 2, 1, 3, 4, 6, 5, 7]]
+                    metadata, actual = store.read_f32(name)
+                    self.assertEqual(metadata.shape, [8, 4])
+                    np.testing.assert_array_equal(actual, expected)
+
     def test_moss_preflight_rejects_incompatible_config_and_quantized_source(self):
         from types import SimpleNamespace
         from tools.dt_moss_convert import inspect_moss_config, inspect_moss_source

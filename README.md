@@ -30,6 +30,8 @@ Base and SFT use the same supported MOSS architecture and native backend. Offici
 
 Use full-precision BF16/F16/F32 safetensors from the supported 42-layer MOSS Image architecture, either a single file or an explicit sharded index. Quantized inputs, incomplete architectures and incompatible rotary frequencies are rejected. Adjacent `config.json` is checked when present; `--config` selects it explicitly.
 
+Main-layer attention weights may be separate Q/K/V tensors or a fused `layers.N.proj.qkv.weight` tensor with Q, K and V stacked along the output rows. Fused tensors use the same validated split and Q/K rotary conversion as the existing text blocks; mixed fused/separate keys in one layer and incompatible shapes are rejected. A filename containing `Turbo` does not establish sampling settings or certify distilled-model quality.
+
 The original BF16 transformer downloaded in this workspace is `OpenMOSS-Team/MOSS-Image-Base` at revision `85975793d8b3d432f1b6e27f352abaa4c2a4c0d3`. Use its explicit index below, or replace `SOURCE` with a custom full-precision safetensors file/index:
 
 ```bash

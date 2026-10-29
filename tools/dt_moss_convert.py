@@ -248,8 +248,32 @@ def verify_moss_bundle(destination):
     return model
 
 
+def moss_source_contract(seeker):
+    contract = build_moss_image_contract()
+    tensors = contract["tensors"]
+    for layer in range(42):
+        fused = f"layers.{layer}.proj.qkv.weight"
+        if seeker.resolve_key(fused, profile="moss_image") is None:
+            continue
+        separate = [f"layers.{layer}.proj.{projection}.weight" for projection in ("q", "k", "v")]
+        if any(seeker.resolve_key(source, profile="moss_image") is not None for source in separate):
+            raise ValueError(f"Ambiguous fused and separate MOSS QKV tensors: {fused}")
+        rules = [tensors.pop(source) for source in separate]
+        tensors[fused] = {
+            **rules[0],
+            "dt_names": [name for rule in rules for name in rule["dt_names"]],
+            "source_shape": [sum(rule["source_shape"][0] for rule in rules), *rules[0]["source_shape"][1:]],
+            "target_shapes": [shape for rule in rules for shape in rule["target_shapes"]],
+            "rotary_interleaved": False,
+            "rotary_interleaved_slices": [rule["rotary_interleaved"] for rule in rules],
+        }
+        contract["source_required_keys"] = [fused if source in separate else source
+                                            for source in contract["source_required_keys"]]
+    return contract
+
+
 def inspect_moss_source(seeker, contract=None):
-    contract = contract or build_moss_image_contract()
+    contract = contract or moss_source_contract(seeker)
     available = set(seeker.keys())
     consumed = set()
     generated_buffers = []
@@ -285,6 +309,8 @@ def inspect_moss_source(seeker, contract=None):
         }))
     return {"result": "PASS", "profile": "moss_image", "architecture": contract["architecture"],
             "source_tensors": len(consumed) - len(generated_buffers), "target_tensors": contract["expected_ckpt_tensor_count"],
+            "fused_qkv_layers": sum(bool(re.fullmatch(r"layers\.\d+\.proj\.qkv\.weight", source))
+                        for source in contract["tensors"]),
             "validated_generated_buffers": generated_buffers,
             "fp32_preserved_tensors": [source for source, rule in contract["tensors"].items()
                                        if rule["f16_store_datatype"] == "F32"]}
@@ -337,8 +363,8 @@ def main(argv=None):
         parser.error("--output is required unless --inspect is used")
     if args.output is not None and args.output.suffix != ".ckpt":
         parser.error("--output must end in .ckpt")
-    contract = build_moss_image_contract()
     with open_seeker(source) as seeker:
+        contract = moss_source_contract(seeker)
         report = inspect_moss_source(seeker, contract)
     config = args.config or source.parent / "config.json"
     if config.is_file():
