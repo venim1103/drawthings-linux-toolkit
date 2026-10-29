@@ -257,7 +257,28 @@ class ImageHelperTests(unittest.TestCase):
         self.assertEqual(arguments[arguments.index("--models-dir") + 1],
                          str(self.root / "output/upgrades/moss-image-stateful-20261027/models"))
         self.assertTrue(arguments[arguments.index("--grpc-bin") + 1].startswith(str(self.root / "output/upgrades")))
+        self.assertEqual(arguments[arguments.index("--grpc-bin") + 1],
+                         str(self.root / "output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI"))
         self.assertIn("/usr/lib/wsl/lib", report["library_path"])
+
+    def test_explicit_native_server_is_forwarded_without_changing_offload(self):
+        server = self.root / "guarded patched server"
+        server.write_text("#!/bin/sh\nexit 0\n")
+        server.chmod(0o755)
+        result = self.run_helper("--grpc-bin", str(server), "--dry-run", "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        self.assertEqual(arguments[arguments.index("--grpc-bin") + 1], str(server.resolve()))
+        self.assertIn("--server-cpu-offload", arguments)
+
+    def test_invalid_native_server_override_is_rejected(self):
+        server = self.root / "not-executable"
+        server.write_text("not an executable\n")
+        for path in ("", str(server), str(self.root / "missing")):
+            with self.subTest(path=path):
+                result = self.run_helper("--grpc-bin", path, "A blue vase")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("grpc-bin must be an executable file", result.stderr)
 
     def test_gpu_mode_and_models_forward_without_forced_offload(self):
         for model, filename in (("sft-i4x", "moss_image_sft_i4x.ckpt"),

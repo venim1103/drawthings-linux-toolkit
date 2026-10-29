@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CANDIDATE="$ROOT/output/upgrades/community-0621d819-qwen35-cuda"
+GRPC_BIN="$CANDIDATE/bazel-bin/Apps/gRPCServerCLI"
 SCHEMA="$ROOT/output/upgrades/schemas/0621d819"
 MODELS="$ROOT/output/upgrades/moss-image-stateful-20261027/models"
 MODEL="sft-i4x"
@@ -30,6 +31,7 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --bundle PATH                    Converted MOSS inference bundle under output/.
                                   Cannot be combined with --model.
                                   Unquantized bundles currently require offload.
+  --grpc-bin PATH                  Explicit native server or resource-guard executable.
   --mode offload|gpu               Weight policy (default: offload).
                                   gpu omits forced CPU weight offload; it is
                                   not a promise of zero CPU or host-memory use.
@@ -61,11 +63,15 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --metrics) METRICS=1; shift ;;
     --check) PREFLIGHT_ONLY=1; shift ;;
-    --model|--bundle|--mode|--size|--width|--height|--steps|--seed|--negative-prompt|--port|--tag)
+    --model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--seed|--negative-prompt|--port|--tag)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       case "$1" in
         --model) MODEL="$2"; MODEL_EXPLICIT=1 ;;
         --bundle) BUNDLE="$2"; [[ -n "$BUNDLE" ]] || fail "bundle path cannot be empty" ;;
+        --grpc-bin)
+          [[ -f "$2" && -x "$2" ]] || fail "grpc-bin must be an executable file"
+          GRPC_BIN="$(realpath "$2")"
+          ;;
         --mode) MODE="$2" ;;
         --size) WIDTH="$2"; HEIGHT="$2" ;;
         --width) WIDTH="$2" ;;
@@ -123,7 +129,7 @@ if [[ -n "$TAG" ]]; then EXTRA_ARGUMENTS+=(--tag "$TAG"); fi
 printf 'image_model=%s weight_mode=%s dimensions=%sx%s\n' "$MODEL" "$MODE" "$WIDTH" "$HEIGHT"
 export LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
 exec bash "$ROOT/tools/run_q6p_canary_once.sh" \
-  --grpc-bin "$CANDIDATE/bazel-bin/Apps/gRPCServerCLI" \
+  --grpc-bin "$GRPC_BIN" \
   --proto "$CANDIDATE/Libraries/GRPC/Models/Sources/imageService/imageService.proto" \
   --cache-dir "$SCHEMA" --bindings-dir "$SCHEMA/flatbuffers" \
   --models-dir "$MODELS" --model "$MODEL_FILE" \

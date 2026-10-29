@@ -1,6 +1,45 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-10-29. This is the current handover, not a claim that custom MOSS inference is complete.
+Created: 2026-10-28. Updated: 2026-10-29. Original-source end-to-end bring-up now passes; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+
+## Current Result: Original-Source Full Inference Passes
+
+The original BF16 source, converted using our own converter and the repaired private bundle, now completes the standard **512x512, 50-step DDIMTrailing/CFG 3/shift 5/seed 4242** request. Wall time was **289.534 seconds including startup/cleanup**, within the unchanged 900-second request cap. The viewed final image clearly follows the orange ceramic teapot, white table, green plant and bright window-light prompt. Native `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo pass.
+
+The controlling evidence was a bounded twelve-call raw-GEMM capture: nine real CUDA-managed weights and three device weights, with **no CCV mapped flag on any wrapper**. CUDA allocation queries and pending-before/after checks all returned zero. Managed shapes included `[3072,3072]`, `[8192,3072]` and `[3072,8192]`. The earlier flag-only staging experiment therefore missed these observed hot managed weights; its timing pair was not a measurement of effective staging for them.
+
+The maintained native GEMM path now selects staging from actual CUDA allocation attributes, only on devices without concurrent managed access and only for non-view raw F32/F16/BF16 weights at most 64 MiB. It uses a same-stream copy into existing workspace with unchanged arithmetic, no persistent weight cache and no whole-model VRAM residency. Larger/device/view/QX paths and supported-CMA behavior are unchanged. The earlier prefetch capability guard remains. No CUDA errors are cleared.
+
+Current candidate:
+
+- Binary: `output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI`.
+- SHA-256: `acafef3d7f8f87588355cca88c41b21ad975665650271e1e23e53e0e0a2bf12b`.
+- Private CCV: `output/upgrades/ccv-69b1ed1f-qwen35-cuda-actual-managed-staging`; existing isolated Bazel root reused after preserving the control.
+- The prefetch-only `dc94ffc6...` control remains at `output/upgrades/gRPCServerCLI-0621d819-before-mapped-staging`; the rejected flag-only `c51a759e...` remains separately preserved. Original `71878a22...` candidate and installed defaults remain unchanged.
+- Strict application/snapshot/idempotence verification passes. The 16-job incremental build took 14.100 seconds. All eight linked native execution gates pass; the expanded mapped-GEMM gate covers 36 exact-output cases including unflagged managed allocations, both orientations, optional bias and three precisions. Final combined CUDA-enabled suite: **95 tests passed in 74.597 seconds**.
+- New two-step request: **184.610 seconds**, config/raw/PNG byte-identical to the preserved guard-only control. This blurred image alone is not quality acceptance.
+- Full request: 51 sampling callbacks, 37 previews, 549 telemetry samples; sampled peak 2,305 MiB, maximum 66 C, no resource abort. All memory/temperature readings are present; two utilization readings are unavailable. Subsequent callback intervals are 1.501-3.504 seconds, median 2.4955, not isolated-kernel or certified step timings. These are individual observations, not a benchmark.
+- After inference cleanup, bundle verification and all nine protected hashes pass. No model payload copies/downloads, installed/default promotion, catalog change, precision change or threading change occurred.
+
+Local evidence:
+
+- Final image and strict acceptance: `output/q6p_canary_moss_original_raw_actual_managed_staging_50steps_20261029_a/{image.png,image_acceptance.json,image_r0056_01.bin}`.
+- Full config SHA-256: `24cac2045b2c902338a615cd0b8b26a45ed937481c199144afe4c9e8129d0b60`.
+- Native gate report: `output/upgrades/native-backends-qwen35-actual-managed-staging.json`.
+- Common evidence root: `output/upgrades/moss-image-stateful-20261027/`.
+- Under that root: `raw-gemm-layout-20261029-hot/profile.json`, `actual-managed-staging-{2steps,50steps}-summary-20261029.json`, `actual-managed-staging-preservation-20261029.json`, and `actual-managed-staging-final-regression-20261029.log`.
+
+`tools/dt_image.sh` now accepts an explicit executable `--grpc-bin`, preserving its existing default and offload behavior. Eight hermetic helper tests pass. This actual guarded preflight also passes decoded native model selection:
+
+```bash
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  bash tools/dt_image.sh --bundle output/moss-models/base-original-85975793-trailer \
+    --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
+    --check 'Model selection check'
+```
+
+The guard is an existing ignored local safety launcher, not a newly installed runtime. The helper supplies the WSL/CUDA library path. Remove `--check` and supply an image prompt for generation; use a new automatic tag and confirm resources first. Do not rerun merely to reproduce the accepted result. Compatible custom full-precision checkpoints can use the same conversion path, but need their own source validation and inference acceptance. Wider prompts/resolutions, framework parity, GPU-only inference and custom low-bit conversion remain open. The sections below retain historical failed probes and checkpoints.
 
 ## Managed Prefetch Follow-up
 
@@ -36,7 +75,7 @@ Passive timestamps measured from the guard's monitor setup show `textEncoded`/`i
 
 After all inference cleanup, the restored guard-only candidate passes all 93 CUDA-enabled tests in 73.599 seconds and all eight linked-runtime execution gates with the expanded 24-case mapped-GEMM probe. Reports/logs: `output/upgrades/native-backends-qwen35-prefetch-final.json`, `prefetch-final-regression-20261029.log` under the common evidence root. Bundle verification passes, all nine protected hashes remain unchanged (`prefetch-final-preservation-20261029.json`), and the GPU is idle. No installed defaults, catalogs, model payloads, precision or threading policy were changed.
 
-Full-resolution prompt-following quality, practical raw-model inference and custom low-bit conversion remain unaccepted. Next bounded native evidence should establish the actual dense-GEMM weight headers, view/contiguity and allocation properties, eligible call sizes/counts and workspace lifetime; do not assume the standalone managed/staged probe represents the effective real-model path. Do not retry the unchanged full request with a larger deadline.
+At that checkpoint, full-resolution prompt-following quality and practical raw-model inference remained unaccepted. The actual-allocation investigation and passing full request above supersede that status; custom low-bit conversion remains unaccepted. The standalone managed/staged probe did not identify the effective real-model path, and no deadline increase was used.
 
 ## October 29 Resume
 
@@ -96,7 +135,7 @@ All those diagnostic runs were deliberately bounded, used the existing private b
 
 The goal is easy, correct conversion of a custom full-precision MOSS Image model, or the original BF16 model, into Draw Things format and successful prompt-following inference on Linux/CUDA.
 
-Conversion and private bundle tooling are implemented. The raw-descriptor defect is corrected and the existing private bundle metadata is repaired. The October 29 guarded two-step loading/finite-output gate passes, but both the original and capability-guarded 50-step requests timed out after active denoising progress. The bounded staging experiment was rejected and removed; continue from the guard-only full-gate timing and next evidence described above. Do not repeat pre-repair profiling or an unchanged long render merely to reproduce the existing state.
+Conversion and private bundle tooling are implemented. Raw descriptors are corrected, and allocation-aware native staging now completes the original-source full request with a prompt-following image. Continue from the current passing result above, not the superseded timeouts or rejected flag-only staging experiment. Do not repeat pre-repair profiling or an unchanged long render merely to reproduce the existing state.
 
 Pre-investigation published checkpoint:
 
@@ -116,18 +155,20 @@ The next chat should inspect current git/process/GPU state, then read saved evid
 | Original BF16 source | Pinned download, source manifest and hashes verified |
 | Conversion | 462 learned source tensors to 524 native tensors; exact native metadata contract |
 | Precision | F16 except the timestep-output projection weight/bias, preserved as F32 from original values |
-| Private bundle | Raw descriptors repaired to native format; independent payloads and pinned companions verified; post-repair two-step check passed |
+| Private bundle | Raw descriptors repaired to native format; independent payloads and pinned companions verified; original-source full request passed |
 | Native model selection | Decoded server metadata confirms `moss_image`, rather than merely finding a filename |
 | Pre-repair two-step request | One finite 512x512 noisy image, complete stream; malformed raw descriptors invalidate correct-weight loading acceptance |
 | Post-repair two-step request | One finite 512x512 blurred image; complete stream/chunks/post-Echo; 203.905 s wall time including startup/cleanup |
-| Post-repair full request | Timeout at 900 s after 38 sampling callbacks/25 previews; post-Echo passed; no accepted final image or full-quality result |
+| Pre-staging repaired full request | Timeout at 900 s after 38 sampling callbacks/25 previews; no accepted final image |
+| Allocation-aware two-step request | Strict pass in 184.610 s; config/raw/PNG byte-identical to preserved guard-only control |
+| Allocation-aware full request | Strict finite/stream/post-Echo pass in 289.534 s; viewed 512x512 image follows the teapot/table/plant/window prompt |
 | Pre-repair full 50-step request | Timed out at 1,800 seconds; post-request Echo passed; no accepted final image |
 | Pre-repair short stage probe | Reached `textEncoded`, then `imageEncoded`; no sampling signpost within 60 seconds |
 | CPU-focused tests | 66 passed in 6.694 seconds after descriptor correction |
 | Preservation | Earlier 24-file baseline retained; metadata-only repair preserved payload bytes; post-run bundle integrity and all nine current protected hashes pass |
-| Full current CUDA suite | Not rerun/certified for this increment |
+| Full current CUDA suite | 95 tests passed in 74.597 s; all eight linked execution gates pass, including 36 exact-output GEMM cases |
 
-**Do not equate finite output, schema validity, a live CPU worker, or a passing Echo with correct image generation.** The read-path/descriptor defect is identified and post-fix finite output passes; full-quality performance and custom-model quality remain unverified.
+**Do not equate finite output, schema validity, a live CPU worker, or a passing Echo with correct image generation.** The original-source full image was actually viewed and matches this prompt/profile. Arbitrary custom-model quality, wider coverage and framework parity remain unverified.
 
 ## Constraints
 
@@ -334,10 +375,10 @@ The one replacement bundle contains 19,100,000,256 payload bytes. Net reclaimed 
 
 ## Next Investigation
 
-1. The resumed two-step gate passed; the 50-step request then timed out after active progress. Start with a bounded native allocation/offload experiment grounded in the exact-output managed/device GEMM controls. Validate any proposed per-operation staging or loading-policy change on a small case before a full request. The standalone probe does not prove which native call dominates, and forcing all raw weights into VRAM is not a safe workaround.
+1. Original-source conversion and the full 512x512 prompt-following request now pass. Next validate an actual compatible custom full-precision checkpoint through the same inspect/convert/private-bundle/preflight/short/full sequence, or expand prompt/geometry coverage. Do not reopen the superseded flag-only staging experiment or force all raw weights into VRAM.
 2. Reuse denoiser hash `fa67bb5f...`; do not recreate/download/copy payloads. Leave diagnostic interposition/profiling variables unset for acceptance. Confirm current worktree, candidate identity and resource/port/process state before a new workload; historical PIDs are not live jobs.
 3. If a local failure remains, form one nearby falsifiable hypothesis and immediately validate a small fix. Do not blindly change threading, precision or transforms. Any actual native implementation change must follow the pinned patch workflow.
-4. Require a completed finite full-resolution image and inspect it for the prompt before accepting quality. Recheck protected resources and private payload integrity after native cleanup; record actual results and practical timing separately.
+4. For each new checkpoint/profile, require a completed finite full-resolution image and inspect it for the prompt before accepting quality. Recheck protected resources and private payload integrity after native cleanup; record actual results and practical timing separately.
 
 Success means a coherent prompt-following image from our original/custom source conversion, practical completion, finite/complete output, protected resources unchanged, and honest separation of what was tested from what remains open. Custom q8p/i4x quantization is later work, not implemented/certified here.
 

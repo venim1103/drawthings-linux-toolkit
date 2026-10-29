@@ -21,7 +21,7 @@ index 0d41585..4e5e4c5 100644
  	if (ccv_nnc_tensor_count(a->info) == count * 2 && ccv_nnc_tensor_count(b->info) == count * 2)
  	{
 diff --git a/lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu b/lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu
-index 57d43f2..3445ac6 100644
+index 57d43f2..90fbcbe 100644
 --- a/lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu
 +++ b/lib/nnc/cmd/blas/gpu/ccv_nnc_gemm_gpu_cublas.cu
 @@ -237,6 +237,11 @@ static int _ccv_nnc_gemm_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t hint
@@ -36,6 +36,47 @@ index 57d43f2..3445ac6 100644
  	assert(!bias || (bias->info.dim[1] == 0 || bias->info.dim[2] == 0 || bias->info.dim[3] == 0)); // It is a 1-d array
  	int a_batch_size, a_rows, a_cols, a_batch_inc, a_rows_inc, a_cols_inc;
  	int w_batch_size, w_rows, w_cols, w_batch_inc, w_rows_inc, w_cols_inc;
+@@ -354,6 +359,25 @@ static int _ccv_nnc_gemm_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t hint
+ 		w_datatype = (w_params.datatype & 0xff) << 12;
+ 		w_data_size = ccv_nnc_compat_qx_dense_data_size(w_params);
+ 	}
++	int stage_w = 0;
++	cudaStream_t staging_stream = 0;
++	if (!CCV_IS_TENSOR_VIEW(w) && CCV_GET_DATA_TYPE(w->info.datatype) != CCV_QX &&
++		(w_datatype == CCV_32F || w_datatype == CCV_16F || w_datatype == CCV_16BF) &&
++		ccv_nnc_tensor_data_size_without_padding(w->info) <= 64 * 1024 * 1024)
++	{
++		staging_stream = ccv_nnc_stream_context_get_stream(stream_context);
++		int device = 0;
++		int concurrent_managed_access = 0;
++		cudaPointerAttributes attributes = {};
++		if (cudaGetDevice(&device) == cudaSuccess &&
++			cudaDeviceGetAttribute(&concurrent_managed_access, cudaDevAttrConcurrentManagedAccess, device) == cudaSuccess &&
++			!concurrent_managed_access && cudaPointerGetAttributes(&attributes, w->data.u8) == cudaSuccess &&
++			attributes.type == cudaMemoryTypeManaged)
++		{
++			stage_w = 1;
++			w_data_size = ccv_nnc_tensor_data_size_without_padding(w->info);
++		}
++	}
+ 	// H256 weights store Wq = W R along K, with R symmetric and its own inverse, so
+ 	// A W^T = (A R) Wq^T. Undoing R while decoding is free for the Q*_K codecs but costs
+ 	// extra for the IQ codecs (grid lookups), so for those rotate A instead when it is
+@@ -393,6 +417,14 @@ static int _ccv_nnc_gemm_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t hint
+ 		w_data = (unsigned char*)workspace + cublas_size + a_data_size;
+ 		ccv_nnc_compat_decode_qx(w->data.u8, w_params, w_data, stream_context);
+ 	}
++	else if (stage_w)
++	{
++		if (!workspace)
++			return CCV_NNC_EXEC_INVALID;
++		w_data = (unsigned char*)workspace + cublas_size + a_data_size;
++		if (cudaMemcpyAsync(w_data, w->data.u8, w_data_size, cudaMemcpyDefault, staging_stream) != cudaSuccess)
++			return CCV_NNC_EXEC_INVALID;
++	}
+ 	// Check if we can shortcut this and use dequantize_mul_mat_vec which will be faster for gmmv.
+ 	if (CCV_IS_TENSOR_CONTIGUOUS(a) && a_datatype == CCV_16F && a_batch_size == 1 &&
+ 		CCV_IS_TENSOR_CONTIGUOUS(w) && w_datatype == CCV_16F && w_batch_size == 1 &&
 diff --git a/lib/nnc/cmd/gated_delta/ccv_nnc_gated_delta.c b/lib/nnc/cmd/gated_delta/ccv_nnc_gated_delta.c
 index 0e27206..383b90c 100644
 --- a/lib/nnc/cmd/gated_delta/ccv_nnc_gated_delta.c

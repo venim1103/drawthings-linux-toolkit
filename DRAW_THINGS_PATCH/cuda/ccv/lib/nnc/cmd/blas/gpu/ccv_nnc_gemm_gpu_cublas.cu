@@ -359,6 +359,25 @@ static int _ccv_nnc_gemm_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t hint
 		w_datatype = (w_params.datatype & 0xff) << 12;
 		w_data_size = ccv_nnc_compat_qx_dense_data_size(w_params);
 	}
+	int stage_w = 0;
+	cudaStream_t staging_stream = 0;
+	if (!CCV_IS_TENSOR_VIEW(w) && CCV_GET_DATA_TYPE(w->info.datatype) != CCV_QX &&
+		(w_datatype == CCV_32F || w_datatype == CCV_16F || w_datatype == CCV_16BF) &&
+		ccv_nnc_tensor_data_size_without_padding(w->info) <= 64 * 1024 * 1024)
+	{
+		staging_stream = ccv_nnc_stream_context_get_stream(stream_context);
+		int device = 0;
+		int concurrent_managed_access = 0;
+		cudaPointerAttributes attributes = {};
+		if (cudaGetDevice(&device) == cudaSuccess &&
+			cudaDeviceGetAttribute(&concurrent_managed_access, cudaDevAttrConcurrentManagedAccess, device) == cudaSuccess &&
+			!concurrent_managed_access && cudaPointerGetAttributes(&attributes, w->data.u8) == cudaSuccess &&
+			attributes.type == cudaMemoryTypeManaged)
+		{
+			stage_w = 1;
+			w_data_size = ccv_nnc_tensor_data_size_without_padding(w->info);
+		}
+	}
 	// H256 weights store Wq = W R along K, with R symmetric and its own inverse, so
 	// A W^T = (A R) Wq^T. Undoing R while decoding is free for the Q*_K codecs but costs
 	// extra for the IQ codecs (grid lookups), so for those rotate A instead when it is
@@ -397,6 +416,14 @@ static int _ccv_nnc_gemm_forw(const ccv_nnc_cmd_t cmd, const ccv_nnc_hint_t hint
 		ccv_nnc_tensor_param_t w_params = w->info;
 		w_data = (unsigned char*)workspace + cublas_size + a_data_size;
 		ccv_nnc_compat_decode_qx(w->data.u8, w_params, w_data, stream_context);
+	}
+	else if (stage_w)
+	{
+		if (!workspace)
+			return CCV_NNC_EXEC_INVALID;
+		w_data = (unsigned char*)workspace + cublas_size + a_data_size;
+		if (cudaMemcpyAsync(w_data, w->data.u8, w_data_size, cudaMemcpyDefault, staging_stream) != cudaSuccess)
+			return CCV_NNC_EXEC_INVALID;
 	}
 	// Check if we can shortcut this and use dequantize_mul_mat_vec which will be faster for gmmv.
 	if (CCV_IS_TENSOR_CONTIGUOUS(a) && a_datatype == CCV_16F && a_batch_size == 1 &&

@@ -1,6 +1,6 @@
 # Qwen3.5 CUDA Forward Patch Profile
 
-This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty forward operations, decoded packed-embedding lookup, scaled RMSNorm forward support, and capability-checked managed-memory advice/prefetch without changing Package files, assertion settings, CPU backends, or the installed runtime.
+This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty forward operations, decoded packed-embedding lookup, scaled RMSNorm forward support, capability-checked managed-memory advice/prefetch, and bounded allocation-aware dense-GEMM weight staging without changing Package files, assertion settings, CPU backends, or the installed runtime.
 
 The manifest pins community, s4nnc, and CCV revisions and SHA-256 hashes for every modified original source. The `ccv/` tree contains patched snapshots; `patches/ccv.patch` is the generated unified diff. The patch tool never falls back to copying snapshots over unexpected upstream files.
 
@@ -29,11 +29,23 @@ A separate strict-profile experiment copied non-view raw F32/F16/BF16 weights of
 
 The real repaired-bundle two-step request did not support keeping staging: 196.942 seconds with staging versus 127.516 seconds on the preserved guard-only `dc94ffc6...` control, including startup/cleanup. Config, final raw tensor and PNG are byte-identical; both runs have complete memory/temperature/utilization telemetry, sampled peak 2,305 MiB and maximum 63 C. These are individual observations, not a benchmark. Both viewed images remain blurred two-step outputs, not quality acceptance. Report: `output/upgrades/moss-image-stateful-20261027/mapped-staging-comparison-20261029.json`.
 
-The staging change was removed from the maintained snapshot and generated patch; strict/idempotence verification passes again and rebuilding reproduces the exact accepted `dc94ffc6...` binary. The experimental executable remains at `output/upgrades/gRPCServerCLI-0621d819-rejected-mapped-staging`, and the guard-only control at `output/upgrades/gRPCServerCLI-0621d819-before-mapped-staging`. No model copies, installed defaults, precision changes or persistent staging allocations were retained. Standalone copy/GEMM timings did not predict the real-model result.
+At that checkpoint, flag-based staging was removed from the maintained snapshot and generated patch; strict/idempotence verification passed and rebuilding reproduced the exact accepted `dc94ffc6...` binary. The experimental executable remains at `output/upgrades/gRPCServerCLI-0621d819-rejected-mapped-staging`, and the guard-only control at `output/upgrades/gRPCServerCLI-0621d819-before-mapped-staging`. No model copies, installed defaults, precision changes or persistent staging allocations were retained. Standalone copy/GEMM timings did not predict the real-model result.
 
 The guard-only 50-step request still times out at the unchanged 900-second cap, after 37 sampling callbacks and 24 previews with no final image; post-Echo passes. All 1,792 GPU samples are present, peak is 2,305 MiB, maximum temperature 63 C and no resource abort occurs. Sampled timestamps show initial sampling at 113.540 seconds and subsequent callback intervals of 14.518-28.286 seconds; callbacks are not completed-step or isolated-kernel timings. No practical full-inference or prompt-quality acceptance follows. Summary: `output/upgrades/moss-image-stateful-20261027/prefetch-guard-50steps-summary-20261029.json`.
 
-Final restored-profile verification passes all 93 CUDA-enabled tests in 73.599 seconds and all eight linked native gates, now including 24 mapped-GEMM cases. Report: `output/upgrades/native-backends-qwen35-prefetch-final.json`. Post-cleanup bundle verification and all nine protected hashes pass; the GPU is idle. The next performance investigation must verify the effective real-model weight layout/allocation path rather than extrapolate from the standalone probe or simply increase the full-request deadline.
+Restored-profile verification passed all 93 CUDA-enabled tests in 73.599 seconds and all eight linked native gates, including 24 mapped-GEMM cases. Report: `output/upgrades/native-backends-qwen35-prefetch-final.json`. Post-cleanup bundle verification and all nine protected hashes passed. This led to the actual-allocation inspection below rather than another unchanged render with a longer deadline.
+
+### Allocation-Aware Managed-Weight Staging
+
+A bounded native capture found nine CUDA-managed and three device weight pointers across twelve real raw-GEMM calls, all without `CCV_MAPPED_MEM` in the tensor wrapper. CUDA attribute queries and pending-error checks returned zero throughout. Thus the earlier flag-only experiment did not stage those observed hot managed weights. Evidence: `output/upgrades/moss-image-stateful-20261027/raw-gemm-layout-20261029-hot/profile.json`.
+
+The maintained `_ccv_nnc_gemm_forw` now checks the actual CUDA allocation type on concurrent-managed-access-zero devices. Only non-view raw F32/F16/BF16 weights at most 64 MiB are copied, on the same stream, into the existing per-stream workspace before unchanged cuBLAS arithmetic. Device weights, larger weights, views, QX paths and supported-CMA behavior remain unchanged. No persistent weight cache, whole-model VRAM residency or CUDA error clearing is added.
+
+The existing mapped-GEMM gate now covers **36 exact-output cases**: three precisions, both weight orientations, optional bias, and device/flagged-managed/unflagged-managed weights. Both the preserved guard-only control and new candidate pass. Strict application/snapshot/idempotence verification passes; the isolated 16-job incremental build took 14.100 seconds. Current private binary SHA-256: `acafef3d7f8f87588355cca88c41b21ad975665650271e1e23e53e0e0a2bf12b`. All eight linked execution gates pass in `output/upgrades/native-backends-qwen35-actual-managed-staging.json`, and the final full CUDA-enabled suite passes all **95 tests in 74.597 seconds**.
+
+The repaired original-source bundle passes a two-step request in 184.610 seconds with config/raw/PNG byte-identical to the preserved guard-only control. Its unchanged **512x512, 50-step request passes in 289.534 seconds including startup/cleanup**, within the same 900-second cap. The viewed final image follows the teapot/table/plant/window prompt; native model selection, final finiteness, complete stream/chunks and post-Echo pass. Full-run sampled peak was 2,305 MiB, maximum 66 C, with all 549 memory/temperature readings present and two utilization readings unavailable. Subsequent sampling callbacks range from 1.501 to 3.504 seconds, median 2.4955; these are not isolated-kernel or certified step timings. Individual request timings are not a benchmark.
+
+Reports under `output/upgrades/moss-image-stateful-20261027/`: `actual-managed-staging-{2steps,50steps}-summary-20261029.json`, `actual-managed-staging-preservation-20261029.json`, and `actual-managed-staging-final-regression-20261029.log`. Post-inference bundle integrity and all nine protected hashes pass. Installed/default runtime, canonical weights, catalogs, precision and threading remain unchanged. Original-source bring-up is accepted for this prompt/profile; arbitrary custom checkpoints, wider geometry/prompt coverage, framework parity and custom low-bit conversion remain separate gates. The [handover](../../docs/MOSS_CONVERSION_HANDOVER_2026-10-28.md) records the local guarded command and evidence.
 
 ## Apply To An Isolated Candidate
 
@@ -58,16 +70,16 @@ Ruby is a native-build prerequisite. Before Bazel runs, the helper automatically
 ```bash
 DRAWTHINGS_CANDIDATE_DIR="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard" \
 DRAWTHINGS_BAZEL_ROOT="$PWD/.cache/bazel-qwen35-cuda-prefetch-guard" \
-DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-prefetch-guard" \
-DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-prefetch-guard \
+DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-actual-managed-staging" \
+DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-actual-managed-staging \
 DT_BUILD_JOBS=16 bash tools/drawthings_build_candidate.sh build
 
 .venv/bin/python tools/dt_layer_parity_oracle.py native-backends \
 	--binary output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI \
-	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-prefetch-guard \
+	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-actual-managed-staging \
 	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding --execute-packed-gemm --execute-scaled-rmsnorm \
 	--execute-empty-forward --execute-memory-advice --execute-mapped-gemm \
-	--report output/upgrades/native-backends-qwen35-prefetch-guard.json
+	--report output/upgrades/native-backends-qwen35-actual-managed-staging.json
 ```
 
 Create the detached community checkout and independent CCV copy before this command; apply the profile only to that private CCV copy. An earlier applied profile is not an upgrade base: create a fresh copy of the pinned pristine CCV source when the profile changes. The report checks six CUDA precision selections, CPU/SDPA controls, the binary hash, and optionally real linked-runtime GPU operations against CPU values. The pristine server is a tested negative control: the required-Qwen-CUDA gate rejects it even though CPU and SDPA controls are present. Integration is accepted only after both the full build and the positive linked-runtime check pass.

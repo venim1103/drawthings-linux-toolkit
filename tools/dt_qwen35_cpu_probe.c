@@ -511,7 +511,7 @@ int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, voi
   const int shapes[4][2] = {{3, 8}, {5, 8}, {5, 0}, {3, 5}};
   for (int datatype_index = 0; datatype_index < 3; datatype_index++)
     for (int weight_transposed = 0; weight_transposed < 2; weight_transposed++)
-      for (int managed = 0; managed < 2; managed++)
+      for (int managed = 0; managed < 3; managed++)
         for (int with_bias = 0; with_bias < 2; with_bias++)
   {
     unsigned char data[4][64 * 4];
@@ -559,7 +559,7 @@ int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, voi
       }
       device[index] = ((allocate_fn)allocate_tensor)(index == 1 ? memory : 0, parameters, 0);
       if (!device[index]) { status = -90; break; }
-      if (managed && index == 1) device[index]->type |= CCV_MAPPED_MEM;
+      if (managed == 1 && index == 1) device[index]->type |= CCV_MAPPED_MEM;
     }
     const ccv_nnc_hint_t hint = {0};
     const ccv_nnc_cmd_t transfer = {.cmd = CCV_NNC_DATA_TRANSFER_FORWARD, .algorithm = -1};
