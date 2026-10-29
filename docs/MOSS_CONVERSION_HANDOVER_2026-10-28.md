@@ -1,6 +1,37 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-10-29. Original-source and one custom merged-SFT end-to-end test now pass, including our own i4x quantization of the merge; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-10-29. Original-source, custom merged-SFT and full-precision MoodyMOSS end-to-end tests now pass, including our own i4x quantization of the merge; MoodyMOSS i4x, arbitrary custom checkpoints and broader quality coverage are not yet certified.
+
+## MoodyMOSS Full-Precision Result: October 29
+
+The local `dt-models/moodymossv10turbobf16.safetensors` converts and produces a coherent prompt-following image. Its filename alone does not establish provenance, a distillation recipe or recommended Turbo sampling settings; embedded metadata is absent. This acceptance uses the existing 50-step reference profile, not a low-step Turbo certification.
+
+- Source: **10,164,663,992 bytes**, SHA-256 `1dc9f9a34a1270636311edaa13f137936ad637492af57a3bb82880bd20d01730`. Before/after conversion checksums match.
+- Source layout: 378 BF16 tensors, including 42 `model.diffusion_model.layers.N.proj.qkv.weight` tensors shaped `[9216,3072]`, with Q/K/V stacked along output rows. The source adapter reuses the existing split and Q/K rotary conversion; V is not rotary-transformed. Fused/separate ambiguity within one layer, incorrect shapes and incomplete architectures remain rejected. No native runtime change or alternate learned weights were needed.
+- Canonical conversion: `dt-models/moodymoss_v10_turbo_ourconvert_f16.ckpt`, **10,194,059,264 bytes**, SHA-256 `6003acfef854df1b195508c229be2f07f3726f8fe3e0b7570cec9170f9953f8e`. Strict validation passes all 524 native tensors; timestep-output projection weight/bias retain original values in F32, with other weights in F16.
+- Independent private bundle: `output/moss-models/moodymoss-v10-turbo`, with pinned Qwen/VAE companions. Its native-trailer denoiser is 10,186,162,176 bytes, SHA-256 `da9a7077fc88ffded3bc9bc22118f5b35a8a1586712220b4b38511f65864d5b7`. Published bundle integrity passed before inference. No installed/default or active-catalog change was made.
+- Regression checks: two new fused-QKV tests cover exact split order/rotary policy and strict preflight; the combined CUDA/native/helper suite passes all **100 tests in 65.022 seconds**. Converter support is committed as `79fbdd7cdd52a845d9dd8c33cea184b26ba1b5f3`.
+
+Both requests used the accepted `acafef3d...` private server and existing resource guard, CPU offload, `--fread-preferred`, weights cache zero, 512x512, DDIMTrailing/CFG 3/shift 5/seed 4242, an empty negative prompt and the orange-teapot prompt:
+
+- Two steps: **158.935 seconds including startup/cleanup**, 480-second request cap; tag `moodymoss_f16_2steps_20261029_a`. All 285 memory/temperature samples are present; peak 2,305 MiB, maximum 63 C; two utilization readings are unavailable.
+- Full 50 steps: **255.036 seconds including startup/cleanup**, 900-second request cap; tag `moodymoss_f16_50steps_20261029_a`. All 478 memory/temperature samples are present; peak 2,305 MiB, maximum 66 C; two utilization readings are unavailable. Config SHA-256 `0a381a2c67c5dad9ef0813c7d8635b79dc196939dff71865f3816b7320c5d828`.
+- Both pass decoded native `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo. Neither triggered the guard; owned native processes are gone and GPU memory/use returned to zero before quantization started.
+- The viewed full image clearly shows an orange ceramic teapot on a white table beside a green plant, with bright window light. Final image: `output/q6p_canary_moodymoss_f16_50steps_20261029_a/image.png`.
+
+The genuine i4x encoding is in progress from this accepted F16 checkpoint using 16 CPU workers, targeting `dt-models/moodymoss_v10_turbo_ourconvert_i4x.ckpt` and `output/moss-models/moodymoss-v10-turbo-i4x`. That output has not yet passed native image acceptance. Post-quantization bundle/preservation checks and i4x two-step/full-image runs remain pending. Individual timings above are observations, not a controlled benchmark; broader prompts/resolutions, framework parity, GPU-only inference and low-step Turbo quality remain unverified. Existing CUFILE diagnostics occur during successful reads, as in the earlier accepted runs.
+
+Repeat generation from the full-precision bundle without registering it or changing defaults:
+
+```bash
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  bash tools/dt_image.sh --bundle output/moss-models/moodymoss-v10-turbo \
+    --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
+    --metrics 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
+```
+
+Do not overlap this command with the active quantization or another native/GPU workload. The helper supplies the WSL/CUDA library path and uses its normal 3,600-second timeout; acceptance above used explicit 480/900-second caps. Evidence under `output/upgrades/moss-image-stateful-20261027/`: `moodymoss-conversion-20261029.json`, `moodymoss-f16-{2steps,50steps}-20261029-a.log`, `moodymoss-f16-acceptance-20261029.json` and `moodymoss-fused-qkv-regression-20261029.log`. Model artifacts and reports remain local and are not committed.
 
 ## Custom Merged SFT i4x Result: October 29
 
