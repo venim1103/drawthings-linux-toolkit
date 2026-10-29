@@ -2,6 +2,18 @@
 
 Created: 2026-10-28. Updated: 2026-10-29. This is the current handover, not a claim that custom MOSS inference is complete.
 
+## Managed Prefetch Follow-up
+
+The user explicitly authorized continued work and periodic commits/pushes. The earlier completed inference investigation was committed and pushed as `207047f`. The installed defaults, original `71878a22...` candidate and model payloads remain protected.
+
+A bounded exact-output staging probe found approximately 6.4 ms for copy-plus-GEMM versus 50 ms for direct managed weights. Separately, `cudaMemPrefetchAsync` returned 101 and left error 101 pending on this concurrent-managed-access-zero GPU. Native dense GEMM already calls the mapped-tensor prefetch helper; that helper lacked the capability check used by memory advice. The extended existing `--execute-memory-advice` gate reproduces this error on the original candidate as `DT_MEMORY_ADVICE_EXECUTION=-84`.
+
+The pinned compatibility snapshot now skips unsupported optional prefetch without clearing prior errors. The generated diff passes strict/idempotence verification. Its C gate checks managed-buffer contents, synchronization and preservation of an injected prior error; a regression test retains the original candidate as the negative control. The isolated 16-job build succeeded at `output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard`, with fresh CCV copy `output/upgrades/ccv-69b1ed1f-qwen35-cuda-prefetch-guard` and separate Bazel root `.cache/bazel-qwen35-cuda-prefetch-guard`. Candidate SHA-256: `dc94ffc6daa972d5e43073c57ba2c981bf8141b1946167554e16dd0398185fb2`. Build log: `output/upgrades/moss-image-stateful-20261027/prefetch-guard-build-20261029.log`.
+
+All eight linked-runtime execution gates pass, including the new opt-in `--execute-mapped-gemm`: twelve exact-output dense GEMM cases covering ordinary/managed weights, F32/F16/BF16 and optional bias. Persistent report: `output/upgrades/native-backends-qwen35-prefetch-guard.json`. The full CUDA-enabled suite passes all 93 tests in 64.246 seconds; log `prefetch-guard-regression-20261029-pristine.log` under the common evidence root. Set `DT_CCV_SOURCE_DIR` to pristine pinned CCV for that suite, and `DT_GRPC_CANDIDATE` to the new executable. The first run used applied sources and failed only the pristine-base patch fixture; the focused corrected fixture and full rerun passed. All nine protected hashes are unchanged; report `prefetch-guard-preservation-20261029.json`.
+
+Do not treat this prefetch correctness guard as a raw-weight performance fix. Native per-operation staging remains a separate experiment after the guard passes integrated checks; do not force the entire unquantized model into VRAM or repeat an unchanged long request.
+
 ## October 29 Resume
 
 The user resumed after restarting the computer. Commit `475912fc4e35a462398f03ba5d7ec808a296f692` matched `origin/main`, the worktree was clean, the candidate hash matched, the GPU was idle and bundle integrity passed. This supersedes the pause instruction below, not the preservation/no-subagent constraints or the requirement for new commit/push authorization.
@@ -24,7 +36,7 @@ Local evidence:
 - `output/upgrades/moss-image-stateful-20261027/file-copy-gemm-probe-20261029-{a,4g}.log`: exact-output GEMM/allocation-state controls.
 - `output/upgrades/moss-image-stateful-20261027/raw-fixed-preservation-20261029.json`: all nine protected hashes unchanged after native cleanup, plus private-file identities and full-request outcome.
 
-Bundle verification passed again after full-request cleanup; all three payload sizes and single-link regular-file identities are unchanged. All nine protected runtime/CPU/catalog/canonical-model/candidate hashes matched the October 28 baseline. Only the README and this handover are tracked changes; no commit/push was requested or performed. No native/GPU jobs remain active. Run hashing strictly serial to inference.
+At the end of those inference runs, bundle verification passed again after cleanup; all three payload sizes and single-link regular-file identities were unchanged. All nine protected runtime/CPU/catalog/canonical-model/candidate hashes matched the October 28 baseline. Only the README and this handover had tracked changes, and no native/GPU jobs remained active. That documentation was subsequently committed/pushed as `207047f` under renewed user authorization; see the follow-up above for current work. Run hashing strictly serial to inference.
 
 ## User Pause And WIP Checkpoint
 

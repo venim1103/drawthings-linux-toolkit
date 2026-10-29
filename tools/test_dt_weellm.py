@@ -804,7 +804,7 @@ class NativeQwenReferenceTests(unittest.TestCase):
                 [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
                  "--binary", str(candidate), "--ccv-source", str(source), "--require-qwen-cuda",
                  "--execute-qwen", "--execute-sdpa", "--execute-embedding", "--execute-packed-gemm", "--execute-scaled-rmsnorm",
-                 "--execute-empty-forward", "--execute-memory-advice", "--report", str(report_path)],
+                 "--execute-empty-forward", "--execute-memory-advice", "--execute-mapped-gemm", "--report", str(report_path)],
                 capture_output=True, text=True, timeout=150)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
@@ -818,6 +818,7 @@ class NativeQwenReferenceTests(unittest.TestCase):
             self.assertEqual(report["scaled_rmsnorm_cuda_execution"], 0)
             self.assertEqual(report["empty_forward_cuda_execution"], 0)
             self.assertEqual(report["memory_advice_cuda_execution"], 0)
+            self.assertEqual(report["mapped_gemm_cuda_execution"], 0)
             self.assertEqual(len(report["checks"]), 9)
             self.assertTrue(all(check["backend"] == check["expected"] for check in report["checks"]))
             self.assertEqual(report["binary_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
@@ -841,6 +842,21 @@ class NativeQwenReferenceTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(message, result.stderr)
                 self.assertIn("\n" + marker + "\n", result.stderr)
+
+    @unittest.skipUnless(os.environ.get("DT_RUN_CUDA_TESTS") == "1", "Set DT_RUN_CUDA_TESTS=1 for native CUDA execution")
+    def test_native_prefetch_gate_rejects_pre_fix_binary(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = root / "output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI"
+        source = Path(os.environ.get("DT_CCV_SOURCE_DIR", str(root / ".cache/bazel-upgrade/de9c699fb740fbb90831ca87b34ee139/external/ccv")))
+        if not shutil.which("lldb") or not shutil.which("cc") or not candidate.is_file() or not (source / "lib/nnc/ccv_nnc.h").is_file():
+            self.skipTest("Prefetch negative control requires the preserved pre-fix candidate/source")
+        result = subprocess.run(
+            [sys.executable, str(root / "tools/dt_layer_parity_oracle.py"), "native-backends",
+             "--binary", str(candidate), "--ccv-source", str(source), "--execute-memory-advice"],
+            capture_output=True, text=True, timeout=150)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Native memory advice validation did not pass", result.stderr)
+        self.assertIn("\nDT_MEMORY_ADVICE_EXECUTION=-84\n", result.stderr)
 
     @unittest.skipUnless(os.environ.get("DT_RUN_CUDA_TESTS") == "1", "Set DT_RUN_CUDA_TESTS=1 for native CUDA execution")
     def test_native_tanh_gate_rejects_intermediate_binary(self):

@@ -820,8 +820,12 @@ void ccv_nnc_tensor_prefetch_async(ccv_nnc_tensor_t* const tensor, const ccv_nnc
 	// No prefetch if it is not "mapped" memory (allocated by cudaMallocManaged).
 	if (CCV_IS_TENSOR_VIEW(tensor) || !(tensor->type & CCV_MAPPED_MEM))
 		return;
+	const int device = cudevicemap(CCV_TENSOR_GET_DEVICE_ID(tensor->info.type));
+	int concurrent_managed_access = 0;
+	if (cudaDeviceGetAttribute(&concurrent_managed_access, cudaDevAttrConcurrentManagedAccess, device) != cudaSuccess || !concurrent_managed_access)
+		return;
 	cudaStream_t stream = ccv_nnc_stream_context_get_stream(stream_context);
-	cudaMemPrefetchAsync(tensor->data.u8, ccv_nnc_tensor_data_size(tensor->info), cudevicemap(CCV_TENSOR_GET_DEVICE_ID(tensor->info.type)), stream);
+	cudaMemPrefetchAsync(tensor->data.u8, ccv_nnc_tensor_data_size(tensor->info), device, stream);
 }
 
 void ccv_nnc_stream_context_set_cublas_workspace(cublasHandle_t cublas, const ccv_nnc_stream_context_t* const stream_context, size_t workspace_size)

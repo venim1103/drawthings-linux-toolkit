@@ -1,6 +1,6 @@
 # Qwen3.5 CUDA Forward Patch Profile
 
-This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty forward operations, decoded packed-embedding lookup, scaled RMSNorm forward support, and capability-checked managed-memory advice without changing Package files, assertion settings, CPU backends, or the installed runtime.
+This profile is separate from the legacy CPU quantization bundle. It adds CUDA forward backends for `GatedDelta` and `RMSNormGated`, safe empty forward operations, decoded packed-embedding lookup, scaled RMSNorm forward support, and capability-checked managed-memory advice/prefetch without changing Package files, assertion settings, CPU backends, or the installed runtime.
 
 The manifest pins community, s4nnc, and CCV revisions and SHA-256 hashes for every modified original source. The `ccv/` tree contains patched snapshots; `patches/ccv.patch` is the generated unified diff. The patch tool never falls back to copying snapshots over unexpected upstream files.
 
@@ -14,6 +14,14 @@ DT_RUN_CUDA_TESTS=1 .venv/bin/python -m unittest tools.test_dt_weellm.CudaQwenRe
 `verify` applies the unified diff in a temporary tree, checks snapshot equality, and verifies a second application is a no-op. `check` reports pristine/applied state without modifying the source. Mixed files or upstream drift are rejected.
 
 GPU tests compile the snapshots with `nvcc` and compare against the NumPy reference already validated against the pinned native CPU implementation. Use `DT_CCV_SOURCE_DIR` for pinned CCV headers and `DT_CUDA_ARCH` to override the default `sm_86`. Explicit GPU opt-in requires an available compiler/device; CPU-only tests do not imply CUDA acceptance.
+
+### Managed Prefetch Gate
+
+Mapped-tensor prefetch, like read-mostly/preferred-location advice, requires concurrent managed access. The profile skips these optional hints when the capability is unavailable or cannot be queried, without clearing a pending CUDA error. Views and non-mapped tensors retain their existing early returns; supported-device prefetch is unchanged.
+
+The existing `--execute-memory-advice` native gate now checks advice and mapped-tensor prefetch, exact managed-buffer contents, synchronization and preservation of an injected prior error. On the preserved `71878a22...` candidate, prefetch produces CUDA error 101 and the extended gate rejects it with `DT_MEMORY_ADVICE_EXECUTION=-84`. The isolated `dc94ffc6...` candidate passes this gate and all eight linked-runtime execution gates. Its new opt-in `--execute-mapped-gemm` gate covers twelve exact-output F32/F16/BF16 dense GEMM cases with ordinary/managed weights and optional bias. All 93 CUDA-enabled tests pass in 64.246 seconds, and strict patch/idempotence verification passes. This capability guard is not a claimed solution to raw-weight managed-memory performance or custom-model quality.
+
+Report: `output/upgrades/native-backends-qwen35-prefetch-guard.json`. For the complete regression suite, `DT_CCV_SOURCE_DIR` must point to pristine pinned CCV sources because the patch-verification fixture needs original files; select the isolated executable through `DT_GRPC_CANDIDATE`. An initial run incorrectly used the applied source tree and failed only that fixture; the corrected run passes all tests. All nine protected runtime/CPU/catalog/canonical-model/original-candidate hashes remain unchanged.
 
 ## Apply To An Isolated Candidate
 
@@ -36,18 +44,18 @@ The candidate helper accepts `DRAWTHINGS_CCV_OVERRIDE` only for an applied, hash
 Ruby is a native-build prerequisite. Before Bazel runs, the helper automatically invokes the patch tool's `prepare` action, which regenerates bindings with upstream `ruby build-cmd.rb .` inside the private CCV copy and verifies both GPU registration calls. `prepare` refuses non-private source paths before modifying files. Plain `apply` does not regenerate bindings: CCV's Bazel rules consume a pre-generated command table, so compiling the new CUDA files alone is not sufficient.
 
 ```bash
-DRAWTHINGS_CANDIDATE_DIR="$PWD/output/upgrades/community-0621d819-qwen35-cuda" \
-DRAWTHINGS_BAZEL_ROOT="$PWD/.cache/bazel-qwen35-cuda" \
-DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-forward-safety-v2" \
-DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-forward-safety-v2 \
+DRAWTHINGS_CANDIDATE_DIR="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard" \
+DRAWTHINGS_BAZEL_ROOT="$PWD/.cache/bazel-qwen35-cuda-prefetch-guard" \
+DRAWTHINGS_CCV_OVERRIDE="$PWD/output/upgrades/ccv-69b1ed1f-qwen35-cuda-prefetch-guard" \
+DRAWTHINGS_CANDIDATE_TAG=0621d819-qwen35-cuda-prefetch-guard \
 DT_BUILD_JOBS=16 bash tools/drawthings_build_candidate.sh build
 
 .venv/bin/python tools/dt_layer_parity_oracle.py native-backends \
-	--binary output/upgrades/community-0621d819-qwen35-cuda/bazel-bin/Apps/gRPCServerCLI \
-	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-forward-safety-v2 \
+	--binary output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI \
+	--ccv-source output/upgrades/ccv-69b1ed1f-qwen35-cuda-prefetch-guard \
 	--require-qwen-cuda --execute-qwen --execute-sdpa --execute-embedding --execute-packed-gemm --execute-scaled-rmsnorm \
-	--execute-empty-forward --execute-memory-advice \
-	--report output/upgrades/native-backends-qwen35-forward-safety-v2.json
+	--execute-empty-forward --execute-memory-advice --execute-mapped-gemm \
+	--report output/upgrades/native-backends-qwen35-prefetch-guard.json
 ```
 
 Create the detached community checkout and independent CCV copy before this command; apply the profile only to that private CCV copy. An earlier applied profile is not an upgrade base: create a fresh copy of the pinned pristine CCV source when the profile changes. The report checks six CUDA precision selections, CPU/SDPA controls, the binary hash, and optionally real linked-runtime GPU operations against CPU values. The pristine server is a tested negative control: the required-Qwen-CUDA gate rejects it even though CPU and SDPA controls are present. Integration is accepted only after both the full build and the positive linked-runtime check pass.

@@ -498,6 +498,85 @@ static float dt_probe_float_value(const unsigned char* data, const int datatype,
   return value;
 }
 
+int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, void* execute_command,
+  void* allocate_managed, void* release_memory, void* peek_error)
+{
+  typedef ccv_nnc_tensor_t* (*allocate_fn)(void*, ccv_nnc_tensor_param_t, int);
+  typedef int (*execute_fn)(ccv_nnc_cmd_t, ccv_nnc_hint_t, int, ccv_nnc_tensor_t* const*, int,
+    ccv_nnc_tensor_t* const*, int, ccv_nnc_stream_context_t*);
+  const int datatypes[] = {CCV_32F, CCV_16F, CCV_16BF};
+  const uint16_t half_inputs[] = {0x3400, 0xb800, 0x3c00};
+  const uint16_t half_weights[] = {0x3000, 0x3400, 0x3600, 0x3800, 0x3900};
+  const float input_values[] = {0.25f, -0.5f, 1};
+  const int shapes[4][2] = {{3, 8}, {5, 8}, {5, 0}, {3, 5}};
+  for (int datatype_index = 0; datatype_index < 3; datatype_index++)
+    for (int managed = 0; managed < 2; managed++)
+      for (int with_bias = 0; with_bias < 2; with_bias++)
+  {
+    unsigned char data[4][64 * 4];
+    memset(data, 0xff, sizeof(data));
+    for (int index = 0; index < 3; index++)
+    {
+      const int count = index == 0 ? 24 : index == 1 ? 40 : 5;
+      for (int element = 0; element < count; element++)
+      {
+        const float value = index == 0 ? input_values[element / 8] : index == 1 ? 0.125f * (element / 8 + 1) : 0.125f;
+        if (datatypes[datatype_index] == CCV_32F) ((float*)data[index])[element] = value;
+        else if (datatypes[datatype_index] == CCV_16F)
+          ((uint16_t*)data[index])[element] = index == 0 ? half_inputs[element / 8] : index == 1 ? half_weights[element / 8] : 0x3000;
+        else {
+          uint32_t bits;
+          memcpy(&bits, &value, sizeof(bits));
+          ((uint16_t*)data[index])[element] = bits >> 16;
+        }
+      }
+    }
+    ccv_nnc_tensor_t host[4] = {0};
+    ccv_nnc_tensor_t* host_pointers[] = {host, host + 1, host + 2, host + 3};
+    ccv_nnc_tensor_t* device[4] = {0};
+    void* memory = 0;
+    int status = 0;
+    for (int index = 0; index < 4; index++)
+    {
+      host[index].info.type = CCV_TENSOR_CPU_MEMORY;
+      host[index].info.format = CCV_TENSOR_FORMAT_NHWC;
+      host[index].info.datatype = datatypes[datatype_index];
+      memcpy(host[index].info.dim, shapes[index], sizeof(shapes[index]));
+      host[index].data.u8 = data[index];
+      ccv_nnc_tensor_param_t parameters = host[index].info;
+      parameters.type = CCV_TENSOR_GPU_MEMORY;
+      if (managed && index == 1)
+      {
+        memory = ((void* (*)(int, size_t))allocate_managed)(0, 40 * (datatypes[datatype_index] == CCV_32F ? 4 : 2));
+        if (!memory) { status = -90; break; }
+      }
+      device[index] = ((allocate_fn)allocate_tensor)(index == 1 ? memory : 0, parameters, 0);
+      if (!device[index]) { status = -90; break; }
+      if (managed && index == 1) device[index]->type |= CCV_MAPPED_MEM;
+    }
+    const ccv_nnc_hint_t hint = {0};
+    const ccv_nnc_cmd_t transfer = {.cmd = CCV_NNC_DATA_TRANSFER_FORWARD, .algorithm = -1};
+    const ccv_nnc_cmd_t gemm = {.cmd = CCV_NNC_GEMM_FORWARD, .algorithm = -1,
+      .info = {.blas = {.transpose_b = {0, 1}}}};
+    if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, host_pointers, 3, device, 3, 0);
+    if (!status) status = ((execute_fn)execute_command)(gemm, hint, 0, device, with_bias ? 3 : 2, device + 3, 1, 0);
+    if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, device + 3, 1, host_pointers + 3, 1, 0);
+    if (!status)
+      for (int row = 0; row < 3; row++)
+        for (int column = 0; column < 5; column++)
+        {
+          const float expected = input_values[row] * (column + 1) + (with_bias ? 0.125f : 0);
+          if (dt_probe_float_value(data[3], datatypes[datatype_index], row * 5 + column) != expected) status = -91;
+        }
+    if (!status && ((int (*)(void))peek_error)()) status = -92;
+    for (int index = 0; index < 4; index++)
+      if (device[index]) ((void (*)(ccv_nnc_tensor_t*))release_tensor)(device[index]);
+    if (memory) ((void (*)(int, void*))release_memory)(0, memory);
+    if (status) return status;
+  }
+  return 0;
+}
+
 int dt_probe_native_empty_forward(void* execute_command, void* synchronize, void* peek_error,
   void* clear_error, void* set_device, void* device_count)
 {
@@ -556,7 +635,8 @@ int dt_probe_native_empty_forward(void* execute_command, void* synchronize, void
 }
 
 int dt_probe_native_memory_advice(void* allocate_managed, void* release_memory, void* advise_memory,
-  void* transfer, void* synchronize, void* peek_error, void* clear_error, void* set_device, void* device_count)
+  void* transfer, void* synchronize, void* peek_error, void* clear_error, void* set_device, void* device_count,
+  void* prefetch_tensor)
 {
   const uint32_t expected[] = {0x11223344, 0xdeadbeef, 0, 0xffffffff};
   uint32_t actual[4] = {0};
@@ -565,11 +645,23 @@ int dt_probe_native_memory_advice(void* allocate_managed, void* release_memory, 
   ((int (*)(void))clear_error)();
   void* memory = ((void* (*)(int, size_t))allocate_managed)(0, sizeof(expected));
   if (!memory) return -80;
+  ccv_nnc_tensor_t tensor = {0};
+  tensor.type = CCV_MAPPED_MEM;
+  tensor.info.type = CCV_TENSOR_GPU_MEMORY;
+  tensor.info.format = CCV_TENSOR_FORMAT_NHWC;
+  tensor.info.datatype = CCV_32F;
+  tensor.info.dim[0] = 4;
+  tensor.data.u8 = memory;
   int status = ((int (*)(void*, const void*, size_t, int))transfer)(memory, expected, sizeof(expected), 1);
   if (!status)
   {
     ((void (*)(int, void*, size_t))advise_memory)(0, memory, sizeof(expected));
     if (((int (*)(void))peek_error)() || ((int (*)(void))synchronize)()) status = -81;
+  }
+  if (!status)
+  {
+    ((void (*)(ccv_nnc_tensor_t*, const ccv_nnc_stream_context_t*))prefetch_tensor)(&tensor, 0);
+    if (((int (*)(void))peek_error)() || ((int (*)(void))synchronize)()) status = -84;
   }
   if (!status)
   {
@@ -583,6 +675,8 @@ int dt_probe_native_memory_advice(void* allocate_managed, void* release_memory, 
     else {
       ((void (*)(int, void*, size_t))advise_memory)(0, memory, sizeof(expected));
       if (((int (*)(void))peek_error)() != injected) status = -83;
+      ((void (*)(ccv_nnc_tensor_t*, const ccv_nnc_stream_context_t*))prefetch_tensor)(&tensor, 0);
+      if (((int (*)(void))peek_error)() != injected) status = -85;
     }
   }
   ((int (*)(void))clear_error)();
