@@ -12,7 +12,31 @@ The pinned compatibility snapshot now skips unsupported optional prefetch withou
 
 All eight linked-runtime execution gates pass, including the new opt-in `--execute-mapped-gemm`: twelve exact-output dense GEMM cases covering ordinary/managed weights, F32/F16/BF16 and optional bias. Persistent report: `output/upgrades/native-backends-qwen35-prefetch-guard.json`. The full CUDA-enabled suite passes all 93 tests in 64.246 seconds; log `prefetch-guard-regression-20261029-pristine.log` under the common evidence root. Set `DT_CCV_SOURCE_DIR` to pristine pinned CCV for that suite, and `DT_GRPC_CANDIDATE` to the new executable. The first run used applied sources and failed only the pristine-base patch fixture; the focused corrected fixture and full rerun passed. All nine protected hashes are unchanged; report `prefetch-guard-preservation-20261029.json`.
 
-Do not treat this prefetch correctness guard as a raw-weight performance fix. Native per-operation staging remains a separate experiment after the guard passes integrated checks; do not force the entire unquantized model into VRAM or repeat an unchanged long request.
+The guard checkpoint was committed and pushed as `2077700`; local and remote tips matched. Do not treat this prefetch correctness guard as a certified raw-weight performance fix or force the entire unquantized model into VRAM.
+
+### Bounded Native Staging Follow-up
+
+The proposed staging experiment was implemented only for non-view raw F32/F16/BF16 weights no larger than 64 MiB on devices without concurrent managed access, using the existing stream workspace and unchanged arithmetic. A fresh private CCV copy, regenerated strict patch and 16-job incremental build produced `c51a759efc1d210f2f0c8c8c5ad15e3a26aa11485f7c22aacd24a691ab2004aa` in 50.191 seconds. All eight native gates passed, and all 93 CUDA-enabled tests passed in 66.826 seconds. The existing mapped-GEMM probe now covers 24 exact-output cases including both weight orientations; the accepted guard-only candidate also passed the expanded probe before the experiment.
+
+Matched guarded two-step results using the same repaired bundle and config:
+
+- Staging: **196.942 seconds**, tag `moss_original_raw_mapped_staging_2steps_20261029_a`; 368 complete GPU samples.
+- Guard-only control: **127.516 seconds**, tag `moss_original_raw_prefetch_control_2steps_20261029_a`; 232 complete GPU samples.
+- Both passed native model selection, finite 512x512 image, zero audio, complete stream/chunks and post-Echo. Config, final raw tensor and PNG are byte-identical. Both viewed images remain blurred orange/light-green two-step outputs. Sampled peaks are 2,305 MiB and 63 C, with no missing memory/temperature/utilization readings. Timing includes startup/cleanup and is not a benchmark. Comparison: `output/upgrades/moss-image-stateful-20261027/mapped-staging-comparison-20261029.json`.
+
+Staging was **not accepted**: the real-model pair does not demonstrate a benefit despite the earlier standalone probe. Its changes were removed from the maintained snapshot and generated diff, strict/idempotence verification passed, and the isolated build was restored to the exact accepted `dc94ffc6...` binary in 5.261 seconds. The rejected executable is preserved at `output/upgrades/gRPCServerCLI-0621d819-rejected-mapped-staging`, with its private CCV copy at `output/upgrades/ccv-69b1ed1f-qwen35-cuda-mapped-staging`. The guard-only control is preserved at `output/upgrades/gRPCServerCLI-0621d819-before-mapped-staging`.
+
+The private resource guard now accepts explicit `DT_VALIDATION_NATIVE` without changing its original-candidate default. Optional `DT_VALIDATION_CLIENT_LOG` records bounded phase timestamps through the existing telemetry loop; it does not instrument native code or change its arithmetic. The override/help/cleanup gate and mocked eight-signpost/default/cleanup test pass. All acceptance runs continue to unset `LD_PRELOAD`, `DT_SAMPLE_CPU_STACKS` and `DT_TARGETED_PROFILE_CLIENT_LOG`.
+
+### Guard-only Full Gate And Final Verification
+
+The accepted guard-only candidate was then tested at the unchanged 900-second 50-step request cap: **timeout, no final image or acceptance JSON**, post-Echo passed, 910.809 seconds wall time including startup/cleanup. Tag: `moss_original_raw_prefetch_guard_50steps_20261029_a`. It emitted 37 sampling callbacks and 24 previews, not 37 certified completed steps. All 1,792 memory/temperature/utilization samples are present; peak 2,305 MiB, maximum 63 C, no resource abort. GPU memory/use returned to zero after cleanup.
+
+Passive timestamps measured from the guard's monitor setup show `textEncoded`/`imageEncoded` at 41.445 seconds, initial `sampling` at 113.540 seconds, and last observed `sampling` at 887.830 seconds. Subsequent callback intervals range from 14.518 to 28.286 seconds (median 21.655). This is sustained denoising-time cost as well as startup/loading overhead; callback timing is not isolated kernel or completed-step timing. Structured report: `output/upgrades/moss-image-stateful-20261027/prefetch-guard-50steps-summary-20261029.json`.
+
+After all inference cleanup, the restored guard-only candidate passes all 93 CUDA-enabled tests in 73.599 seconds and all eight linked-runtime execution gates with the expanded 24-case mapped-GEMM probe. Reports/logs: `output/upgrades/native-backends-qwen35-prefetch-final.json`, `prefetch-final-regression-20261029.log` under the common evidence root. Bundle verification passes, all nine protected hashes remain unchanged (`prefetch-final-preservation-20261029.json`), and the GPU is idle. No installed defaults, catalogs, model payloads, precision or threading policy were changed.
+
+Full-resolution prompt-following quality, practical raw-model inference and custom low-bit conversion remain unaccepted. Next bounded native evidence should establish the actual dense-GEMM weight headers, view/contiguity and allocation properties, eligible call sizes/counts and workspace lifetime; do not assume the standalone managed/staged probe represents the effective real-model path. Do not retry the unchanged full request with a larger deadline.
 
 ## October 29 Resume
 
@@ -72,7 +96,7 @@ All those diagnostic runs were deliberately bounded, used the existing private b
 
 The goal is easy, correct conversion of a custom full-precision MOSS Image model, or the original BF16 model, into Draw Things format and successful prompt-following inference on Linux/CUDA.
 
-Conversion and private bundle tooling are implemented. The raw-descriptor defect is corrected and the existing private bundle metadata is repaired. The October 29 guarded two-step loading/finite-output gate passes, but the full request timed out after active denoising progress. Continue from the bounded managed-allocation controls above; do not repeat pre-repair profiling or an unchanged long render merely to reproduce the existing state.
+Conversion and private bundle tooling are implemented. The raw-descriptor defect is corrected and the existing private bundle metadata is repaired. The October 29 guarded two-step loading/finite-output gate passes, but both the original and capability-guarded 50-step requests timed out after active denoising progress. The bounded staging experiment was rejected and removed; continue from the guard-only full-gate timing and next evidence described above. Do not repeat pre-repair profiling or an unchanged long render merely to reproduce the existing state.
 
 Pre-investigation published checkpoint:
 

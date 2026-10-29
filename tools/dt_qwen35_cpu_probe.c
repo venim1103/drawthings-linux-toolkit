@@ -510,8 +510,9 @@ int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, voi
   const float input_values[] = {0.25f, -0.5f, 1};
   const int shapes[4][2] = {{3, 8}, {5, 8}, {5, 0}, {3, 5}};
   for (int datatype_index = 0; datatype_index < 3; datatype_index++)
-    for (int managed = 0; managed < 2; managed++)
-      for (int with_bias = 0; with_bias < 2; with_bias++)
+    for (int weight_transposed = 0; weight_transposed < 2; weight_transposed++)
+      for (int managed = 0; managed < 2; managed++)
+        for (int with_bias = 0; with_bias < 2; with_bias++)
   {
     unsigned char data[4][64 * 4];
     memset(data, 0xff, sizeof(data));
@@ -520,10 +521,11 @@ int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, voi
       const int count = index == 0 ? 24 : index == 1 ? 40 : 5;
       for (int element = 0; element < count; element++)
       {
-        const float value = index == 0 ? input_values[element / 8] : index == 1 ? 0.125f * (element / 8 + 1) : 0.125f;
+        const int weight_column = weight_transposed ? element / 8 : element % 5;
+        const float value = index == 0 ? input_values[element / 8] : index == 1 ? 0.125f * (weight_column + 1) : 0.125f;
         if (datatypes[datatype_index] == CCV_32F) ((float*)data[index])[element] = value;
         else if (datatypes[datatype_index] == CCV_16F)
-          ((uint16_t*)data[index])[element] = index == 0 ? half_inputs[element / 8] : index == 1 ? half_weights[element / 8] : 0x3000;
+          ((uint16_t*)data[index])[element] = index == 0 ? half_inputs[element / 8] : index == 1 ? half_weights[weight_column] : 0x3000;
         else {
           uint32_t bits;
           memcpy(&bits, &value, sizeof(bits));
@@ -542,6 +544,11 @@ int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, voi
       host[index].info.format = CCV_TENSOR_FORMAT_NHWC;
       host[index].info.datatype = datatypes[datatype_index];
       memcpy(host[index].info.dim, shapes[index], sizeof(shapes[index]));
+      if (index == 1 && !weight_transposed)
+      {
+        host[index].info.dim[0] = 8;
+        host[index].info.dim[1] = 5;
+      }
       host[index].data.u8 = data[index];
       ccv_nnc_tensor_param_t parameters = host[index].info;
       parameters.type = CCV_TENSOR_GPU_MEMORY;
@@ -557,7 +564,7 @@ int dt_probe_native_mapped_gemm(void* allocate_tensor, void* release_tensor, voi
     const ccv_nnc_hint_t hint = {0};
     const ccv_nnc_cmd_t transfer = {.cmd = CCV_NNC_DATA_TRANSFER_FORWARD, .algorithm = -1};
     const ccv_nnc_cmd_t gemm = {.cmd = CCV_NNC_GEMM_FORWARD, .algorithm = -1,
-      .info = {.blas = {.transpose_b = {0, 1}}}};
+      .info = {.blas = {.transpose_b = {0, weight_transposed ? 1 : 0}}}};
     if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, host_pointers, 3, device, 3, 0);
     if (!status) status = ((execute_fn)execute_command)(gemm, hint, 0, device, with_bias ? 3 : 2, device + 3, 1, 0);
     if (!status) status = ((execute_fn)execute_command)(transfer, hint, 0, device + 3, 1, host_pointers + 3, 1, 0);

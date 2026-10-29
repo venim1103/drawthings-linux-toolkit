@@ -23,6 +23,18 @@ The existing `--execute-memory-advice` native gate now checks advice and mapped-
 
 Report: `output/upgrades/native-backends-qwen35-prefetch-guard.json`. For the complete regression suite, `DT_CCV_SOURCE_DIR` must point to pristine pinned CCV sources because the patch-verification fixture needs original files; select the isolated executable through `DT_GRPC_CANDIDATE`. An initial run incorrectly used the applied source tree and failed only that fixture; the corrected run passes all tests. All nine protected runtime/CPU/catalog/canonical-model/original-candidate hashes remain unchanged.
 
+### Rejected Managed-Weight Staging Experiment
+
+A separate strict-profile experiment copied non-view raw F32/F16/BF16 weights of at most 64 MiB into the existing per-stream dense-GEMM workspace on concurrent-managed-access-zero devices. Its isolated `c51a759e...` binary passed all eight native gates and all 93 CUDA-enabled tests. The existing mapped-GEMM gate was expanded to 24 exact-output cases covering both weight orientations; the accepted guard-only control also passes it.
+
+The real repaired-bundle two-step request did not support keeping staging: 196.942 seconds with staging versus 127.516 seconds on the preserved guard-only `dc94ffc6...` control, including startup/cleanup. Config, final raw tensor and PNG are byte-identical; both runs have complete memory/temperature/utilization telemetry, sampled peak 2,305 MiB and maximum 63 C. These are individual observations, not a benchmark. Both viewed images remain blurred two-step outputs, not quality acceptance. Report: `output/upgrades/moss-image-stateful-20261027/mapped-staging-comparison-20261029.json`.
+
+The staging change was removed from the maintained snapshot and generated patch; strict/idempotence verification passes again and rebuilding reproduces the exact accepted `dc94ffc6...` binary. The experimental executable remains at `output/upgrades/gRPCServerCLI-0621d819-rejected-mapped-staging`, and the guard-only control at `output/upgrades/gRPCServerCLI-0621d819-before-mapped-staging`. No model copies, installed defaults, precision changes or persistent staging allocations were retained. Standalone copy/GEMM timings did not predict the real-model result.
+
+The guard-only 50-step request still times out at the unchanged 900-second cap, after 37 sampling callbacks and 24 previews with no final image; post-Echo passes. All 1,792 GPU samples are present, peak is 2,305 MiB, maximum temperature 63 C and no resource abort occurs. Sampled timestamps show initial sampling at 113.540 seconds and subsequent callback intervals of 14.518-28.286 seconds; callbacks are not completed-step or isolated-kernel timings. No practical full-inference or prompt-quality acceptance follows. Summary: `output/upgrades/moss-image-stateful-20261027/prefetch-guard-50steps-summary-20261029.json`.
+
+Final restored-profile verification passes all 93 CUDA-enabled tests in 73.599 seconds and all eight linked native gates, now including 24 mapped-GEMM cases. Report: `output/upgrades/native-backends-qwen35-prefetch-final.json`. Post-cleanup bundle verification and all nine protected hashes pass; the GPU is idle. The next performance investigation must verify the effective real-model weight layout/allocation path rather than extrapolate from the standalone probe or simply increase the full-request deadline.
+
 ## Apply To An Isolated Candidate
 
 ```bash
