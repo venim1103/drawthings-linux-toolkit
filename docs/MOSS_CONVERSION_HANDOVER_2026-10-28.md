@@ -1,6 +1,39 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-10-29. Original-source and one custom merged-SFT end-to-end test now pass; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-10-29. Original-source and one custom merged-SFT end-to-end test now pass, including our own i4x quantization of the merge; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+
+## Custom Merged SFT i4x Result: October 29
+
+Our own genuine MOSS i4x encoder now produces a working artifact from the accepted full-precision MOSSkr2 conversion. Official SFT i4x inference worked previously; this is the first accepted custom MOSS i4x generation through our tooling. Legacy palettized `q4p` is not equivalent and was not renamed or used as an intermediate.
+
+- Canonical checkpoint: `dt-models/mosskr2_image_sft_v1_ourconvert_i4x.ckpt`, **3,026,944,000 bytes** (3.03 GB), SHA-256 `f9faa5e8e31c93fb01f31e1c52cb3d2c23c9ede9ff37a97f19f3372a7f2f9690`. This is **70.3% smaller** than the 10,194,063,360-byte full-precision conversion.
+- Private bundle: `output/moss-models/mosskr2-sft-v1-i4x`. Its native-trailer denoiser is 3,028,375,552 bytes, SHA-256 `21d082d809add6dc62675da857561638293b5a9c086087ef7fb330923f43d95f`, with independent writable Qwen/VAE companions and private catalog. Explicit manifest profile `quantization: i4x` enables strict packed-schema validation.
+- Policy: 308 core matrices use native Q4_K with regular Hadamard-256, inline identifier `0x018a1eab` / trailer identifier `0x118a1eab`. All 216 sensitive F16/F32 tensors retain their own source bytes; actual post-inference comparisons confirm every one exactly. The eligible keyset matches official i4x metadata, but no official learned values were used. Unlike the official mixed-codec artifact, the remaining tensors are not palettized or ezm7-encoded.
+- Encoder: [tools/dt_moss_quantize.py](../tools/dt_moss_quantize.py) and [native adapter](../tools/dt_moss_quantize.c), using hash-pinned CCV `69b1ed1f` CPU sources. The run used 16 independent matrix workers without changing inference threading. Full native decode is finite; independent regular-Hadamard checks reconstruct sampled first/last rows, with maximum relative RMS error 0.067031 across matrices. This sampled numerical error is not an image-quality score.
+- Regression checks: nine focused codec/bundle tests pass in 2.815 seconds; the combined CUDA/native/helper suite passes all **98 tests in 70.461 seconds**. Extended API call-site checks pass. No native runtime/profile patch, installed/default promotion, active-catalog mutation or canonical full-precision replacement was needed.
+
+Both native requests used the unchanged `acafef3d...` patched server, the existing local resource guard, CPU offload, `--fread-preferred`, weights cache zero, 512x512, DDIMTrailing/CFG 3/shift 5/seed 4242, an empty negative prompt and the same orange-teapot prompt as the full-precision baseline:
+
+- Two steps: **54.933 seconds including startup/cleanup**, 480-second request cap; tag `mosskr2_i4x_2steps_20261029_a`. All 88 memory/temperature samples are present; peak 2,305 MiB, maximum 60 C; two utilization readings are unavailable.
+- Full 50 steps: **112.769 seconds including startup/cleanup**, 900-second request cap; tag `mosskr2_i4x_50steps_20261029_a`. All 205 memory/temperature/utilization samples are present; peak 2,305 MiB, maximum 67 C. Config SHA-256 `4b6dbeb6a8e7043c07ede854b0573c8e7e2df6d015e1c185935a6cf24d92c649`.
+- Both pass decoded native `moss_image` selection, one finite final 512x512 image, zero audio, complete stream/chunks and post-Echo. The viewed full image clearly shows an orange ceramic teapot on a white table beside a green plant, with bright window light. Final image: `output/q6p_canary_mosskr2_i4x_50steps_20261029_a/image.png`.
+- Neither run triggered the resource guard. Owned launchers/native processes are gone, the port is free and GPU memory/use returned to zero. Post-run private bundle integrity, the BF16 source, canonical F16/i4x conversions, canonical companions, accepted server and all nine protected hashes pass unchanged.
+
+This verifies one custom checkpoint's quantization and one prompt/profile, not lossless output parity, broad quality parity, arbitrary checkpoints/resolutions, GPU-only custom inference or the creator's Turbo/quality claims. Individual timings are not a controlled performance benchmark. The existing CUFILE diagnostic messages still appear during successful native reads; this increment makes no file-I/O runtime change or claim of log cleanliness.
+
+To generate from the prepared bundle without registering it or changing defaults:
+
+```bash
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  bash tools/dt_image.sh --bundle output/moss-models/mosskr2-sft-v1-i4x \
+    --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
+    --metrics 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
+```
+
+The guard remains an ignored local validation artifact. The helper supplies the WSL/CUDA library path and defaults to the tested offload profile; its normal 3,600-second timeout differs from the explicit acceptance caps above. Use fresh output paths for another quantization; published artifacts are never overwritten. Confirm resources first and do not rerun merely to reproduce the accepted result.
+
+Evidence under `output/upgrades/moss-image-stateful-20261027/`: `mosskr2-i4x-quantization-20261029.{json,log}`, `mosskr2-i4x-{2steps,50steps}-20261029.log`, `mosskr2-i4x-acceptance-20261029.json`, `mosskr2-i4x-preservation-20261029.json` and `moss-i4x-regression-20261029.log`. Model artifacts and diagnostic reports remain local and are not committed. Tooling checkpoint: `cc79c493cad98dc3442013c4f4b7dde42e246345`.
 
 ## Custom Merged SFT Result: October 29
 
@@ -67,7 +100,7 @@ env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
     --check 'Model selection check'
 ```
 
-The guard is an existing ignored local safety launcher, not a newly installed runtime. The helper supplies the WSL/CUDA library path. Remove `--check` and supply an image prompt for generation; use a new automatic tag and confirm resources first. Do not rerun merely to reproduce the accepted result. Compatible custom full-precision checkpoints can use the same conversion path, but need their own source validation and inference acceptance. Wider prompts/resolutions, framework parity, GPU-only inference and custom low-bit conversion remain open. The sections below retain historical failed probes and checkpoints.
+The guard is an existing ignored local safety launcher, not a newly installed runtime. The helper supplies the WSL/CUDA library path. Remove `--check` and supply an image prompt for generation; use a new automatic tag and confirm resources first. Do not rerun merely to reproduce the accepted result. Compatible custom checkpoints can use the same tooling, but need their own source validation and inference acceptance. Wider prompts/resolutions, framework parity, GPU-only custom inference and broader low-bit quality coverage remain open; the one custom i4x result above now passes. The sections below retain historical failed probes and checkpoints.
 
 ## Managed Prefetch Follow-up
 
