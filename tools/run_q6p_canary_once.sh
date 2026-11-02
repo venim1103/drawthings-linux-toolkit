@@ -8,6 +8,7 @@ PROTO_FILE="$ROOT/draw-things-community/Libraries/GRPC/Models/Sources/imageServi
 PROTO_CACHE_DIR="$ROOT/.cache/dt_proto"
 BINDINGS_DIR="$ROOT/.cache/dt_flatbuf_py"
 MODELS_DIR="$ROOT/dt-models"
+OUTPUT_DIR=""
 DRY_RUN=0
 PREFLIGHT_ONLY=0
 REQUIRED_MODEL_VERSION=""
@@ -113,11 +114,14 @@ Options:
                             continue. By default, missing file-like model keys
                             fail fast to prevent silent fallback confounds.
   --tag <value>             Output folder tag (default: current timestamp).
+  --output-dir <path>       Exact new run directory, instead of output/q6p_canary_<tag>.
+                            Relative to the current directory; must not exist.
   --soft-fail               Always exit 0; still prints RESULT=FAIL on failures.
   -h, --help                Show this help.
 
 Outputs:
   output/q6p_canary_<tag>/{config.bin,client.log,server.log}
+  With --output-dir: the same artifacts are written directly to that directory.
   With --gpu-metrics: gpu.csv and gpu-monitor.log in the same directory.
   With --next-model: request_001/, request_002/, ... and sequence_acceptance.json.
 EOF
@@ -275,6 +279,14 @@ if [[ $# -gt 0 ]]; then
         ;;
       --tag)
         TAG="${2:-}"
+        shift 2
+        ;;
+      --output-dir)
+        if [[ $# -lt 2 || -z "${2:-}" ]]; then
+          echo "error: --output-dir requires a nonempty path" >&2
+          exit 1
+        fi
+        OUTPUT_DIR="$2"
         shift 2
         ;;
       --soft-fail)
@@ -527,11 +539,21 @@ if [[ "$NO_TIMEOUT" != "1" ]]; then
   fi
 fi
 
-WORK_DIR="$ROOT/output/q6p_canary_${TAG}"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  WORK_DIR="$(realpath -m -- "$OUTPUT_DIR")"
+  if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" || -e "$WORK_DIR" || -L "$WORK_DIR" ]]; then
+    echo "error: output directory already exists: $OUTPUT_DIR" >&2
+    exit 1
+  fi
+  mkdir -p -- "$(dirname -- "$WORK_DIR")"
+  mkdir -- "$WORK_DIR"
+else
+  WORK_DIR="$ROOT/output/q6p_canary_${TAG}"
+  mkdir -p "$WORK_DIR"
+fi
 SERVER_LOG="$WORK_DIR/server.log"
 CLIENT_LOG="$WORK_DIR/client.log"
 CONFIG_BIN="$WORK_DIR/config.bin"
-mkdir -p "$WORK_DIR"
 
 echo "== q6p canary once =="
 echo "model=$MODEL_KEY"

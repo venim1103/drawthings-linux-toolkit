@@ -24,6 +24,7 @@ LORAS=()
 SEED=4242
 PORT=7862
 TAG=""
+OUTPUT_DIR=""
 DRY_RUN=0
 METRICS=0
 PREFLIGHT_ONLY=0
@@ -56,13 +57,16 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --negative-prompt TEXT           Negative prompt (default: empty).
   --port N                        Local temporary server port (default: 7862).
   --tag NAME                      Output tag (default: automatic timestamp).
+  --output-dir PATH               Exact new directory for image, config and logs.
+                                  Relative to the current directory; must not exist.
   --metrics                       Save sampled GPU telemetry.
   --dry-run                       Generate config and show the server command.
   --check                         Check native model selection without generation.
   -h, --help                      Show help.
 
 Starts the verified private candidate, writes a validated PNG and run metadata
-under output/, then stops the temporary server. Canonical models are not used.
+under output/ unless --output-dir is given, then stops the temporary server.
+Canonical models are not used.
 Explicit sampling options override preset defaults regardless of argument order.
 EOF
 }
@@ -78,7 +82,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --metrics) METRICS=1; shift ;;
     --check) PREFLIGHT_ONLY=1; shift ;;
-    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag)
+    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag|--output-dir)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       case "$1" in
         --preset) PRESET="$2"; [[ "$PRESET" == "mosskr2-lora4" ]] || fail "preset must be mosskr2-lora4" ;;
@@ -101,6 +105,7 @@ while [[ $# -gt 0 ]]; do
         --negative-prompt) NEGATIVE_PROMPT="$2" ;;
         --port) PORT="$2" ;;
         --tag) TAG="$2"; [[ -n "$TAG" ]] || fail "tag cannot be empty" ;;
+        --output-dir) OUTPUT_DIR="$2"; [[ -n "$OUTPUT_DIR" ]] || fail "output-dir cannot be empty" ;;
       esac
       shift 2
       ;;
@@ -167,9 +172,18 @@ for dimension in "$WIDTH" "$HEIGHT"; do
 done
 if [[ -z "$TAG" ]]; then TAG="image_$(date +%Y%m%d_%H%M%S_%N)"; fi
 [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "tag must contain only letters, digits, dot, underscore, or hyphen"
-[[ ! -e "$ROOT/output/q6p_canary_$TAG" && ! -L "$ROOT/output/q6p_canary_$TAG" ]] || fail "output tag already exists: $TAG"
-if [[ -n "$PRESET" ]]; then export DT_VALIDATION_CLIENT_LOG="$ROOT/output/q6p_canary_$TAG/client.log"; fi
+if [[ -n "$OUTPUT_DIR" ]]; then
+  [[ ! -e "$OUTPUT_DIR" && ! -L "$OUTPUT_DIR" ]] || fail "output directory already exists: $OUTPUT_DIR"
+  OUTPUT_DIR="$(realpath -m -- "$OUTPUT_DIR")"
+  [[ ! -e "$OUTPUT_DIR" && ! -L "$OUTPUT_DIR" ]] || fail "output directory already exists: $OUTPUT_DIR"
+  RUN_DIR="$OUTPUT_DIR"
+else
+  RUN_DIR="$ROOT/output/q6p_canary_$TAG"
+  [[ ! -e "$RUN_DIR" && ! -L "$RUN_DIR" ]] || fail "output tag already exists: $TAG"
+fi
+if [[ -n "$PRESET" ]]; then export DT_VALIDATION_CLIENT_LOG="$RUN_DIR/client.log"; fi
 EXTRA_ARGUMENTS=()
+if [[ -n "$OUTPUT_DIR" ]]; then EXTRA_ARGUMENTS+=(--output-dir "$OUTPUT_DIR"); fi
 for lora in "${LORAS[@]}"; do EXTRA_ARGUMENTS+=(--lora "$lora"); done
 if [[ -n "$BUNDLE" ]]; then EXTRA_ARGUMENTS+=(--require-model-version moss_image); fi
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then EXTRA_ARGUMENTS+=(--preflight-only); fi

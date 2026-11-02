@@ -131,6 +131,47 @@ class ImageCanarySequenceTests(unittest.TestCase):
         self.assertEqual((work / "config.bin").read_bytes(), b"first.ckpt")
         self.assertFalse((work / "request_001").exists())
 
+    def test_custom_output_directory_contains_every_sequence_config(self):
+        result = self.run_canary(extra=("--output-dir", "custom results/teapot"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        work = self.root / "custom results/teapot"
+        self.assertEqual((work / "config.bin").read_bytes(), b"first.ckpt")
+        self.assertEqual((work / "request_001/config.bin").read_bytes(), b"second.ckpt")
+        self.assertIn(f"work_dir={work}", result.stdout)
+        self.assertFalse((self.root / "output").exists())
+
+    def test_custom_output_directory_rejects_existing_files_and_symlinks(self):
+        directory = self.root / "existing"
+        directory.mkdir()
+        marker = directory / "keep.txt"
+        marker.write_bytes(b"keep directory")
+        existing_file = self.root / "existing.bin"
+        existing_file.write_bytes(b"keep file")
+        link = self.root / "linked"
+        link.symlink_to(directory, target_is_directory=True)
+        dangling = self.root / "dangling"
+        missing = self.root / "must-not-be-created"
+        dangling.symlink_to(missing, target_is_directory=True)
+        for path in (directory, existing_file, link, dangling, directory / "missing/.."):
+            with self.subTest(path=path):
+                result = self.run_canary(extra=("--output-dir", str(path)))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output directory already exists", result.stderr)
+        self.assertEqual(marker.read_bytes(), b"keep directory")
+        self.assertEqual(existing_file.read_bytes(), b"keep file")
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(dangling.is_symlink())
+        self.assertFalse(missing.exists())
+        self.assertFalse((self.root / "output").exists())
+
+    def test_custom_output_directory_requires_a_nonempty_path(self):
+        for extra in (("--output-dir",), ("--output-dir", "")):
+            with self.subTest(extra=extra):
+                result = self.run_canary(extra=extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--output-dir requires a nonempty path", result.stderr)
+                self.assertFalse((self.root / "output").exists())
+
     def test_successful_images_share_one_owned_process_and_validate_each_request(self):
         fixture = self.root / "fixture_image.bin"
         header = struct.pack("<17I", decoder.IDENTIFIER_RAW, 0,
@@ -147,21 +188,26 @@ class ImageCanarySequenceTests(unittest.TestCase):
             "    print('images written: 1')\n"
             "    print('audio written: 0')\n"
         )
-        result = self.run_canary(models=("second.ckpt", "first.ckpt"), dry_run=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        work = self.root / "output/q6p_canary_sequence-test"
-        report = json.loads((work / "sequence_acceptance.json").read_text())
-        self.assertEqual(report["result"], "PASS")
-        self.assertEqual(report["scope"], "finite_image_stream_same_server_only")
-        self.assertFalse(report["repeatability_checked"])
-        self.assertEqual([request["model"] for request in report["requests"]],
-                         ["first.ckpt", "second.ckpt", "first.ckpt"])
-        self.assertEqual({request["server_pid"] for request in report["requests"]},
-                         {report["server_pid"]})
-        for directory in (work, work / "request_001", work / "request_002"):
-            self.assertTrue((directory / "image.png").is_file())
-        with self.assertRaises(ProcessLookupError):
-            os.kill(report["server_pid"], 0)
+        for custom in (False, True):
+            with self.subTest(custom=custom):
+                work = self.root / ("custom results/full image" if custom else "output/q6p_canary_sequence-test")
+                extra = ("--output-dir", str(work)) if custom else ()
+                result = self.run_canary(models=("second.ckpt", "first.ckpt"), dry_run=False, extra=extra)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                report = json.loads((work / "sequence_acceptance.json").read_text())
+                self.assertEqual(report["result"], "PASS")
+                self.assertEqual(report["scope"], "finite_image_stream_same_server_only")
+                self.assertFalse(report["repeatability_checked"])
+                self.assertEqual([request["model"] for request in report["requests"]],
+                                 ["first.ckpt", "second.ckpt", "first.ckpt"])
+                self.assertEqual({request["server_pid"] for request in report["requests"]},
+                                 {report["server_pid"]})
+                for directory in (work, work / "request_001", work / "request_002"):
+                    self.assertTrue((directory / "image.png").is_file())
+                    self.assertTrue((directory / "client.log").is_file())
+                self.assertTrue((work / "server.log").is_file())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(report["server_pid"], 0)
 
     def test_failed_request_cleans_up_owned_server_and_has_no_sequence_pass(self):
         result = self.run_canary(dry_run=False)
@@ -320,6 +366,7 @@ class ImageHelperTests(unittest.TestCase):
         self.assertEqual(arguments[arguments.index("--guidance-scale") + 1], "3")
         self.assertEqual(arguments[arguments.index("--timeout-sec") + 1], "3600")
         self.assertNotIn("--lora", arguments)
+        self.assertNotIn("--output-dir", arguments)
         self.assertEqual(arguments[arguments.index("--negative-prompt") + 1], "")
         self.assertIn("--server-cpu-offload", arguments)
         self.assertIn("--image-mode", arguments)
@@ -397,7 +444,8 @@ class ImageHelperTests(unittest.TestCase):
                  ("--timeout-sec", "0", "prompt"), ("--timeout-sec", "-1", "prompt"),
                  ("--timeout-sec", "invalid", "prompt"), ("--preset", "unknown", "prompt"),
                  ("--mode", "", "prompt"), ("--steps", "", "prompt"), ("--steps", "0", "prompt"),
-                 ("--guidance-scale", "", "prompt"), ("--timeout-sec", "", "prompt"))
+                 ("--guidance-scale", "", "prompt"), ("--timeout-sec", "", "prompt"),
+                 ("--output-dir", "", "prompt"), ("--output-dir",))
         for arguments in cases:
             with self.subTest(arguments=arguments):
                 result = self.run_helper(*arguments)
@@ -413,6 +461,46 @@ class ImageHelperTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("output tag already exists", result.stderr)
         self.assertEqual(payload.read_bytes(), b"existing image")
+
+    def test_custom_output_directory_overrides_tag_location(self):
+        existing = self.root / "output/q6p_canary_keep"
+        existing.mkdir(parents=True)
+        marker = existing / "keep.txt"
+        marker.write_bytes(b"keep")
+        result = self.run_helper("--tag", "keep", "--output-dir", "render output/my teapot", "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        self.assertEqual(arguments[arguments.index("--output-dir") + 1], str(self.root / "render output/my teapot"))
+        self.assertEqual(marker.read_bytes(), b"keep")
+
+    def test_custom_output_directory_updates_preset_progress_log(self):
+        self.prepare_lora_preset()
+        output = self.root.parent / (self.root.name + "_images") / "run with spaces"
+        result = self.run_helper("--preset", "mosskr2-lora4", "--output-dir", str(output), "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout.splitlines()[-1])
+        arguments = report["args"]
+        self.assertEqual(arguments[arguments.index("--output-dir") + 1], str(output))
+        self.assertEqual(report["environment"]["DT_VALIDATION_CLIENT_LOG"], str(output / "client.log"))
+
+    def test_custom_output_directory_rejects_existing_paths(self):
+        existing = self.root / "keep.txt"
+        existing.write_bytes(b"keep")
+        linked = self.root / "linked"
+        linked.symlink_to(self.root, target_is_directory=True)
+        dangling = self.root / "dangling"
+        missing = self.root / "must-not-be-created"
+        dangling.symlink_to(missing, target_is_directory=True)
+        for path in (self.root, existing, linked, dangling, self.root / "missing/.."):
+            with self.subTest(path=path):
+                result = self.run_helper("--output-dir", str(path), "A blue vase")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output directory already exists", result.stderr)
+                self.assertNotIn('"args":', result.stdout)
+        self.assertEqual(existing.read_bytes(), b"keep")
+        self.assertTrue(linked.is_symlink())
+        self.assertTrue(dangling.is_symlink())
+        self.assertFalse(missing.exists())
 
     def test_verified_bundle_selects_its_private_model_directory(self):
         bundle = self.root / "output/moss-models/custom"

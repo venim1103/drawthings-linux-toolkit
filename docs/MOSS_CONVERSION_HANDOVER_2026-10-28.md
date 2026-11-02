@@ -69,7 +69,24 @@ This selects the existing private LoRA-test bundle and iOS-imported adapter, the
 
 Generic helper options now include repeatable `--lora FILE[:WEIGHT[:MODE]]`, `--guidance-scale` and `--timeout-sec`. Sampling overrides such as `--seed 123` or `--mode offload` work before or after `--preset`. Explicit `--lora` options replace the preset adapter list; repeat the flag to select multiple adapters. The preset owns its bundle and guarded runtime, so combining it with `--model`, `--bundle` or `--grpc-bin` is rejected. Use the generic options without a preset to choose a different setup. Other geometry, adapters or sampling settings still need their own acceptance checks.
 
-Use `--dry-run` to generate and inspect the configuration without starting a server, or `--check` to validate native catalog selection without generation. A real preset dry-run produces **byte-identical config** to `moss_gpuopt_lora4_20261102_a`, SHA-256 `61fa6ffd877253a36be2ae90888b046b14fbc54b9f1c67aebce1b268a7c2bd23`, and the matching guarded no-offload/fread/cache-zero command. Fifteen helper tests and all **26 tests** in `tools.test_dt_make_config` pass. No new render is needed to establish config equivalence; the prior four-step GPU image remains the inference acceptance reference. Existing no-preset defaults and installed runtimes are unchanged.
+Use `--dry-run` to generate and inspect the configuration without starting a server, or `--check` to validate native catalog selection without generation. A real preset dry-run produces **byte-identical config** to `moss_gpuopt_lora4_20261102_a`, SHA-256 `61fa6ffd877253a36be2ae90888b046b14fbc54b9f1c67aebce1b268a7c2bd23`, and the matching guarded no-offload/fread/cache-zero command. The preset checkpoint passed fifteen helper tests and all **26 tests** in `tools.test_dt_make_config`; the custom-output extension below adds further coverage. No new render is needed to establish config equivalence; the prior four-step GPU image remains the inference acceptance reference. Existing no-preset defaults and installed runtimes are unchanged.
+
+### Custom Output Directories
+
+`tools/dt_image.sh` and its underlying canary now accept `--output-dir PATH`:
+
+```bash
+bash tools/dt_image.sh --preset mosskr2-lora4 \
+  --guidance-scale 1 --steps 4 \
+  --output-dir "./output/my teapot" \
+  "An orange ceramic teapot on a white table."
+```
+
+The path is the exact new run directory, so the final file is `./output/my teapot/image.png`; config, raw output, previews, logs, telemetry and acceptance metadata stay alongside it. Relative paths are resolved from the caller's current directory, and absolute paths may be outside the workspace. Parent directories are created as needed. The run directory must not exist: existing directories, files and symlinks, including dangling links and normalized aliases of existing paths, are rejected. The runner creates the final directory with an exclusive `mkdir`, so a collision cannot overwrite an existing run. No files are moved or deleted.
+
+With `--output-dir`, `--tag` remains a run label and is not appended to the chosen path; a pre-existing default tag directory does not block a different custom destination. Without it, the previous `output/q6p_canary_<tag>` behavior remains unchanged. The preset exports `DT_VALIDATION_CLIENT_LOG` to the selected directory's `client.log`, retaining the existing resource guard and cleanup.
+
+All **32 tests** in `tools.test_dt_make_config` pass. They cover relative/absolute paths, spaces, preset progress-log routing, default paths, collision/symlink/empty-path rejection, and fixture image generation with complete logs/metadata for both default and custom sequence directories. These are output-routing checks, not a new inference-quality or performance claim.
 
 ## MOSSkr2 i4x Four-Step LoRA: October 30
 
