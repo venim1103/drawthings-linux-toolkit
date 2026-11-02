@@ -228,7 +228,7 @@ class ImageHelperTests(unittest.TestCase):
         tools.mkdir()
         self.script = tools / "dt_image.sh"
         shutil.copyfile(Path(__file__).with_name(self.script.name), self.script)
-        code = "import json, os, sys; print(json.dumps({'args': sys.argv[1:], 'library_path': os.environ.get('LD_LIBRARY_PATH', '')}))"
+        code = "import json, os, sys; print(json.dumps({'args': sys.argv[1:], 'library_path': os.environ.get('LD_LIBRARY_PATH', ''), 'environment': {key: os.environ.get(key) for key in ('DT_VALIDATION_NATIVE', 'DT_VALIDATION_WEIGHT_POLICY', 'DT_VALIDATION_CLIENT_LOG', 'LD_PRELOAD', 'DT_SAMPLE_CPU_STACKS', 'DT_TARGETED_PROFILE_CLIENT_LOG')}}))"
         (tools / "run_q6p_canary_once.sh").write_text(
             f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(code)} "$@"\n'
         )
@@ -242,6 +242,73 @@ class ImageHelperTests(unittest.TestCase):
         return subprocess.run(["bash", str(self.script), *arguments], cwd=self.root,
                               capture_output=True, text=True, timeout=10)
 
+    def prepare_lora_preset(self):
+        bundle = self.root / "output/moss-models/mosskr2-i4x-4step-lora-test-20261030"
+        (bundle / "models").mkdir(parents=True)
+        (bundle / "bundle.json").write_text(json.dumps({"quantization": "i4x"}))
+        (self.root / "tools/dt_moss_convert.py").write_text("print('my_moss_i4x.ckpt')\n")
+        guard = self.root / "output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh"
+        native = self.root / "output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI"
+        for path in (guard, native):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+        return bundle, guard, native
+
+    def test_lora_preset_selects_tested_profile_and_guard(self):
+        bundle, guard, native = self.prepare_lora_preset()
+        result = self.run_helper("--preset", "mosskr2-lora4", "--tag", "preset_test", "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout.splitlines()[-1])
+        arguments = report["args"]
+        for option, expected in (("--models-dir", str(bundle / "models")), ("--grpc-bin", str(guard)),
+                                 ("--steps", "4"), ("--guidance-scale", "1"), ("--timeout-sec", "180"),
+                                 ("--lora", "moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16_lora_f16.ckpt:1.0")):
+            self.assertEqual(arguments[arguments.index(option) + 1], expected)
+        self.assertNotIn("--server-cpu-offload", arguments)
+        self.assertIn("--gpu-metrics", arguments)
+        self.assertEqual(report["environment"]["DT_VALIDATION_NATIVE"], str(native))
+        self.assertEqual(report["environment"]["DT_VALIDATION_WEIGHT_POLICY"], "gpu")
+        self.assertEqual(report["environment"]["DT_VALIDATION_CLIENT_LOG"],
+                         str(self.root / "output/q6p_canary_preset_test/client.log"))
+
+    def test_lora_preset_overrides_are_order_independent(self):
+        self.prepare_lora_preset()
+        preset = ("--preset", "mosskr2-lora4")
+        overrides = ("--mode", "offload", "--steps", "6", "--guidance-scale", "0", "--timeout-sec", "90",
+                     "--size", "768", "--seed", "123", "--lora", "replacement.ckpt:0.5")
+        for options in (preset + overrides, overrides + preset):
+            with self.subTest(options=options):
+                result = self.run_helper(*options, "A blue vase")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout.splitlines()[-1])
+                arguments = report["args"]
+                for option, expected in (("--steps", "6"), ("--guidance-scale", "0"), ("--timeout-sec", "90"),
+                                         ("--width", "768"), ("--height", "768"), ("--seed", "123")):
+                    self.assertEqual(arguments[arguments.index(option) + 1], expected)
+                self.assertEqual([arguments[index + 1] for index, value in enumerate(arguments) if value == "--lora"],
+                                 ["replacement.ckpt:0.5"])
+                self.assertIn("--server-cpu-offload", arguments)
+                self.assertEqual(report["environment"]["DT_VALIDATION_WEIGHT_POLICY"], "offload")
+
+    def test_lora_preset_rejects_bundle_and_runtime_overrides(self):
+        bundle, guard, _ = self.prepare_lora_preset()
+        for overrides in (("--model", "base-q8p"), ("--bundle", str(bundle)), ("--grpc-bin", str(guard))):
+            with self.subTest(overrides=overrides):
+                result = self.run_helper("--preset", "mosskr2-lora4", *overrides, "A blue vase")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("preset cannot be combined", result.stderr)
+
+    def test_lora_preset_requires_local_guard_and_native_server(self):
+        _, guard, native = self.prepare_lora_preset()
+        for path, message in ((guard, "local resource guard"), (native, "patched native server")):
+            with self.subTest(path=path):
+                path.chmod(0o644)
+                result = self.run_helper("--preset", "mosskr2-lora4", "A blue vase")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                path.chmod(0o755)
+
     def test_default_profile_uses_private_candidate_and_offload(self):
         result = self.run_helper("A blue vase")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -250,6 +317,9 @@ class ImageHelperTests(unittest.TestCase):
         self.assertEqual(arguments[arguments.index("--model") + 1], "moss_image_sft_i4x.ckpt")
         self.assertEqual(arguments[arguments.index("--sampler") + 1], "DDIMTrailing")
         self.assertEqual(arguments[arguments.index("--steps") + 1], "50")
+        self.assertEqual(arguments[arguments.index("--guidance-scale") + 1], "3")
+        self.assertEqual(arguments[arguments.index("--timeout-sec") + 1], "3600")
+        self.assertNotIn("--lora", arguments)
         self.assertEqual(arguments[arguments.index("--negative-prompt") + 1], "")
         self.assertIn("--server-cpu-offload", arguments)
         self.assertIn("--image-mode", arguments)
@@ -306,11 +376,28 @@ class ImageHelperTests(unittest.TestCase):
         self.assertEqual(arguments[arguments.index("--negative-prompt") + 1], "blur; $HOME")
         self.assertFalse(marker.exists())
 
+    def test_loras_guidance_and_timeout_are_forwarded(self):
+        result = self.run_helper("--lora", "first.ckpt:1.0", "--lora", "second.ckpt:0.5:base",
+                                 "--guidance-scale", "1", "--timeout-sec", "180", "--steps", "4", "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        self.assertEqual([arguments[index + 1] for index, value in enumerate(arguments) if value == "--lora"],
+                         ["first.ckpt:1.0", "second.ckpt:0.5:base"])
+        self.assertEqual(arguments[arguments.index("--guidance-scale") + 1], "1")
+        self.assertEqual(arguments[arguments.index("--timeout-sec") + 1], "180")
+        self.assertEqual(arguments[arguments.index("--steps") + 1], "4")
+
     def test_invalid_options_and_dimensions_are_rejected(self):
         cases = (("",), ("  ",), ("", "second"), ("--mode", "invalid", "prompt"),
                  ("--model", "../model.ckpt", "prompt"), ("--size", "513", "prompt"),
                  ("--width", "0", "prompt"), ("--tag", "../escape", "prompt"),
-                 ("--unknown", "prompt"), ("--mode",), ("first", "second"))
+                 ("--unknown", "prompt"), ("--mode",), ("first", "second"),
+                 ("--lora", "", "prompt"), ("--guidance-scale", "nan", "prompt"),
+                 ("--guidance-scale", "inf", "prompt"), ("--guidance-scale", "-1", "prompt"),
+                 ("--timeout-sec", "0", "prompt"), ("--timeout-sec", "-1", "prompt"),
+                 ("--timeout-sec", "invalid", "prompt"), ("--preset", "unknown", "prompt"),
+                 ("--mode", "", "prompt"), ("--steps", "", "prompt"), ("--steps", "0", "prompt"),
+                 ("--guidance-scale", "", "prompt"), ("--timeout-sec", "", "prompt"))
         for arguments in cases:
             with self.subTest(arguments=arguments):
                 result = self.run_helper(*arguments)

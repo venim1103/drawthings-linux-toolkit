@@ -4,18 +4,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CANDIDATE="$ROOT/output/upgrades/community-0621d819-qwen35-cuda"
 GRPC_BIN="$CANDIDATE/bazel-bin/Apps/gRPCServerCLI"
+GRPC_BIN_EXPLICIT=0
 SCHEMA="$ROOT/output/upgrades/schemas/0621d819"
 MODELS="$ROOT/output/upgrades/moss-image-stateful-20261027/models"
 MODEL="sft-i4x"
 MODEL_EXPLICIT=0
 BUNDLE=""
-MODE="offload"
+PRESET=""
+MODE=""
 PROMPT=""
 PROMPT_SET=0
 NEGATIVE_PROMPT=""
 WIDTH=512
 HEIGHT=512
-STEPS=50
+STEPS=""
+GUIDANCE_SCALE=""
+TIMEOUT_SEC=""
+LORAS=()
 SEED=4242
 PORT=7862
 TAG=""
@@ -27,6 +32,10 @@ usage() {
   cat <<'EOF'
 Usage: bash tools/dt_image.sh [options] "Your prompt"
 
+  --preset mosskr2-lora4           Tested MOSSkr2 i4x + four-step LoRA, GPU policy,
+                                  guarded patched server, CFG 1, 180s timeout,
+                                  and GPU metrics. Requires prepared local files.
+                                  Cannot combine with --model/--bundle/--grpc-bin.
   --model sft-i4x|sft-q8p|base-q8p  Model (default: sft-i4x).
   --bundle PATH                    Converted MOSS inference bundle under output/.
                                   Cannot be combined with --model.
@@ -39,6 +48,10 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --size N                        Square size (default: 512).
   --width N --height N            Non-square dimensions; multiples of 64.
   --steps N                       Sampling steps (default: 50).
+  --guidance-scale N              Nonnegative finite CFG scale (default: 3).
+  --lora FILE[:WEIGHT[:MODE]]      Adapter from the selected model directory;
+                                  repeatable; replaces preset adapters if given.
+  --timeout-sec N                 Generation timeout in seconds (default: 3600).
   --seed N                        Seed (default: 4242).
   --negative-prompt TEXT           Negative prompt (default: empty).
   --port N                        Local temporary server port (default: 7862).
@@ -50,6 +63,7 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
 
 Starts the verified private candidate, writes a validated PNG and run metadata
 under output/, then stops the temporary server. Canonical models are not used.
+Explicit sampling options override preset defaults regardless of argument order.
 EOF
 }
 
@@ -64,20 +78,25 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --metrics) METRICS=1; shift ;;
     --check) PREFLIGHT_ONLY=1; shift ;;
-    --model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--seed|--negative-prompt|--port|--tag)
+    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       case "$1" in
+        --preset) PRESET="$2"; [[ "$PRESET" == "mosskr2-lora4" ]] || fail "preset must be mosskr2-lora4" ;;
         --model) MODEL="$2"; MODEL_EXPLICIT=1 ;;
         --bundle) BUNDLE="$2"; [[ -n "$BUNDLE" ]] || fail "bundle path cannot be empty" ;;
         --grpc-bin)
           [[ -f "$2" && -x "$2" ]] || fail "grpc-bin must be an executable file"
           GRPC_BIN="$(realpath "$2")"
+          GRPC_BIN_EXPLICIT=1
           ;;
-        --mode) MODE="$2" ;;
+        --mode) MODE="$2"; [[ -n "$MODE" ]] || fail "mode cannot be empty" ;;
         --size) WIDTH="$2"; HEIGHT="$2" ;;
         --width) WIDTH="$2" ;;
         --height) HEIGHT="$2" ;;
-        --steps) STEPS="$2" ;;
+        --steps) STEPS="$2"; [[ -n "$STEPS" ]] || fail "steps cannot be empty" ;;
+        --guidance-scale) GUIDANCE_SCALE="$2"; [[ -n "$GUIDANCE_SCALE" ]] || fail "guidance-scale cannot be empty" ;;
+        --lora) [[ -n "$2" ]] || fail "lora cannot be empty"; LORAS+=("$2") ;;
+        --timeout-sec) TIMEOUT_SEC="$2"; [[ -n "$TIMEOUT_SEC" ]] || fail "timeout-sec cannot be empty" ;;
         --seed) SEED="$2" ;;
         --negative-prompt) NEGATIVE_PROMPT="$2" ;;
         --port) PORT="$2" ;;
@@ -92,6 +111,32 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${PROMPT//[[:space:]]/}" ]] || fail "provide a nonempty quoted prompt"
+if [[ -n "$PRESET" ]]; then
+  [[ "$MODEL_EXPLICIT" == "0" && -z "$BUNDLE" && "$GRPC_BIN_EXPLICIT" == "0" ]] || fail "preset cannot be combined with --model, --bundle or --grpc-bin; use those options without --preset for a custom setup"
+  BUNDLE="$ROOT/output/moss-models/mosskr2-i4x-4step-lora-test-20261030"
+  GRPC_BIN="$ROOT/output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh"
+  PRESET_NATIVE="$ROOT/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI"
+  [[ -f "$GRPC_BIN" && -x "$GRPC_BIN" ]] || fail "preset requires the prepared local resource guard: $GRPC_BIN"
+  [[ -f "$PRESET_NATIVE" && -x "$PRESET_NATIVE" ]] || fail "preset requires the prepared patched native server: $PRESET_NATIVE"
+  MODE="${MODE:-gpu}"
+  STEPS="${STEPS:-4}"
+  GUIDANCE_SCALE="${GUIDANCE_SCALE:-1}"
+  TIMEOUT_SEC="${TIMEOUT_SEC:-180}"
+  if [[ "${#LORAS[@]}" == "0" ]]; then
+    LORAS=(moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16_lora_f16.ckpt:1.0)
+  fi
+  METRICS=1
+  export DT_VALIDATION_NATIVE="$PRESET_NATIVE"
+  export DT_VALIDATION_WEIGHT_POLICY="$MODE"
+  unset LD_PRELOAD DT_SAMPLE_CPU_STACKS DT_TARGETED_PROFILE_CLIENT_LOG
+fi
+MODE="${MODE:-offload}"
+STEPS="${STEPS:-50}"
+GUIDANCE_SCALE="${GUIDANCE_SCALE:-3}"
+TIMEOUT_SEC="${TIMEOUT_SEC:-3600}"
+[[ "$STEPS" =~ ^[1-9][0-9]*$ ]] || fail "steps must be a positive integer"
+[[ "$TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]] || fail "timeout-sec must be a positive integer"
+"$ROOT/.venv/bin/python" -c 'import math, sys; value = float(sys.argv[1]); sys.exit(not (math.isfinite(value) and value >= 0))' "$GUIDANCE_SCALE" 2>/dev/null || fail "guidance-scale must be finite and nonnegative"
 if [[ -n "$BUNDLE" ]]; then
   [[ "$MODEL_EXPLICIT" == "0" ]] || fail "--bundle cannot be combined with --model"
   [[ -d "$BUNDLE" ]] || fail "bundle directory does not exist: $BUNDLE"
@@ -123,7 +168,9 @@ done
 if [[ -z "$TAG" ]]; then TAG="image_$(date +%Y%m%d_%H%M%S_%N)"; fi
 [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "tag must contain only letters, digits, dot, underscore, or hyphen"
 [[ ! -e "$ROOT/output/q6p_canary_$TAG" && ! -L "$ROOT/output/q6p_canary_$TAG" ]] || fail "output tag already exists: $TAG"
+if [[ -n "$PRESET" ]]; then export DT_VALIDATION_CLIENT_LOG="$ROOT/output/q6p_canary_$TAG/client.log"; fi
 EXTRA_ARGUMENTS=()
+for lora in "${LORAS[@]}"; do EXTRA_ARGUMENTS+=(--lora "$lora"); done
 if [[ -n "$BUNDLE" ]]; then EXTRA_ARGUMENTS+=(--require-model-version moss_image); fi
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then EXTRA_ARGUMENTS+=(--preflight-only); fi
 if [[ "$DRY_RUN" == "1" ]]; then EXTRA_ARGUMENTS+=(--dry-run); fi
@@ -139,7 +186,7 @@ exec bash "$ROOT/tools/run_q6p_canary_once.sh" \
   --models-dir "$MODELS" --model "$MODEL_FILE" \
   --require-model-file qwen_3.5_9b_i5x.ckpt --require-model-file flux_2_vae_f16.ckpt \
   --host "127.0.0.1:$PORT" --image-mode --width "$WIDTH" --height "$HEIGHT" \
-  --steps "$STEPS" --sampler DDIMTrailing --guidance-scale 3 --shift 5 --seed "$SEED" \
+  --steps "$STEPS" --sampler DDIMTrailing --guidance-scale "$GUIDANCE_SCALE" --shift 5 --seed "$SEED" \
   --prompt "$PROMPT" --negative-prompt "$NEGATIVE_PROMPT" \
-  --server-fread-preferred --server-weights-cache 0 --final-mode --timeout-sec 3600 \
+  --server-fread-preferred --server-weights-cache 0 --final-mode --timeout-sec "$TIMEOUT_SEC" \
   "${MODE_ARGUMENTS[@]}" "${EXTRA_ARGUMENTS[@]}"

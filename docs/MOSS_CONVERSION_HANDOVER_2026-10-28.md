@@ -31,7 +31,7 @@ The guard now records a passive Unix/monotonic clock anchor. Aligning GPU teleme
 
 ### Policy And Guarded Use
 
-The helper now allows `--bundle ... --mode gpu` only after full bundle verification and an `i4x` quantization declaration. Full-precision and unrecognized bundles still require offload. Offload remains the default. Ten helper tests and all 21 tests in `tools.test_dt_make_config` pass, including the new i4x routing and failed-verification regressions.
+The helper allows `--bundle ... --mode gpu` only after full bundle verification and an `i4x` quantization declaration. Full-precision and unrecognized bundles still require offload. Offload remains the generic default. The GPU-policy checkpoint passed ten helper tests and all 21 tests in `tools.test_dt_make_config`, including the i4x routing and failed-verification regressions; the later preset extension is covered below.
 
 The ignored local guard at `output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.py` now accepts explicit `DT_VALIDATION_WEIGHT_POLICY=gpu` and rejects a conflicting `--cpu-offload` flag. Its default remains `offload`, which still rejects omission of that flag; unknown policies fail closed. All five policy checks pass. The existing **9,216 MiB GPU cap and 4,096 MiB host-available floor** remain unchanged. The guard owns its native child, monitors every 250 ms and retains cleanup behavior. Sampled limits cannot prevent every abrupt allocation or driver failure. This private guard is an existing local validation artifact, not an installed or versioned runtime.
 
@@ -51,11 +51,25 @@ env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
     'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
 ```
 
-The helper retains its existing 3,600-second generation timeout; the measured experiments used the underlying canary directly with explicit `--timeout-sec 180`. Append `--check` for native catalog selection without generation. The helper does not expose LoRA or CFG 1; reuse the LoRA canary command below, set the GPU-policy environment, omit `--server-cpu-offload` and keep an explicit short timeout.
+Without a preset or explicit override, the helper retains its existing 3,600-second generation timeout; the measured experiments used the underlying canary directly with explicit `--timeout-sec 180`. Append `--check` for native catalog selection without generation. The helper now supports LoRA, CFG and timeout options directly; prefer the one-command LoRA preset below for the tested fastest profile.
 
 This mode omits forced offload; it does not force every component into VRAM, select an automatic memory budget or implement automatic fallback. Native memory tiers are derived from **host RAM**, not a CUDA VRAM-fit calculation. Denoiser checkpoint size alone excludes text encoding, VAE, LoRA, activations and workspace. Do not extrapolate the 6 GiB eight-step peak to LoRA, other resolutions, longer runs, MoodyMOSS or other GPUs. Keep the resource guard and validate the intended profile before wider use.
 
 Post-run checks pass all nine protected hashes plus nine source/conversion/companion/candidate hashes against the saved November 2 preservation baseline. Both the original i4x and LoRA-test bundles pass complete hash/catalog/schema/file-independence verification after GPU inference. Canonical models, installed defaults, catalogs and legacy CPU tools are unchanged. Aggregate evidence: `output/upgrades/moss-image-stateful-20261027/moss-gpu-policy-optimization-20261102.json`.
+
+### One-Command LoRA Helper
+
+The existing `tools/dt_image.sh` now has a named preset instead of a separate duplicate generation script:
+
+```bash
+bash tools/dt_image.sh --preset mosskr2-lora4 "An orange ceramic teapot on a white table."
+```
+
+This selects the existing private LoRA-test bundle and iOS-imported adapter, the guarded `acafef3d...` server, GPU policy, 512x512, four DDIMTrailing steps, CFG 1, shift 5, seed 4242, empty negative prompt, LoRA weight 1.0, fread, cache zero, telemetry and a 180-second generation timeout. The helper sets `DT_VALIDATION_NATIVE`, `DT_VALIDATION_WEIGHT_POLICY` and the tagged client-progress log automatically, and clears the three diagnostic-interposer variables used by earlier experiments. Guard memory limits and cleanup remain unchanged. Prepared local files are required; missing guard/server/bundle/adapter fails rather than falling back or modifying canonical models. The existing guard remains a local unversioned artifact.
+
+Generic helper options now include repeatable `--lora FILE[:WEIGHT[:MODE]]`, `--guidance-scale` and `--timeout-sec`. Sampling overrides such as `--seed 123` or `--mode offload` work before or after `--preset`. Explicit `--lora` options replace the preset adapter list; repeat the flag to select multiple adapters. The preset owns its bundle and guarded runtime, so combining it with `--model`, `--bundle` or `--grpc-bin` is rejected. Use the generic options without a preset to choose a different setup. Other geometry, adapters or sampling settings still need their own acceptance checks.
+
+Use `--dry-run` to generate and inspect the configuration without starting a server, or `--check` to validate native catalog selection without generation. A real preset dry-run produces **byte-identical config** to `moss_gpuopt_lora4_20261102_a`, SHA-256 `61fa6ffd877253a36be2ae90888b046b14fbc54b9f1c67aebce1b268a7c2bd23`, and the matching guarded no-offload/fread/cache-zero command. Fifteen helper tests and all **26 tests** in `tools.test_dt_make_config` pass. No new render is needed to establish config equivalence; the prior four-step GPU image remains the inference acceptance reference. Existing no-preset defaults and installed runtimes are unchanged.
 
 ## MOSSkr2 i4x Four-Step LoRA: October 30
 
@@ -97,7 +111,7 @@ No reusable MOSS LoRA conversion CLI was added. The next tooling step is a fail-
 
 November 2 verification passes all **nine protected hashes plus nine source/conversion/companion/candidate hashes**, both original and test bundle integrity checks, both complete source audits and the full 588-tensor comparison. The source LoRA, iOS import, reconstructed adapter, canonical MOSSkr2 BF16/F16/i4x, companions, accepted server, installed defaults, legacy CPU tools and active catalogs are unchanged. Private LoRA files remain writable regular single-link files; the imported copy does not alias its canonical source. No native process remains, port 7862 is free and GPU memory/utilization are zero. No model or adapter was registered globally or promoted as a default.
 
-The image helper does not expose LoRA inputs or CFG 1, so repeat this profile through the existing canary, using the local guard:
+For routine generation, use the `mosskr2-lora4` helper preset above. The expanded canary command below retains the original offload profile as a reference for custom settings and historical reproduction:
 
 ```bash
 tag="mosskr2_lora4_$(date +%Y%m%d_%H%M%S)"
