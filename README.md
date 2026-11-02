@@ -30,18 +30,46 @@ This writes `image.png`, the config, logs and metadata directly into `./output/m
 
 ### Persistent Image Sessions
 
-Keep one guarded server running for repeated requests with the prepared `mosskr2-lora4` preset:
+Keep one guarded server running for repeated requests with the prepared `mosskr2-lora4` preset. The following example generates two 384x704 teapot images without restarting the server. It requires the prepared local bundle, adapter, guard and native server described above; a fresh shell is fine, but a fresh checkout alone is not enough.
+
+1. Open a terminal in the repository root and start the server once. For this workspace:
 
 ```bash
+cd /workspaces/drawthings-linux-toolkit
 bash tools/dt_image.sh --preset mosskr2-lora4 --session start
+```
+
+2. Generate the first image. The preset automatically includes the four-step LoRA at weight 1.0:
+
+```bash
 bash tools/dt_image.sh --preset mosskr2-lora4 --session use \
-	--output-dir ./output/bard-session \
-	"A photo of a medieval bard in a medieval town playing lute."
+	--guidance-scale 1 --steps 4 \
+	--width 384 --height 704 \
+	--output-dir ./OUT_01 \
+	"An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph."
+```
+
+The result is `./OUT_01/image.png`, with its config, logs and metadata alongside it. The server stays running.
+
+3. Generate another variation with a different seed and a new output directory, without starting the server again:
+
+```bash
 bash tools/dt_image.sh --preset mosskr2-lora4 --session use \
-	"A red bicycle with a blue helmet on its seat, studio photograph."
-bash tools/dt_image.sh --session status
+	--guidance-scale 1 --steps 4 \
+	--width 384 --height 704 --seed 4243 \
+	--output-dir ./OUT_02 \
+	"An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph."
+```
+
+The second result is `./OUT_02/image.png`. Repeat this step with another prompt and/or seed and a fresh directory such as `./OUT_03`. Each selected output directory must not already exist, even if empty; an earlier `./OUT` is left untouched. If any example directory already exists, choose another name rather than overwriting or deleting it. Reusing the same prompt and seed is not a request for a new random variation.
+
+4. Stop the server when finished:
+
+```bash
 bash tools/dt_image.sh --session stop
 ```
+
+Check the running session at any time with `bash tools/dt_image.sh --session status`. If a request fails or times out, the owned server is stopped; start a new session before retrying and select a fresh output directory for the retry. This portrait-size example is a usage recipe, not an additional performance or memory certification beyond the measurements below.
 
 `start` checks native model selection and, for a `--bundle`/preset, verifies the full bundle once; it does not render an image. `use` keeps the server alive and accepts normal prompt/sampling/output options, including `--width 384 --height 704`. Changed model files, catalogs or pinned runtime/schema inputs require a stop/restart. Requests are serialized: another request or lifecycle operation is rejected as busy rather than queued. Status remains available during generation. A failed/timed-out request stops the session's own server; start a new session before retrying. Use the same `--port N` on every command when overriding port 7862. Calls without `--session` retain the one-shot behavior.
 
