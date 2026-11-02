@@ -30,7 +30,8 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --model sft-i4x|sft-q8p|base-q8p  Model (default: sft-i4x).
   --bundle PATH                    Converted MOSS inference bundle under output/.
                                   Cannot be combined with --model.
-                                  Unquantized bundles currently require offload.
+                                  Only verified i4x bundles support gpu mode;
+                                  other bundles require offload.
   --grpc-bin PATH                  Explicit native server or resource-guard executable.
   --mode offload|gpu               Weight policy (default: offload).
                                   gpu omits forced CPU weight offload; it is
@@ -93,10 +94,13 @@ done
 [[ -n "${PROMPT//[[:space:]]/}" ]] || fail "provide a nonempty quoted prompt"
 if [[ -n "$BUNDLE" ]]; then
   [[ "$MODEL_EXPLICIT" == "0" ]] || fail "--bundle cannot be combined with --model"
-  [[ "$MODE" == "offload" ]] || fail "unquantized MOSS bundles currently require --mode offload; GPU-only residency is not validated"
   [[ -d "$BUNDLE" ]] || fail "bundle directory does not exist: $BUNDLE"
   BUNDLE="$(cd "$BUNDLE" && pwd)"
   MODEL_FILE="$("$ROOT/.venv/bin/python" "$ROOT/tools/dt_moss_convert.py" --bundle-model "$BUNDLE")"
+  if [[ "$MODE" == "gpu" ]]; then
+    BUNDLE_QUANTIZATION="$("$ROOT/.venv/bin/python" -c 'import json, sys; print(json.load(open(sys.argv[1])).get("quantization", ""))' "$BUNDLE/bundle.json")"
+    [[ "$BUNDLE_QUANTIZATION" == "i4x" ]] || fail "only verified i4x bundles support --mode gpu; other bundles require --mode offload"
+  fi
   MODELS="$BUNDLE/models"
   MODEL="bundle:$MODEL_FILE"
 else

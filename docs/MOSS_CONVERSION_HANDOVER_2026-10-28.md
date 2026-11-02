@@ -1,6 +1,61 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-11-02. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints. A four-step LoRA and source-only adapter reconstruction also work with MOSSkr2 i4x; arbitrary checkpoints/adapters and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-11-02. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints. A four-step LoRA and source-only adapter reconstruction also work with MOSSkr2 i4x. Short GPU-policy tests now pass for MOSSkr2 i4x with and without the imported LoRA; arbitrary checkpoints/adapters and broader quality coverage are not yet certified.
+
+## GPU-Preferred Custom i4x: November 2
+
+The user authorized optimization and short tests instead of repeating 50-step images. All runs below used the unchanged accepted `acafef3d...` native server, independent private model files, one GPU workload at a time, `--fread-preferred`, weights cache zero and the existing resource guard. No precision, thread, arithmetic, allocator, canonical model, installed runtime or active-catalog changes were made.
+
+### Matched Short Benchmark
+
+The profile was MOSSkr2 i4x, 512x512, eight DDIMTrailing steps, CFG 3, shift 5, seed 4242, empty negative prompt and the existing orange-teapot prompt, without LoRA. Requests had a 180-second generation cap. The run order was offload A, GPU A, GPU B, offload B to check warm-up effects. Only the forced CPU-offload flag changed; each run started its own server.
+
+| Policy / Repeat | Wall Seconds Including Startup/Cleanup | Observed Sampling Span Seconds | Peak GPU MiB |
+| --- | ---: | ---: | ---: |
+| Offload A, cold-affected | 100.912 | 12.514 | 2,305 |
+| GPU A | 27.002 | 8.511 | 6,103 |
+| GPU B | 26.005 | 8.514 | 6,111 |
+| Offload B, warmed control | 49.599 | 11.512 | 2,305 |
+
+All four pass decoded `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo. Configurations, final raw tensors and PNGs are byte-identical across policies and repeats. Each log contains nine sampling callbacks. Sampling spans measure the interval between first and last observed callbacks, not isolated kernel time; guard timestamps are sampled at approximately 250 ms. GPU-policy spans are about 26-32% shorter. The warmed end-to-end comparison is about 1.8-1.9x faster, but the cold-affected first run must not be used as the headline speedup. Two runs per mode on one prompt/profile do not establish a general benchmark or sustained/full-run VRAM requirement.
+
+Whole-run sampled GPU utilization was 24.5% and 39.1% for offload, versus 64.1% and 68.3% for GPU policy. These include startup and are not denoising-only occupancy measurements. Offload A has three unavailable utilization readings; other utilization readings and all memory/temperature readings are present. Maximum temperature was 62 C for offload and 61 C for GPU. No resource abort occurred.
+
+Evidence directories are `output/q6p_canary_moss_gpuopt_{offload,gpu}8_20261102_{a,b}`. Each contains the original config, native model metadata, client/server logs, telemetry and strict image acceptance. Config SHA-256 is `f3f23e722c26a1254a43e14781dd9a172bdf5f5797fbae5f404faa3cc83d69a5`, raw SHA-256 is `ff0da6933607380734adf323f5a5a56636b9e7e7ded85fb89d0c805b9855182e`, and PNG SHA-256 is `3d2d8ba9b9e1dcd8ffc63ad82be5e83b2e66ec7a8dd2adb913eb8eb755b2cf55` for all four.
+
+### Four-Step LoRA Compatibility
+
+The existing imported four-step adapter also passes GPU policy at its accepted 512x512/four-step/CFG 1/shift 5/seed 4242/weight 1.0 profile. Tag: `moss_gpuopt_lora4_20261102_a`. Wall time was 26.949 s and the observed sampling span was 3.506 s. Peak whole-device memory was **8,133 MiB**, maximum temperature 59 C. The config, raw tensor and PNG exactly match the saved October 30 offload run; this is a compatibility check, not a new quality study or a controlled comparison with the historical wall time.
+
+The guard now records a passive Unix/monotonic clock anchor. Aligning GPU telemetry with this LoRA sampling window gives seven utilization readings, mean 78%, range 0-99%. This short, sampled duty-cycle measurement does not establish compute occupancy or continuous 100% utilization. Optimize elapsed time and avoid transfer stalls, rather than treating utilization alone as the target.
+
+### Policy And Guarded Use
+
+The helper now allows `--bundle ... --mode gpu` only after full bundle verification and an `i4x` quantization declaration. Full-precision and unrecognized bundles still require offload. Offload remains the default. Ten helper tests and all 21 tests in `tools.test_dt_make_config` pass, including the new i4x routing and failed-verification regressions.
+
+The ignored local guard at `output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.py` now accepts explicit `DT_VALIDATION_WEIGHT_POLICY=gpu` and rejects a conflicting `--cpu-offload` flag. Its default remains `offload`, which still rejects omission of that flag; unknown policies fail closed. All five policy checks pass. The existing **9,216 MiB GPU cap and 4,096 MiB host-available floor** remain unchanged. The guard owns its native child, monitors every 250 ms and retains cleanup behavior. Sampled limits cannot prevent every abrupt allocation or driver failure. This private guard is an existing local validation artifact, not an installed or versioned runtime.
+
+For a short helper run on this workspace's prepared bundle:
+
+```bash
+tag="moss_i4x_gpu_short_$(date +%Y%m%d_%H%M%S)"
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}" \
+  DT_VALIDATION_WEIGHT_POLICY=gpu \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  DT_VALIDATION_CLIENT_LOG="$PWD/output/q6p_canary_${tag}/client.log" \
+  bash tools/dt_image.sh \
+    --bundle output/moss-models/mosskr2-sft-v1-i4x \
+    --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
+    --mode gpu --steps 8 --metrics --tag "$tag" \
+    'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
+```
+
+The helper retains its existing 3,600-second generation timeout; the measured experiments used the underlying canary directly with explicit `--timeout-sec 180`. Append `--check` for native catalog selection without generation. The helper does not expose LoRA or CFG 1; reuse the LoRA canary command below, set the GPU-policy environment, omit `--server-cpu-offload` and keep an explicit short timeout.
+
+This mode omits forced offload; it does not force every component into VRAM, select an automatic memory budget or implement automatic fallback. Native memory tiers are derived from **host RAM**, not a CUDA VRAM-fit calculation. Denoiser checkpoint size alone excludes text encoding, VAE, LoRA, activations and workspace. Do not extrapolate the 6 GiB eight-step peak to LoRA, other resolutions, longer runs, MoodyMOSS or other GPUs. Keep the resource guard and validate the intended profile before wider use.
+
+Post-run checks pass all nine protected hashes plus nine source/conversion/companion/candidate hashes against the saved November 2 preservation baseline. Both the original i4x and LoRA-test bundles pass complete hash/catalog/schema/file-independence verification after GPU inference. Canonical models, installed defaults, catalogs and legacy CPU tools are unchanged. Aggregate evidence: `output/upgrades/moss-image-stateful-20261027/moss-gpu-policy-optimization-20261102.json`.
 
 ## MOSSkr2 i4x Four-Step LoRA: October 30
 

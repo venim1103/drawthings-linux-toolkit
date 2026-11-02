@@ -330,6 +330,7 @@ class ImageHelperTests(unittest.TestCase):
     def test_verified_bundle_selects_its_private_model_directory(self):
         bundle = self.root / "output/moss-models/custom"
         (bundle / "models").mkdir(parents=True)
+        (bundle / "bundle.json").write_text(json.dumps({}))
         result = self.run_helper("--bundle", str(bundle), "--dry-run", "A blue vase")
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = json.loads(result.stdout.splitlines()[-1])["args"]
@@ -342,6 +343,29 @@ class ImageHelperTests(unittest.TestCase):
         result = self.run_helper("--bundle", str(bundle), "--mode", "gpu", "A blue vase")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("require --mode offload", result.stderr)
+
+    def test_verified_i4x_bundle_allows_gpu_without_forced_offload(self):
+        bundle = self.root / "output/moss-models/custom i4x"
+        (bundle / "models").mkdir(parents=True)
+        (bundle / "bundle.json").write_text(json.dumps({"quantization": "i4x"}))
+        (self.root / "tools/dt_moss_convert.py").write_text("print('my_moss_i4x.ckpt')\n")
+        result = self.run_helper("--bundle", str(bundle), "--mode", "gpu", "--dry-run", "A blue vase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        self.assertEqual(arguments[arguments.index("--model") + 1], "my_moss_i4x.ckpt")
+        self.assertEqual(arguments[arguments.index("--models-dir") + 1], str(bundle / "models"))
+        self.assertEqual(arguments[arguments.index("--require-model-version") + 1], "moss_image")
+        self.assertNotIn("--server-cpu-offload", arguments)
+
+    def test_gpu_bundle_cannot_bypass_verification(self):
+        bundle = self.root / "output/moss-models/unverified"
+        (bundle / "models").mkdir(parents=True)
+        (bundle / "bundle.json").write_text(json.dumps({"quantization": "i4x"}))
+        (self.root / "tools/dt_moss_convert.py").write_text("raise SystemExit('invalid bundle')\n")
+        result = self.run_helper("--bundle", str(bundle), "--mode", "gpu", "--dry-run", "A blue vase")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid bundle", result.stderr)
+        self.assertNotIn('"args":', result.stdout)
 
 
 if __name__ == "__main__":
