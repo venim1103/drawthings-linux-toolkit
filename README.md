@@ -43,11 +43,41 @@ bash tools/dt_image.sh --session status
 bash tools/dt_image.sh --session stop
 ```
 
-`start` verifies the full bundle once and checks native model selection; it does not render an image. `use` keeps the server alive and accepts normal prompt/sampling/output options, including `--width 384 --height 704`. Changed bundle files, catalogs or pinned runtime inputs require a stop/restart and fresh full verification. Requests are serialized: another request or lifecycle operation is rejected as busy rather than queued. Status remains available during generation. A failed/timed-out request stops the session's own server; start a new session before retrying. Use the same `--port N` on every command when overriding port 7862. Calls without `--session` retain the one-shot behavior.
+`start` checks native model selection and, for a `--bundle`/preset, verifies the full bundle once; it does not render an image. `use` keeps the server alive and accepts normal prompt/sampling/output options, including `--width 384 --height 704`. Changed model files, catalogs or pinned runtime/schema inputs require a stop/restart. Requests are serialized: another request or lifecycle operation is rejected as busy rather than queued. Status remains available during generation. A failed/timed-out request stops the session's own server; start a new session before retrying. Use the same `--port N` on every command when overriding port 7862. Calls without `--session` retain the one-shot behavior.
 
 Three different 512x512/four-step prompts on one server took **18.085, 11.876 and 13.010 seconds** for request preparation, generation and validation, excluding session startup/full verification. A fresh session with `--weights-cache 4` took **13.658, 12.641 and 12.037 seconds**, without a meaningful warm benefit; cache zero remains the default. Matched prompts produced byte-identical configs, raw images and PNGs. These are six local observations, not a controlled cold-disk or general performance benchmark.
 
 This reuses the process/CUDA context and avoids repeated full-bundle hashing, **not full MOSS model retention in VRAM**. Idle VRAM was 171 MiB in both sessions. Native `--weights-cache` is a CPU RAM cache on this dGPU, not a GPU residency switch; its explicit session-start bound is 0..8 integer GiB. Keep zero unless a measured profile benefits. Session state and shared logs are under `output/image-session-<port>/`; each image run also has strict acceptance, telemetry, `session-request.json` and a request-local `session-server.log` excerpt. Existing prepared local guard/runtime/model dependencies still apply. See the [session measurements and limits](docs/MOSS_CONVERSION_HANDOVER_2026-10-28.md#persistent-image-sessions-november-2).
+
+#### Other Models And LTX2.3
+
+Sessions are no longer limited to the LoRA preset. All three prepared MOSS aliases work, as do custom MOSS `--bundle` selections:
+
+```bash
+bash tools/dt_image.sh --model sft-q8p --session start
+bash tools/dt_image.sh --model base-q8p --session use "An orange ceramic teapot."
+bash tools/dt_image.sh --session stop
+```
+
+For other models, supply `--models-dir PATH --model NAME`, where `NAME` is a checkpoint filename or a name in that directory's `custom.json`. This works for any model recognized by the selected native server, including LTX2.3. The directory must contain **independent writable copies** of the model, dependencies, catalogs and any tensor-data sidecars, not canonical `dt-models` files, hardlinks or symlinks. No large model copies are created automatically. Bundle selection still uses its existing hash/schema verification; a plain model directory instead gets file-identity/change checks, local catalog-dependency checks and unique native model-selection checks, not a claim of manifest hash verification.
+
+The existing video helper uses the same lifecycle:
+
+```bash
+export DT_MODELS_DIR="$PWD/output/my-private-ltx-models"
+export DT_MODEL="10_e_v1.5_q6p.ckpt"
+bash tools/dt_generate_video.sh --session start
+bash tools/dt_generate_video.sh --session use --steps 8 --num-frames 9 \
+	"A cinematic shot of a red sports car on a mountain road."
+bash tools/dt_generate_video.sh --session status
+bash tools/dt_generate_video.sh --session stop
+```
+
+Replace the example directory with a prepared private LTX set, including its matching catalog, text encoder, VAE and sidecars. The video helper uses local `DT_HOST` (default `127.0.0.1:7861`), `DT_MODEL`, `DT_MODELS_DIR`, optional `DT_GRPC_BIN`, dimensions, sampling, seed and LoRA environment settings. Its original prompt-only external-server workflow is unchanged. The session path uses the shared runner with hires-fix disabled; select output paths with `--output-dir` rather than the legacy `DT_OUTPUT_ROOT`.
+
+Alternatively use `dt_image.sh --video-mode --models-dir PATH --model NAME` with the same session commands. Video mode defaults to 384x704, eight steps, sampler 19, CFG 1, shift 5, 81 frames and FPS 5; use `--num-frames`, `--fps-id`, `--sampler` and `--shift` to override. Final frames must match the requested count and dimensions and be finite, with complete stream/chunks and post-Echo. Outputs include `video_acceptance.json`, `playable.gif`, a first-frame PNG and optional WAV/MP4 (MP4 requires a working OpenCV encoder). Previews alone never count as a successful session video.
+
+Repeat directory/bundle/runtime/schema selection options on `use`; models within one pinned directory may change without restarting. Changing directories, runtime, schemas, weight policy or cache bound requires a stop/restart. Other server versions can select matching `--proto`, `--cache-dir` and `--bindings-dir`. Generic sessions can launch a native server directly; resource caps apply only when the chosen launcher is a resource guard. This is general session/client support, **not certification of every native model**. The previously documented intermittent LTX null-input GEMM crash is not fixed by keeping a server alive; no new successful native LTX render is claimed. See the [all-model session checks](docs/MOSS_CONVERSION_HANDOVER_2026-10-28.md#all-model-session-extension-november-2).
 
 `--mode gpu` omits forced CPU weight offload; it does not mean zero CPU use or guarantee no automatic host-memory use. Tokenization, file loading and orchestration still use the CPU, and upstream policy also depends on available host RAM. On this 12 GiB RTX A3000 devcontainer, SFT i4x passed full 50-step GPU-mode tests at both sizes:
 

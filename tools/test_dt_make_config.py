@@ -340,18 +340,20 @@ class ImageSessionTests(unittest.TestCase):
             "if 'echo' in sys.argv:\n"
             "    address, port = sys.argv[sys.argv.index('--host') + 1].split(':')\n"
             "    socket.create_connection((address, int(port)), timeout=1).close()\n"
-            "    models = [{'file': 'first.ckpt', 'version': 'moss_image'}]\n"
+            "    models = [{'file': 'first.ckpt', 'version': 'moss_image'}, {'file': 'second.ckpt', 'version': 'ltx2.3'}]\n"
             "    print(json.dumps({'override': {'models': base64.b64encode(json.dumps(models).encode()).decode()}}))\n"
             "else:\n"
             "    prompt = sys.argv[sys.argv.index('--prompt') + 1]\n"
             "    if prompt == 'timeout': signal.pause()\n"
             "    if prompt == 'fail': raise SystemExit(2)\n"
             "    output = Path(sys.argv[sys.argv.index('--output-dir') + 1])\n"
-            f"    shutil.copyfile({str(image)!r}, output / 'image_fixture.bin')\n"
+            "    count = 3 if prompt == 'video' else 1\n"
+            "    for ordinal in range(count):\n"
+            f"        shutil.copyfile({str(image)!r}, output / f'image_fixture_{{ordinal:03d}}.bin')\n"
             "    print('current signpost: textEncoded')\n"
             "    print('response #1')\n"
             "    print('generation stream finished')\n"
-            "    print('images written: 1')\n"
+            "    print(f'images written: {count}')\n"
             "    print('audio written: 0')\n")
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -359,22 +361,116 @@ class ImageSessionTests(unittest.TestCase):
         self.session = self.root / f"output/image-session-{self.port}"
         self.addCleanup(lambda: self.run_session("stop"))
 
-    def run_session(self, action, *, output=None, prompt="teapot", cache=None, mode="gpu"):
+    def run_session(self, action, *, output=None, prompt="teapot", cache=None, mode="gpu", native_override=True,
+                    directory_only=False, model="first.ckpt", runtime=None, video=False, frames=3):
         fixture = self.fixture
         command = [sys.executable, str(fixture.tools / "dt_image_session.py"), action,
-                   "--bundle", str(self.root), "--port", str(self.port), "--mode", mode]
+                   "--port", str(self.port), "--mode", mode]
+        if directory_only:
+            command.extend(("--models-dir", str(fixture.models)))
+        else:
+            command.extend(("--bundle", str(self.root)))
         if cache is not None:
             command.extend(("--cache-gib", str(cache)))
         if action in ("start", "use"):
-            command.extend(("--", "--model", "first.ckpt", "--models-dir", str(fixture.models),
-                            "--grpc-bin", str(fixture.server), "--proto", str(fixture.proto),
+            command.extend(("--", "--model", model, "--models-dir", str(fixture.models),
+                            "--grpc-bin", str(runtime or fixture.server), "--proto", str(fixture.proto),
                             "--bindings-dir", str(fixture.bindings), "--cache-dir", str(self.root / "cache"),
-                            "--host", f"127.0.0.1:{self.port}", "--image-mode", "--tag", "session-test",
-                            "--require-model-version", "moss_image", "--timeout-sec", "1", "--prompt", prompt))
+                            "--host", f"127.0.0.1:{self.port}", "--tag", "session-test",
+                            "--require-model-version", "*", "--timeout-sec", "1", "--prompt", prompt))
+            if video:
+                command.extend(("--video-mode", "--num-frames", str(frames)))
+            else:
+                command.append("--image-mode")
             if output is not None:
                 command.extend(("--output-dir", str(output)))
+        environment = dict(os.environ)
+        environment.pop("DT_VALIDATION_NATIVE", None)
+        if native_override:
+            environment["DT_VALIDATION_NATIVE"] = str(fixture.server)
         return subprocess.run(command, cwd=self.root, capture_output=True, text=True, timeout=30,
-                              env=dict(os.environ, DT_VALIDATION_NATIVE=str(fixture.server)))
+                              env=environment)
+
+    def test_direct_native_server_needs_no_guard_environment(self):
+        self.prepare_lifecycle()
+        started = self.run_session("start", native_override=False)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        result = self.run_session("use", output=self.root / "direct-native", native_override=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads((self.session / "state.json").read_text())
+        self.assertTrue(owned_process(state))
+
+    def test_directory_session_needs_no_moss_manifest_or_verifier(self):
+        self.prepare_lifecycle()
+        (self.root / "bundle.json").unlink()
+        started = self.run_session("start", directory_only=True, native_override=False)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        result = self.run_session("use", directory_only=True, output=self.root / "generic")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.root / "verify-count").exists())
+        state = json.loads((self.session / "state.json").read_text())
+        self.assertEqual(state["models_dir"], str(self.fixture.models))
+        self.assertTrue(owned_process(state))
+
+    def test_same_directory_switches_moss_image_to_ltx_video_on_one_pid(self):
+        self.prepare_lifecycle()
+        started = self.run_session("start", directory_only=True)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        state = json.loads((self.session / "state.json").read_text())
+        image = self.run_session("use", directory_only=True, output=self.root / "moss-image")
+        self.assertEqual(image.returncode, 0, image.stdout + image.stderr)
+        video = self.run_session("use", directory_only=True, model="second.ckpt", prompt="video", video=True,
+                                 output=self.root / "ltx-video")
+        self.assertEqual(video.returncode, 0, video.stdout + video.stderr)
+        report = json.loads((self.root / "ltx-video/video_acceptance.json").read_text())
+        self.assertEqual(report["frames"], 3)
+        self.assertEqual(report["model"], "second.ckpt")
+        self.assertEqual(report["server_pid"], state["pid"])
+        self.assertTrue((self.root / "ltx-video/playable.gif").is_file())
+        request = json.loads((self.root / "ltx-video/session-request.json").read_text())
+        self.assertEqual(request["model"], "second.ckpt")
+        self.assertTrue(owned_process(state))
+
+    def test_video_frame_mismatch_fails_acceptance_and_stops_session(self):
+        self.prepare_lifecycle()
+        started = self.run_session("start", directory_only=True)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        state = json.loads((self.session / "state.json").read_text())
+        result = self.run_session("use", directory_only=True, model="second.ckpt", prompt="video", video=True,
+                                  frames=2, output=self.root / "bad-video")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Expected 2 final video frames", result.stdout + result.stderr)
+        self.assertFalse((self.root / "bad-video/video_acceptance.json").exists())
+        self.assertFalse(owned_process(state))
+
+    def test_session_rejects_different_runtime_before_submitting_request(self):
+        self.prepare_lifecycle()
+        started = self.run_session("start")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        other = self.root / "other-server"
+        shutil.copyfile(self.fixture.server, other)
+        other.chmod(0o755)
+        output = self.root / "must-not-submit"
+        result = self.run_session("use", runtime=other, output=output)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runtime/schema settings mismatch", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_runtime_symlink_retargeting_requires_session_restart(self):
+        self.prepare_lifecycle()
+        linked = self.root / "server-link"
+        linked.symlink_to(self.fixture.server)
+        started = self.run_session("start", runtime=linked)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        other = self.root / "other-server"
+        shutil.copyfile(self.fixture.server, other)
+        other.chmod(0o755)
+        linked.unlink()
+        linked.symlink_to(other)
+        result = self.run_session("use", runtime=linked, output=self.root / "changed-runtime")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("inputs changed", result.stderr)
+        self.assertFalse((self.root / "changed-runtime").exists())
 
     def test_persistent_lifecycle_reuses_pid_and_verifies_only_once(self):
         self.prepare_lifecycle()
@@ -542,7 +638,7 @@ class ImageHelperTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), [action, "--port", "7863"])
 
     def test_session_invalid_combinations_leave_one_shot_defaults_unchanged(self):
-        for arguments in (("--session", "unknown"), ("--session", "start"),
+        for arguments in (("--session", "unknown"),
                           ("--weights-cache", "4", "prompt"),
                           ("--preset", "mosskr2-lora4", "--session", "start", "--dry-run"),
                           ("--weights-cache", "9", "prompt")):
@@ -550,6 +646,84 @@ class ImageHelperTests(unittest.TestCase):
                 result = self.run_helper(*arguments)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("error:", result.stderr)
+
+    def test_generic_moss_alias_and_bundle_can_start_sessions_without_preset(self):
+        (self.root / "tools/dt_image_session.py").write_text("import json, sys; print(json.dumps(sys.argv[1:]))\n")
+        result = self.run_helper("--model", "sft-q8p", "--session", "start")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(arguments[0], "start")
+        self.assertNotIn("--bundle", arguments)
+        self.assertIn("moss_image_sft_q8p.ckpt", arguments)
+        bundle = self.root / "my-bundle"
+        bundle.mkdir()
+        (bundle / "bundle.json").write_text(json.dumps({"model": "my_moss_f16.ckpt"}))
+        result = self.run_helper("--bundle", str(bundle), "--session", "start")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--bundle", json.loads(result.stdout.splitlines()[-1]))
+
+    def test_generic_catalog_model_and_video_options_are_forwarded(self):
+        models = self.root / "private models"
+        models.mkdir()
+        (models / "ltx_custom.ckpt").write_bytes(b"fixture")
+        (models / "encoder.ckpt").write_bytes(b"encoder")
+        (models / "custom.json").write_text(json.dumps([
+            {"name": "My LTX", "file": "ltx_custom.ckpt", "version": "ltx2.3", "text_encoder": "encoder.ckpt"}]))
+        result = self.run_helper("--models-dir", str(models), "--model", "My LTX", "--video-mode",
+                                 "--num-frames", "9", "--fps-id", "12", "--sampler", "19", "--shift", "4", "A waterfall")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])["args"]
+        for option, expected in (("--model", "ltx_custom.ckpt"), ("--num-frames", "9"),
+                                 ("--fps-id", "12"), ("--width", "384"), ("--height", "704"),
+                                 ("--steps", "8"), ("--guidance-scale", "1"), ("--shift", "4"),
+                                 ("--require-model-version", "*")):
+            self.assertEqual(arguments[arguments.index(option) + 1], expected)
+        self.assertIn("--video-mode", arguments)
+        self.assertNotIn("--image-mode", arguments)
+        self.assertNotIn("--require-model-file", arguments)
+        (models / "encoder.ckpt").unlink()
+        failed = self.run_helper("--models-dir", str(models), "--model", "My LTX", "prompt")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("model dependency", failed.stderr)
+
+    def test_video_helper_delegates_session_commands_and_environment(self):
+        video_script = self.root / "tools/dt_generate_video.sh"
+        shutil.copyfile(Path(__file__).with_name(video_script.name), video_script)
+        (self.root / "tools/dt_image_session.py").write_text("import json, sys; print(json.dumps(sys.argv[1:]))\n")
+        models = self.root / "private-video"
+        models.mkdir()
+        (models / "custom-ltx.ckpt").write_bytes(b"fixture")
+        environment = dict(os.environ, DT_MODELS_DIR=str(models), DT_MODEL="custom-ltx.ckpt",
+                           DT_HOST="127.0.0.1:7863", DT_NUM_FRAMES="9", DT_SEED="123")
+        for action in ("start", "status", "stop"):
+            result = subprocess.run(["bash", str(video_script), "--session", action], cwd=self.root,
+                                    capture_output=True, text=True, timeout=10, env=environment)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            arguments = json.loads(result.stdout.splitlines()[-1])
+            self.assertEqual(arguments[0], action)
+            self.assertEqual(arguments[arguments.index("--port") + 1], "7863")
+            if action == "start":
+                self.assertIn("--video-mode", arguments)
+                self.assertEqual(arguments[arguments.index("--model") + 1], "custom-ltx.ckpt")
+                self.assertEqual(arguments[arguments.index("--num-frames") + 1], "9")
+
+    def test_generic_model_directory_refuses_canonical_aliases_and_linked_payloads(self):
+        canonical = self.root / "dt-models"
+        canonical.mkdir()
+        source = canonical / "model.ckpt"
+        source.write_bytes(b"protected")
+        linked_directory = self.root / "canonical-alias"
+        linked_directory.symlink_to(canonical, target_is_directory=True)
+        result = self.run_helper("--models-dir", str(linked_directory), "--model", source.name, "prompt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not canonical dt-models", result.stderr)
+        private = self.root / "not-independent"
+        private.mkdir()
+        os.link(source, private / source.name)
+        result = self.run_helper("--models-dir", str(private), "--model", source.name, "prompt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("independent writable copies", result.stderr)
+        self.assertEqual(source.read_bytes(), b"protected")
 
     def test_lora_preset_overrides_are_order_independent(self):
         self.prepare_lora_preset()

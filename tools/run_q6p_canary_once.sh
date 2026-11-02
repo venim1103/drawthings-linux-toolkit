@@ -15,6 +15,7 @@ CONNECT_ONLY=0
 CONNECTED_SERVER_PID=""
 REQUIRED_MODEL_VERSION=""
 IMAGE_MODE=0
+VIDEO_MODE=0
 REQUIRED_MODEL_FILES=()
 NEXT_MODELS=()
 
@@ -76,6 +77,10 @@ Options:
   --image-mode              Require one finite final image at the requested size,
                             no audio, and post-Echo; export image.png and metadata.
                             Uses one frame and disables resolution-dependent shift.
+  --video-mode              Require finite final frames/audio and post-Echo;
+                            export playable media and video_acceptance.json.
+  --num-frames <n> --fps-id <n>
+                            Video frame count/FPS (defaults: 9/5).
   --dry-run                 Generate config and print the server command only.
   --preflight-only          Start server, validate requested model metadata, then stop.
   --connect-only            Use an existing local server without starting/stopping it.
@@ -83,6 +88,7 @@ Options:
   --server-pid <pid>        Existing server PID for --connect-only.
   --require-model-version <version>
                             Require every requested model in decoded server metadata.
+                            Use '*' to accept any nonempty native model version.
   --server-gpu <n>          GPU id passed to server launcher (default: 0).
   --server-cpu-offload      Pass --cpu-offload to server launcher.
   --server-fread-preferred  Pass --fread-preferred to server launcher.
@@ -174,6 +180,18 @@ if [[ $# -gt 0 ]]; then
       --image-mode)
         IMAGE_MODE=1
         shift
+        ;;
+      --video-mode)
+        VIDEO_MODE=1
+        shift
+        ;;
+      --num-frames)
+        NUM_FRAMES="${2:-}"
+        shift 2
+        ;;
+      --fps-id)
+        FPS_ID="${2:-}"
+        shift 2
         ;;
       --dry-run)
         DRY_RUN=1
@@ -320,6 +338,18 @@ if [[ $# -gt 0 ]]; then
 fi
 
 CONFIG_EXTRA_ARGS=()
+if [[ "$IMAGE_MODE" == "1" && "$VIDEO_MODE" == "1" ]]; then
+  echo "error: --image-mode and --video-mode cannot be combined" >&2
+  exit 1
+fi
+if [[ "$VIDEO_MODE" == "1" ]]; then
+  if [[ ! "$NUM_FRAMES" =~ ^[1-9][0-9]*$ || ! "$FPS_ID" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: video frames and fps-id must be positive integers" >&2
+    exit 1
+  fi
+  REQUIRE_COMPLETE_STREAM=1
+  REQUIRE_FINAL_OUTPUT=1
+fi
 if [[ "$IMAGE_MODE" == "1" ]]; then
   NUM_FRAMES=1
   REQUIRE_COMPLETE_STREAM=1
@@ -540,8 +570,8 @@ if ! [[ "$SAMPLER" =~ ^([0-9]+|[A-Za-z][A-Za-z0-9_]*)$ ]]; then
   exit 1
 fi
 
-if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
-  echo "error: --seed must be a non-negative integer" >&2
+if [[ "$SEED" != "-1" && ! "$SEED" =~ ^[0-9]+$ ]]; then
+  echo "error: --seed must be a non-negative integer or -1 for random" >&2
   exit 1
 fi
 
@@ -665,7 +695,7 @@ done
 printf 'server_command='
 printf '%q ' "$GRPC_BIN" "${server_args[@]}"
 printf '\n'
-"$PYTHON_BIN" - "$WORK_DIR/server-launch.json" "$GRPC_BIN" "${server_args[@]}" <<'PY'
+"$PYTHON_BIN" - "$WORK_DIR/server-launch.json" "$MODEL_KEY" "$PROTO_FILE" "$BINDINGS_DIR" "$PROTO_CACHE_DIR" "$GRPC_BIN" "${server_args[@]}" <<'PY'
 import json
 import os
 import sys
@@ -675,7 +705,10 @@ environment = {key: os.environ[key] for key in (
   "LD_LIBRARY_PATH", "DT_VALIDATION_NATIVE", "DT_VALIDATION_WEIGHT_POLICY",
   "DT_VALIDATION_MAX_GPU_MIB", "DT_VALIDATION_MIN_HOST_MIB",
 ) if key in os.environ}
-Path(sys.argv[1]).write_text(json.dumps({"command": sys.argv[2:], "environment": environment}, indent=2) + "\n")
+Path(sys.argv[1]).write_text(json.dumps({
+  "model": sys.argv[2], "proto": sys.argv[3], "bindings_dir": sys.argv[4],
+  "cache_dir": sys.argv[5], "command": sys.argv[6:], "environment": environment,
+}, indent=2) + "\n")
 PY
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "RESULT=DRY_RUN"
@@ -774,7 +807,9 @@ if not isinstance(specifications, list):
 selected = []
 for filename in sys.argv[3:]:
     matches = [item for item in specifications if isinstance(item, dict) and item.get("file") == filename]
-    if len(matches) != 1 or matches[0].get("version") != sys.argv[2]:
+    if len(matches) != 1 or not isinstance(matches[0].get("version"), str) or not matches[0]["version"]:
+      raise SystemExit(f"Server did not decode {filename!r} with a unique model version")
+    if sys.argv[2] != "*" and matches[0]["version"] != sys.argv[2]:
         raise SystemExit(f"Server did not decode {filename!r} as required model version {sys.argv[2]!r}")
     selected.append(matches[0])
 (work / "model-selection.json").write_text(json.dumps({"result": "PASS", "models": selected}, indent=2) + "\n")
@@ -950,6 +985,60 @@ PY
     if [[ "$IMAGE_RC" != "0" ]]; then
       echo "RESULT=FAIL image acceptance failed"
       if [[ "$SOFT_FAIL" == "1" ]]; then exit 0; fi
+      exit 1
+    fi
+  fi
+
+  if [[ "$VIDEO_MODE" == "1" ]]; then
+    if [[ "$POST_ECHO_RC" != "0" ]]; then
+      echo "RESULT=FAIL video post-generation Echo failed"
+      exit 1
+    fi
+    set +e
+    "$PYTHON_BIN" - "$ROOT" "$WORK_DIR" "$WIDTH" "$HEIGHT" "$NUM_FRAMES" "$FPS_ID" "$MODEL_KEY" "$REQUEST_SERVER_PID" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from tools.dt_tensor_to_playable import validate_image_tensor, validate_finite_tensor
+
+work = Path(sys.argv[2])
+width, height, count, fps = map(int, sys.argv[3:7])
+images = sorted(work.glob("image_*.bin"))
+audio = sorted(work.glob("audio_*.bin"))
+if len(images) != count or len(audio) > 1:
+    raise SystemExit(f"Expected {count} final video frames and at most one audio payload; got {len(images)}/{len(audio)}")
+for path in images:
+    validate_image_tensor(path.read_bytes(), width, height)
+for path in audio:
+    validate_finite_tensor(path.read_bytes())
+command = [sys.executable, str(Path(sys.argv[1]) / "tools/dt_tensor_to_playable.py"),
+           "--out-dir", str(work), "--base-name", "playable", "--strict",
+           "--expected-frames", str(count), "--gif-fps", str(fps), "--mp4-fps", str(fps)]
+for path in images:
+    command.extend(("--image-bin", str(path)))
+if audio:
+    command.extend(("--audio-bin", str(audio[0])))
+subprocess.run(command, check=True)
+metadata = {
+    "result": "PASS", "frames": count, "audio": len(audio), "nonfinite": 0,
+    "width": width, "height": height, "fps_id": fps,
+    "complete_stream": True, "complete_chunks": True, "post_echo": True,
+    "config_sha256": hashlib.sha256((work / "config.bin").read_bytes()).hexdigest(),
+    "model": sys.argv[7], "server_pid": int(sys.argv[8]),
+    "raw_frames": [path.name for path in images],
+    "media": [path.name for path in sorted(work.glob("playable.*"))],
+}
+(work / "video_acceptance.json").write_text(json.dumps(metadata, indent=2) + "\n")
+print(f"validated_video={work / 'playable.gif'}")
+PY
+    VIDEO_RC=$?
+    set -e
+    if [[ "$VIDEO_RC" != "0" ]]; then
+      echo "RESULT=FAIL video acceptance failed"
       exit 1
     fi
   fi

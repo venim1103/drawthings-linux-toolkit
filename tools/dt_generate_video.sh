@@ -70,8 +70,29 @@ else
   PYTHON_BIN="$(command -v python3)"
 fi
 
+if [[ "${1:-}" == "--session" ]]; then
+  if [[ ! "$HOST" =~ ^(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
+    echo "error: persistent video sessions require a local 127.0.0.1:port DT_HOST" >&2
+    exit 1
+  fi
+  SESSION_PORT="${BASH_REMATCH[2]}"
+  if [[ "$TEST_ONE_FRAME" == "1" ]]; then NUM_FRAMES=1; fi
+  SESSION_OPTIONS=(--video-mode --model "$MODEL" --port "$SESSION_PORT"
+    --width "$WIDTH" --height "$HEIGHT" --steps "$STEPS" --sampler "$SAMPLER"
+    --guidance-scale "$GUIDANCE" --shift "${DT_SHIFT:-5.0}"
+    --num-frames "$NUM_FRAMES" --fps-id "$FPS_ID" --seed "$SEED")
+  if [[ -n "${DT_MODELS_DIR:-}" ]]; then SESSION_OPTIONS+=(--models-dir "$DT_MODELS_DIR"); fi
+  if [[ -n "${DT_GRPC_BIN:-}" ]]; then SESSION_OPTIONS+=(--grpc-bin "$DT_GRPC_BIN"); fi
+  if [[ -n "$LORA_ENV_RAW" ]]; then
+    IFS=',' read -r -a SESSION_LORAS <<< "$LORA_ENV_RAW"
+    for spec in "${SESSION_LORAS[@]}"; do SESSION_OPTIONS+=(--lora "$spec"); done
+  fi
+  exec bash "$ROOT_DIR/tools/dt_image.sh" "${SESSION_OPTIONS[@]}" "$@"
+fi
+
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 \"prompt\" [negative_prompt]"
+  echo "       $0 --session start|use|status|stop [dt_image.sh options] [\"prompt\"]"
   exit 1
 fi
 

@@ -1,4 +1,4 @@
-"""Local lifecycle for the guarded MOSSkr2 image preset."""
+"""Persistent local image/video sessions for prepared Draw Things models."""
 
 import argparse
 import fcntl
@@ -6,6 +6,7 @@ import json
 import os
 import select
 import signal
+import shutil
 import socket
 import stat
 import subprocess
@@ -42,17 +43,19 @@ def owned_process(state):
             and state["identity"]["uid"] == os.getuid())
 
 
-def snapshot(bundle, runtime_paths):
+def snapshot(bundle, runtime_paths, models_dir=None):
     result = {}
-    paths = [bundle / "bundle.json", *sorted((bundle / "models").rglob("*")),
-             *map(Path, runtime_paths)]
+    models_dir = models_dir if models_dir is not None else bundle / "models"
+    paths = ([bundle / "bundle.json"] if bundle is not None else [])
+    paths.extend(sorted(models_dir.rglob("*")))
+    paths.extend(map(Path, runtime_paths))
     for path in paths:
         if path.is_dir():
             continue
         info = path.stat()
         if not stat.S_ISREG(info.st_mode):
             raise ValueError(f"not a regular session input: {path}")
-        if path.is_relative_to(bundle / "models"):
+        if path.is_relative_to(models_dir):
             if path.is_symlink() or info.st_nlink != 1 or not os.access(path, os.W_OK):
                 raise ValueError(f"session models must be independent writable files: {path}")
         result[str(path)] = [str(path.resolve()), info.st_dev, info.st_ino,
@@ -61,7 +64,9 @@ def snapshot(bundle, runtime_paths):
 
 
 def validate_inputs(state):
-    if snapshot(Path(state["bundle"]), state["runtime_paths"]) != state["inputs"]:
+    bundle = Path(state["bundle"]) if state.get("bundle") else None
+    models_dir = Path(state["models_dir"]) if state.get("models_dir") else None
+    if snapshot(bundle, state["runtime_paths"], models_dir) != state["inputs"]:
         raise ValueError("session inputs changed; stop and restart to fully revalidate the bundle")
 
 
@@ -110,7 +115,7 @@ def start_session(arguments, directory, state_path, runner_arguments):
         raise ValueError("session already running; use it or stop it first")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", arguments.port))
-    bundle = arguments.bundle.resolve()
+    bundle = arguments.bundle.resolve() if arguments.bundle else None
     run = directory / f"run-{time.time_ns()}"
     run.mkdir(mode=0o700)
     plan_directory = run / "plan"
@@ -118,16 +123,26 @@ def start_session(arguments, directory, state_path, runner_arguments):
     subprocess.run(["bash", str(RUNNER), *runner_arguments, "--dry-run",
                     "--output-dir", str(plan_directory)], check=True)
     launch = json.loads((plan_directory / "server-launch.json").read_text())
+    models_dir = Path(launch["command"][-1]).resolve()
+    if models_dir == (ROOT / "dt-models").resolve():
+        raise ValueError("sessions require independent model copies, not canonical dt-models")
+    if arguments.models_dir and arguments.models_dir.resolve() != models_dir:
+        raise ValueError("session model directory does not match the launch plan")
     runtime_paths = [str(RUNNER), str(ROOT / "tools/dt_image.sh"), str(Path(__file__).resolve()),
-                     str(PYTHON.resolve()), launch["command"][0],
-                     launch["environment"]["DT_VALIDATION_NATIVE"]]
+                     str(PYTHON.resolve()), str(Path(shutil.which(launch["command"][0]) or launch["command"][0]).absolute()),
+                     launch["proto"]]
+    runtime_paths.extend(str(path) for path in Path(launch["bindings_dir"]).rglob("*") if path.is_file())
+    native_override = launch["environment"].get("DT_VALIDATION_NATIVE")
+    if native_override:
+        runtime_paths.append(native_override)
     guard_python = Path(launch["command"][0]).with_suffix(".py")
     if guard_python.exists():
         runtime_paths.append(str(guard_python))
-    inputs = snapshot(bundle, runtime_paths)
-    subprocess.run([str(PYTHON), str(ROOT / "tools/dt_moss_convert.py"),
-                    "--bundle-model", str(bundle)], check=True)
-    if snapshot(bundle, runtime_paths) != inputs:
+    inputs = snapshot(bundle, runtime_paths, models_dir)
+    if bundle is not None:
+        subprocess.run([str(PYTHON), str(ROOT / "tools/dt_moss_convert.py"),
+                        "--bundle-model", str(bundle)], check=True)
+    if snapshot(bundle, runtime_paths, models_dir) != inputs:
         raise ValueError("session inputs changed during bundle verification")
     environment = os.environ.copy()
     for key in ("LD_PRELOAD", "DT_SAMPLE_CPU_STACKS", "DT_TARGETED_PROFILE_CLIENT_LOG"):
@@ -141,8 +156,9 @@ def start_session(arguments, directory, state_path, runner_arguments):
                                   stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
     state = {"pid": server.pid, "identity": process_identity(server.pid), "phase": "starting",
              "port": arguments.port, "mode": arguments.mode, "cache_gib": arguments.cache_gib,
-             "bundle": str(bundle), "runtime_paths": runtime_paths, "inputs": inputs,
-             "run_directory": str(run), "model": json.loads((bundle / "bundle.json").read_text())["model"],
+             "bundle": str(bundle) if bundle is not None else None, "models_dir": str(models_dir),
+             "launch": launch, "runtime_paths": runtime_paths, "inputs": inputs,
+             "run_directory": str(run), "model": launch["model"],
              "requests": 0, "created_unix_sec": time.time()}
     try:
         write_json(state_path, state)
@@ -165,8 +181,13 @@ def start_session(arguments, directory, state_path, runner_arguments):
 def use_session(arguments, state, state_path, runner_arguments):
     if not owned_process(state) or state["phase"] != "ready":
         raise ValueError("no ready session; start one first")
-    if state["bundle"] != str(arguments.bundle.resolve()) or state["mode"] != arguments.mode:
+    if not state.get("launch") or not state.get("models_dir"):
+        raise ValueError("session metadata is from an older version; stop and restart the session")
+    bundle = str(arguments.bundle.resolve()) if arguments.bundle else None
+    if state["bundle"] != bundle or state["mode"] != arguments.mode:
         raise ValueError("session bundle/weight policy mismatch; restart for a different configuration")
+    if arguments.models_dir and str(arguments.models_dir.resolve()) != state["models_dir"]:
+        raise ValueError("session model directory mismatch; restart for a different directory")
     if arguments.cache_gib != state["cache_gib"]:
         raise ValueError("session weights cache mismatch; restart to change its size")
     validate_inputs(state)
@@ -176,6 +197,14 @@ def use_session(arguments, state, state_path, runner_arguments):
     if output.exists() or output.is_symlink():
         raise ValueError(f"output directory already exists: {output}")
     run = Path(state["run_directory"])
+    plan_directory = run / f"request-plan-{time.time_ns()}"
+    subprocess.run(["bash", str(RUNNER), *runner_arguments,
+                    "--server-weights-cache", str(state["cache_gib"]), "--dry-run",
+                    "--output-dir", str(plan_directory)], check=True)
+    launch = json.loads((plan_directory / "server-launch.json").read_text())
+    for key in ("command", "proto", "bindings_dir", "cache_dir"):
+        if launch[key] != state["launch"][key]:
+            raise ValueError("session runtime/schema settings mismatch; restart for different server settings")
     progress = run / "current-client.log"
     started = time.monotonic()
     state["phase"] = "generating"
@@ -200,6 +229,7 @@ def use_session(arguments, state, state_path, runner_arguments):
         else:
             state["phase"] = "ready"
         state["requests"] += 1
+        state["last_model"] = launch["model"]
         state["last_request_seconds"] = elapsed
         write_json(state_path, state)
         if output.is_dir():
@@ -209,6 +239,7 @@ def use_session(arguments, state, state_path, runner_arguments):
             write_json(output / "session-request.json", {
                 "pid": state["pid"], "request": state["requests"], "elapsed_sec": elapsed,
                 "weights_cache_gib": state["cache_gib"], "returncode": code, "phase": state["phase"],
+                "model": launch["model"],
                 "session_server_log": str(run / "server.log"),
             })
         print(f"SESSION_REQUEST seconds={elapsed:.3f} pid={state['pid']} phase={state['phase']}", flush=True)
@@ -221,6 +252,7 @@ def main():
     parser.add_argument("--mode", choices=("offload", "gpu"), default="gpu")
     parser.add_argument("--cache-gib", type=int, default=None)
     parser.add_argument("--bundle", type=Path)
+    parser.add_argument("--models-dir", type=Path)
     arguments, runner_arguments = parser.parse_known_args()
     if runner_arguments[:1] == ["--"]:
         runner_arguments = runner_arguments[1:]

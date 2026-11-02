@@ -134,6 +134,41 @@ Source analysis still shows `ModelPreloader.isEnabled` excluding MOSS from compl
 
 Evidence: `output/upgrades/moss-image-stateful-20261027/moss-persistent-session-20261102.json`, `output/q6p_canary_moss_session_cache{0,4}_20261102_{a,b,c}`, and shared logs under `output/image-session-7862/run-1793616067742814752` and `run-1793616296101113756`. The complete neighboring regression module now covers lifecycle, unchanged one-shot cleanup, external-server ownership, same-PID images, single startup verification, cache inheritance/mismatch, busy locking/status, input invalidation, failure/timeout teardown and before-EOF progress delivery.
 
+## All-Model Session Extension: November 2
+
+After the first preset-only implementation, the user requested sessions for all models, explicitly MOSS and LTX2.3. The session manager is now model-family independent. `dt_image.sh --session start|use` accepts the existing MOSS aliases, any existing converted MOSS `--bundle`, or arbitrary native-recognized checkpoint/catalog names in an explicit independent `--models-dir`. Generic GPU/offload and custom-bundle policy checks remain unchanged. Converted full-precision bundles still require offload; a directory is not presented as a verified MOSS bundle.
+
+The manager no longer assumes a bundle manifest, a single model filename or `DT_VALIDATION_NATIVE`. Directory-backed sessions pin all prepared inputs and check selected-model metadata without invoking the MOSS converter. Manifest-backed sessions retain one full bundle verification at startup. Native server paths can be direct executables or resource guards. The runtime entry path, resolved target identity, chosen schemas and model inventory are pinned; retargeting a runtime symlink or changing a catalog rejects reuse. Before each request, a config-only plan must match the running server's launch command and schema paths. Models may change within that same pinned directory; the selected model is recorded per request and as `last_model` in session status. Changing server settings or input directories still requires restart. Old-format live session metadata must be stopped/restarted after upgrading.
+
+`--models-dir` accepts a model basename or a unique local catalog alias, rejects missing/escaping selections and validates the catalog's text/CLIP/VAE dependencies. The native Echo response must contain exactly one specification for the chosen filename and a nonempty native version; no particular model-family enum is assumed for generic directories. Canonical `dt-models` is refused, and model files must remain independent writable regular copies. There is no automatic mass-staging/copying of weights or global installation/catalog change. Plain directories do not gain the cryptographic assurances of an expected-hash bundle manifest.
+
+### Video Entry Points
+
+`dt_generate_video.sh --session start|use|status|stop` delegates to this shared manager through `dt_image.sh --video-mode`. It uses local `DT_HOST` (default port 7861), `DT_MODEL`, `DT_MODELS_DIR`, optional `DT_GRPC_BIN`, dimensions, steps, guidance, sampler, shift, frame count, FPS, seed and LoRAs. Matching common-helper options may be supplied after the action. Its original prompt-only workflow remains unchanged. The new session path deliberately uses the strict shared runner with hires-fix disabled and explicit `--output-dir`; it does not reproduce the legacy preview fallback or `DT_OUTPUT_ROOT` routing. Use `--negative-prompt` for explicit negative text in session mode.
+
+For a prepared independent LTX set:
+
+```bash
+export DT_MODELS_DIR="$PWD/output/my-private-ltx-models"
+export DT_MODEL="10_e_v1.5_q6p.ckpt"
+bash tools/dt_generate_video.sh --session start
+bash tools/dt_generate_video.sh --session use --steps 8 --num-frames 9 \
+  "A cinematic shot of a red sports car on a mountain road."
+bash tools/dt_generate_video.sh --session stop
+```
+
+Use an existing populated directory, not the example path verbatim. It needs the checkpoint, matching catalog, text encoder/VAE and their required sidecars. Direct `dt_image.sh --video-mode` also works; defaults are 384x704/eight steps/sampler 19/CFG 1/shift 5/81 frames/FPS 5. The video wrapper retains its own existing environment defaults unless overridden. `--proto`, `--cache-dir` and `--bindings-dir` support matching schemas for other explicitly selected native versions. Repeat model-directory/runtime/schema options on each request; keep one GPU workload active at a time.
+
+Strict video acceptance requires the exact requested number of final frame tensors, requested dimensions, finite frames and optional audio, complete stream/chunks and successful post-Echo. It reuses `dt_tensor_to_playable.py` in strict mode for GIF, PNG and optional WAV/MP4 export. MP4 is optional when no working OpenCV encoder is available. `video_acceptance.json` records the selected model, PID, frame/audio counts, config hash and media outputs. A failed decode, mismatched frame count or incomplete request fails the request and stops only the owned session. A preview or surviving server PID alone is not video success.
+
+### Verification And Limits
+
+The neighboring tests cover directory-only startup without a manifest/verifier/guard environment, all MOSS selection routes, arbitrary catalog aliases and dependencies, native metadata versions, video-helper delegation, same-PID MOSS image to LTX2.3 video switching, wrong runtime/schema rejection, runtime-symlink changes, strict frame-count rejection and owned failure cleanup. Video media tests use explicit finite local fixture tensors; they are not native LTX inference or quality measurements.
+
+Real non-preset `sft-q8p` startup passed native `moss_image` metadata selection at port 7863, guard PID 71391, then stopped cleanly. A real MoodyMOSS i4x custom bundle passed full manifest verification and native selection with a directly selected patched `acafef3d...` server, PID 72704, then stopped. Neither preflight rendered or changed model storage. Logs: `output/upgrades/moss-image-stateful-20261027/all-model-session-{moss-alias,custom-bundle}-preflight-20261102.log`. GPU usage returned to zero after each.
+
+There is currently no complete private LTX payload pool staged: the older approved cleanup removed those copies and retained its catalog. No large copies were recreated merely for preflight, and no new native LTX render/performance/quality success is claimed. The previously documented intermittent null-input GEMM crash remains outside this client/lifecycle change. Model support here means selection, lifecycle, request submission and strict output handling for the chosen native runtime, not a fix for every native architecture or full model retention in VRAM. Resource caps remain available through explicitly selected guard launchers; direct native binaries do not acquire those caps from the manager.
+
 ## MOSSkr2 i4x Four-Step LoRA: October 30
 
 The user supplied a BF16 MOSS four-step LoRA and its Draw Things iOS import, and reported that the imported adapter works with our MOSSkr2 i4x on iOS. The Linux tests below independently verify native LoRA support on the accepted private server. They finished on October 30 before the session was paused; saved configs, image hashes, source audits and model preservation were verified again on November 2 without repeating inference.

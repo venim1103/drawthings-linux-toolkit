@@ -7,6 +7,7 @@ GRPC_BIN="$CANDIDATE/bazel-bin/Apps/gRPCServerCLI"
 GRPC_BIN_EXPLICIT=0
 SCHEMA="$ROOT/output/upgrades/schemas/0621d819"
 MODELS="$ROOT/output/upgrades/moss-image-stateful-20261027/models"
+MODELS_EXPLICIT=0
 MODEL="sft-i4x"
 MODEL_EXPLICIT=0
 BUNDLE=""
@@ -17,6 +18,14 @@ PROMPT_SET=0
 NEGATIVE_PROMPT=""
 WIDTH=512
 HEIGHT=512
+WIDTH_EXPLICIT=0
+HEIGHT_EXPLICIT=0
+VIDEO_MODE=0
+NUM_FRAMES=81
+FPS_ID=5
+SAMPLER=""
+SHIFT=""
+PROTO=""
 STEPS=""
 GUIDANCE_SCALE=""
 TIMEOUT_SEC=""
@@ -39,18 +48,27 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
                                   guarded patched server, CFG 1, 180s timeout,
                                   and GPU metrics. Requires prepared local files.
                                   Cannot combine with --model/--bundle/--grpc-bin.
-  --model sft-i4x|sft-q8p|base-q8p  Model (default: sft-i4x).
+  --model NAME                    MOSS alias sft-i4x|sft-q8p|base-q8p, or a
+                                  checkpoint/catalog name with --models-dir.
+  --models-dir PATH               Independent writable model files/catalogs.
+                                  Supports any model exposed by the chosen server.
   --bundle PATH                    Converted MOSS inference bundle under output/.
                                   Cannot be combined with --model.
                                   Only verified i4x bundles support gpu mode;
                                   other bundles require offload.
   --grpc-bin PATH                  Explicit native server or resource-guard executable.
+  --proto PATH --cache-dir PATH --bindings-dir PATH
+                                  Matching protobuf/FlatBuffer schema paths.
   --mode offload|gpu               Weight policy (default: offload).
                                   gpu omits forced CPU weight offload; it is
                                   not a promise of zero CPU or host-memory use.
   --size N                        Square size (default: 512).
   --width N --height N            Non-square dimensions; multiples of 64.
   --steps N                       Sampling steps (default: 50).
+  --sampler NAME|N --shift N       Sampling overrides (image: DDIMTrailing/5).
+  --video-mode                    Final video/audio validation and media export.
+                                  Defaults: 384x704, 8 steps, sampler 19, CFG 1.
+  --num-frames N --fps-id N        Video frame count/FPS (defaults: 81/5).
   --guidance-scale N              Nonnegative finite CFG scale (default: 3).
   --lora FILE[:WEIGHT[:MODE]]      Adapter from the selected model directory;
                                   repeatable; replaces preset adapters if given.
@@ -58,8 +76,8 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --seed N                        Seed (default: 4242).
   --negative-prompt TEXT           Negative prompt (default: empty).
   --port N                        Local temporary server port (default: 7862).
-  --session start|use|status|stop  Persistent local server; start/use require
-                                  --preset mosskr2-lora4. Start needs no prompt.
+  --session start|use|status|stop  Persistent local image/video server for any model.
+                                  Start needs no prompt; repeat selection options.
                                   use submits one request; status/stop need no preset.
   --weights-cache N               Session-start RAM cache bound, 0..8 integer GiB
                                   (default: 0). Not persistent GPU model retention.
@@ -89,21 +107,30 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --metrics) METRICS=1; shift ;;
     --check) PREFLIGHT_ONLY=1; shift ;;
-    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag|--output-dir|--session|--weights-cache)
+    --video-mode) VIDEO_MODE=1; shift ;;
+    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag|--output-dir|--session|--weights-cache|--models-dir|--num-frames|--fps-id|--sampler|--shift|--proto|--cache-dir|--bindings-dir)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       case "$1" in
         --preset) PRESET="$2"; [[ "$PRESET" == "mosskr2-lora4" ]] || fail "preset must be mosskr2-lora4" ;;
         --model) MODEL="$2"; MODEL_EXPLICIT=1 ;;
         --bundle) BUNDLE="$2"; [[ -n "$BUNDLE" ]] || fail "bundle path cannot be empty" ;;
+        --models-dir) MODELS="$2"; MODELS_EXPLICIT=1; [[ -n "$MODELS" ]] || fail "models-dir cannot be empty" ;;
+        --proto) PROTO="$2"; [[ -n "$PROTO" ]] || fail "proto cannot be empty" ;;
+        --cache-dir) SCHEMA="$2"; [[ -n "$SCHEMA" ]] || fail "cache-dir cannot be empty" ;;
+        --bindings-dir) BINDINGS="$2"; [[ -n "$BINDINGS" ]] || fail "bindings-dir cannot be empty" ;;
         --grpc-bin)
           [[ -f "$2" && -x "$2" ]] || fail "grpc-bin must be an executable file"
           GRPC_BIN="$(realpath "$2")"
           GRPC_BIN_EXPLICIT=1
           ;;
         --mode) MODE="$2"; [[ -n "$MODE" ]] || fail "mode cannot be empty" ;;
-        --size) WIDTH="$2"; HEIGHT="$2" ;;
-        --width) WIDTH="$2" ;;
-        --height) HEIGHT="$2" ;;
+        --size) WIDTH="$2"; HEIGHT="$2"; WIDTH_EXPLICIT=1; HEIGHT_EXPLICIT=1 ;;
+        --width) WIDTH="$2"; WIDTH_EXPLICIT=1 ;;
+        --height) HEIGHT="$2"; HEIGHT_EXPLICIT=1 ;;
+        --num-frames) NUM_FRAMES="$2" ;;
+        --fps-id) FPS_ID="$2" ;;
+        --sampler) SAMPLER="$2"; [[ -n "$SAMPLER" ]] || fail "sampler cannot be empty" ;;
+        --shift) SHIFT="$2"; [[ -n "$SHIFT" ]] || fail "shift cannot be empty" ;;
         --steps) STEPS="$2"; [[ -n "$STEPS" ]] || fail "steps cannot be empty" ;;
         --guidance-scale) GUIDANCE_SCALE="$2"; [[ -n "$GUIDANCE_SCALE" ]] || fail "guidance-scale cannot be empty" ;;
         --lora) [[ -n "$2" ]] || fail "lora cannot be empty"; LORAS+=("$2") ;;
@@ -128,7 +155,6 @@ if [[ "$SESSION" == "status" || "$SESSION" == "stop" ]]; then
   exec "$ROOT/.venv/bin/python" "$ROOT/tools/dt_image_session.py" "$SESSION" --port "$PORT"
 fi
 if [[ -n "$SESSION" ]]; then
-  [[ "$PRESET" == "mosskr2-lora4" ]] || fail "session start/use requires --preset mosskr2-lora4"
   [[ "$DRY_RUN" == "0" && "$PREFLIGHT_ONLY" == "0" ]] || fail "session mode cannot combine with --dry-run or --check"
   if [[ "$SESSION" == "start" && "$PROMPT_SET" == "0" ]]; then PROMPT="Session model preflight"; fi
 elif [[ -n "$WEIGHTS_CACHE" ]]; then
@@ -136,7 +162,7 @@ elif [[ -n "$WEIGHTS_CACHE" ]]; then
 fi
 [[ -n "${PROMPT//[[:space:]]/}" ]] || fail "provide a nonempty quoted prompt"
 if [[ -n "$PRESET" ]]; then
-  [[ "$MODEL_EXPLICIT" == "0" && -z "$BUNDLE" && "$GRPC_BIN_EXPLICIT" == "0" ]] || fail "preset cannot be combined with --model, --bundle or --grpc-bin; use those options without --preset for a custom setup"
+  [[ "$MODEL_EXPLICIT" == "0" && -z "$BUNDLE" && "$GRPC_BIN_EXPLICIT" == "0" && "$MODELS_EXPLICIT" == "0" && "$VIDEO_MODE" == "0" ]] || fail "preset cannot be combined with --model, --bundle, --models-dir, --video-mode or --grpc-bin; use those options without --preset for a custom setup"
   BUNDLE="$ROOT/output/moss-models/mosskr2-i4x-4step-lora-test-20261030"
   GRPC_BIN="$ROOT/output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh"
   PRESET_NATIVE="$ROOT/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI"
@@ -154,14 +180,27 @@ if [[ -n "$PRESET" ]]; then
   export DT_VALIDATION_WEIGHT_POLICY="$MODE"
   unset LD_PRELOAD DT_SAMPLE_CPU_STACKS DT_TARGETED_PROFILE_CLIENT_LOG
 fi
+if [[ "$VIDEO_MODE" == "1" ]]; then
+  if [[ "$WIDTH_EXPLICIT" == "0" ]]; then WIDTH=384; fi
+  if [[ "$HEIGHT_EXPLICIT" == "0" ]]; then HEIGHT=704; fi
+  STEPS="${STEPS:-8}"
+  GUIDANCE_SCALE="${GUIDANCE_SCALE:-1}"
+  SAMPLER="${SAMPLER:-19}"
+fi
 MODE="${MODE:-offload}"
 STEPS="${STEPS:-50}"
 GUIDANCE_SCALE="${GUIDANCE_SCALE:-3}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-3600}"
+SAMPLER="${SAMPLER:-DDIMTrailing}"
+SHIFT="${SHIFT:-5}"
+PROTO="${PROTO:-$CANDIDATE/Libraries/GRPC/Models/Sources/imageService/imageService.proto}"
+BINDINGS="${BINDINGS:-$SCHEMA/flatbuffers}"
+[[ "$NUM_FRAMES" =~ ^[1-9][0-9]*$ && "$FPS_ID" =~ ^[1-9][0-9]*$ ]] || fail "num-frames and fps-id must be positive integers"
 [[ "$STEPS" =~ ^[1-9][0-9]*$ ]] || fail "steps must be a positive integer"
 [[ "$TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]] || fail "timeout-sec must be a positive integer"
 "$ROOT/.venv/bin/python" -c 'import math, sys; value = float(sys.argv[1]); sys.exit(not (math.isfinite(value) and value >= 0))' "$GUIDANCE_SCALE" 2>/dev/null || fail "guidance-scale must be finite and nonnegative"
 if [[ -n "$BUNDLE" ]]; then
+  [[ "$MODELS_EXPLICIT" == "0" ]] || fail "bundle cannot be combined with --models-dir"
   [[ "$MODEL_EXPLICIT" == "0" ]] || fail "--bundle cannot be combined with --model"
   [[ -d "$BUNDLE" ]] || fail "bundle directory does not exist: $BUNDLE"
   BUNDLE="$(cd "$BUNDLE" && pwd)"
@@ -178,6 +217,39 @@ if [[ -n "$BUNDLE" ]]; then
   fi
   MODELS="$BUNDLE/models"
   MODEL="bundle:$MODEL_FILE"
+elif [[ "$MODELS_EXPLICIT" == "1" ]]; then
+  [[ -d "$MODELS" ]] || fail "model directory does not exist: $MODELS"
+  MODELS="$(realpath -e -- "$MODELS")"
+  [[ "$MODELS" != "$ROOT/dt-models" ]] || fail "use independent model copies, not canonical dt-models"
+  MODEL_FILE="$("$ROOT/.venv/bin/python" - "$MODELS" "$MODEL" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+models = Path(sys.argv[1])
+query = sys.argv[2]
+for path in models.rglob('*'):
+  if path.is_symlink():
+    raise SystemExit(f'error: model directory contains a symlink: {path}')
+  if path.is_file() and (path.stat().st_nlink != 1 or not os.access(path, os.W_OK)):
+    raise SystemExit(f'error: model inputs must be independent writable copies: {path}')
+catalog = models / 'custom.json'
+entries = json.loads(catalog.read_text()) if catalog.is_file() else []
+matches = [entry for entry in entries if isinstance(entry, dict) and query in (entry.get('name'), entry.get('file'))]
+if len(matches) > 1:
+    raise SystemExit('error: ambiguous model catalog selection')
+filename = matches[0].get('file') if matches else query
+if not isinstance(filename, str) or Path(filename).name != filename or not (models / filename).is_file():
+    raise SystemExit('error: model must resolve to an existing checkpoint in --models-dir')
+if matches:
+    for key in ('text_encoder', 'clip_encoder', 'autoencoder'):
+        companion = matches[0].get(key)
+        if companion and (Path(companion).name != companion or not (models / companion).is_file()):
+            raise SystemExit(f'error: missing or invalid model dependency: {key}={companion}')
+print(filename)
+PY
+)"
 else
   case "$MODEL" in
     sft-i4x) MODEL_FILE="moss_image_sft_i4x.ckpt" ;;
@@ -211,7 +283,16 @@ EXTRA_ARGUMENTS=()
 if [[ -n "$OUTPUT_DIR" ]]; then EXTRA_ARGUMENTS+=(--output-dir "$OUTPUT_DIR"); fi
 if [[ "$SESSION" == "use" && -z "$OUTPUT_DIR" ]]; then EXTRA_ARGUMENTS+=(--output-dir "$RUN_DIR"); fi
 for lora in "${LORAS[@]}"; do EXTRA_ARGUMENTS+=(--lora "$lora"); done
-if [[ -n "$BUNDLE" ]]; then EXTRA_ARGUMENTS+=(--require-model-version moss_image); fi
+if [[ -n "$BUNDLE" || "$MODELS_EXPLICIT" == "0" ]]; then
+  EXTRA_ARGUMENTS+=(--require-model-version moss_image --require-model-file qwen_3.5_9b_i5x.ckpt --require-model-file flux_2_vae_f16.ckpt)
+else
+  EXTRA_ARGUMENTS+=(--require-model-version '*')
+fi
+if [[ "$VIDEO_MODE" == "1" ]]; then
+  EXTRA_ARGUMENTS+=(--video-mode --num-frames "$NUM_FRAMES" --fps-id "$FPS_ID")
+else
+  EXTRA_ARGUMENTS+=(--image-mode)
+fi
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then EXTRA_ARGUMENTS+=(--preflight-only); fi
 if [[ "$DRY_RUN" == "1" ]]; then EXTRA_ARGUMENTS+=(--dry-run); fi
 if [[ "$METRICS" == "1" ]]; then EXTRA_ARGUMENTS+=(--gpu-metrics); fi
@@ -221,17 +302,17 @@ printf 'image_model=%s weight_mode=%s dimensions=%sx%s\n' "$MODEL" "$MODE" "$WID
 export LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
 CANARY_ARGUMENTS=( \
   --grpc-bin "$GRPC_BIN" \
-  --proto "$CANDIDATE/Libraries/GRPC/Models/Sources/imageService/imageService.proto" \
-  --cache-dir "$SCHEMA" --bindings-dir "$SCHEMA/flatbuffers" \
+  --proto "$PROTO" \
+  --cache-dir "$SCHEMA" --bindings-dir "$BINDINGS" \
   --models-dir "$MODELS" --model "$MODEL_FILE" \
-  --require-model-file qwen_3.5_9b_i5x.ckpt --require-model-file flux_2_vae_f16.ckpt \
-  --host "127.0.0.1:$PORT" --image-mode --width "$WIDTH" --height "$HEIGHT" \
-  --steps "$STEPS" --sampler DDIMTrailing --guidance-scale "$GUIDANCE_SCALE" --shift 5 --seed "$SEED" \
+  --host "127.0.0.1:$PORT" --width "$WIDTH" --height "$HEIGHT" \
+  --steps "$STEPS" --sampler "$SAMPLER" --guidance-scale "$GUIDANCE_SCALE" --shift "$SHIFT" --seed "$SEED" \
   --prompt "$PROMPT" --negative-prompt "$NEGATIVE_PROMPT" \
   --server-fread-preferred --server-weights-cache "${WEIGHTS_CACHE:-0}" --final-mode --timeout-sec "$TIMEOUT_SEC" \
   "${MODE_ARGUMENTS[@]}" "${EXTRA_ARGUMENTS[@]}" )
 if [[ -n "$SESSION" ]]; then
-  SESSION_ARGUMENTS=("$SESSION" --port "$PORT" --bundle "$BUNDLE" --mode "$MODE")
+  SESSION_ARGUMENTS=("$SESSION" --port "$PORT" --models-dir "$MODELS" --mode "$MODE")
+  if [[ -n "$BUNDLE" ]]; then SESSION_ARGUMENTS+=(--bundle "$BUNDLE"); fi
   if [[ -n "$WEIGHTS_CACHE" ]]; then SESSION_ARGUMENTS+=(--cache-gib "$WEIGHTS_CACHE"); fi
   exec "$ROOT/.venv/bin/python" "$ROOT/tools/dt_image_session.py" "${SESSION_ARGUMENTS[@]}" -- "${CANARY_ARGUMENTS[@]}"
 fi
