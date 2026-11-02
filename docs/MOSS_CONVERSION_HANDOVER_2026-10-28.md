@@ -88,6 +88,52 @@ With `--output-dir`, `--tag` remains a run label and is not appended to the chos
 
 All **32 tests** in `tools.test_dt_make_config` pass. They cover relative/absolute paths, spaces, preset progress-log routing, default paths, collision/symlink/empty-path rejection, and fixture image generation with complete logs/metadata for both default and custom sequence directories. These are output-routing checks, not a new inference-quality or performance claim.
 
+## Persistent Image Sessions: November 2
+
+The user authorized trying warm inference after the read-only cache analysis. The helper now supports an explicit persistent lifecycle for the existing prepared `mosskr2-lora4` preset; generic bundles and no-session calls keep their existing one-shot behavior. No native source, precision, arithmetic, thread policy, installed runtime, canonical model or active catalog was changed.
+
+```bash
+bash tools/dt_image.sh --preset mosskr2-lora4 --session start
+bash tools/dt_image.sh --preset mosskr2-lora4 --session use \
+  --output-dir ./output/bard-session \
+  "A photo of a medieval bard in a medieval town playing lute."
+bash tools/dt_image.sh --preset mosskr2-lora4 --session use \
+  "A studio photo of a red bicycle leaning against a pale wall, a blue helmet on the seat."
+bash tools/dt_image.sh --session status
+bash tools/dt_image.sh --session stop
+```
+
+`start` does full bundle verification, starts the existing resource guard and checks native catalog selection without generation. The first `use` initializes inference; later requests reuse that same process. Sampling options, prompts, negative prompts and output paths remain per-request; changing prompts still requires text encoding. A different weight policy or cache size requires restarting. Use the same explicit `--port` for all lifecycle/request commands if changing the default 7862.
+
+### Ownership And Safety
+
+The versioned `tools/dt_image_session.py` consumes the runner's structured `server-launch.json` rather than reconstructing native arguments from shell text. It keeps an exclusive per-session request lock and pins the verified bundle files plus the helper, runner, manager, Python executable, native runtime and private guard using file identity/size/mtime/ctime snapshots. Additions or changes reject reuse and require full revalidation at restart. Model files must remain independent writable regular files. This is local change detection, not a replacement for startup cryptographic verification or a hostile-root security boundary.
+
+Session identity includes Linux process start ticks, UID and boot ID; stop uses a checked pidfd rather than blindly signaling a recycled PID. Requests require that the live owned process tree holds the expected local listener, and reuse the runner's native catalog, LoRA-presence, stream, chunk, image-finiteness and post-Echo checks. The runner's explicit `--connect-only --server-pid PID` path never takes ownership of that external server; only the session manager may stop its own service. Arbitrary external server attachment is not exposed by the public helper.
+
+One request runs at a time per session. A second request, start or stop during generation is rejected as busy rather than queued; status can read the atomically published current phase. Client failure, timeout or validation failure closes the owned session to prevent an uncertain in-flight request being reused. Restart before retrying. The unchanged private guard retains its 9,216 MiB GPU cap, 4,096 MiB host-available floor and native-child parent-death cleanup. Normal successful requests leave it running until explicit stop. Keep one GPU workload active at a time; the lock does not coordinate unrelated applications or different ports.
+
+Session metadata/shared server log live in `output/image-session-<port>/`, with a new run directory per start. Each image directory contains the existing artifacts plus `session-request.json` (PID, ordinal, cache bound and elapsed time) and a `session-server.log` excerpt. Signposts append to a stable session progress log for the existing guard, with no private-guard modification. The guard's existing 1 MiB progress-log safety bound remains; restart long-lived sessions before exceeding it. Output directories remain exclusive new leaves and never overwrite user images.
+
+### Six Short Measurements
+
+Both sessions used the unchanged accepted `acafef3d...` native server, GPU policy, fread, MOSSkr2 i4x, imported four-step LoRA at weight 1.0, 512x512, four DDIMTrailing steps, CFG 1, shift 5, seed 4242, empty negative prompt and 180-second generation timeout. Three different prompts were run serially: orange teapot/table/plant/window, medieval bard/lute/town, and red bicycle/blue helmet/pale wall. The second session repeated exactly those prompts.
+
+| Native RAM Cache Bound | First Request s | Warm Bard s | Warm Bicycle s | Guard PID | Idle Native RSS GiB | Idle GPU MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 GiB, default | 18.085 | 11.876 | 13.010 | 52128 | 1.461 | 171 |
+| 4 GiB, explicit experiment | 13.658 | 12.641 | 12.037 | 54834 | 1.539 | 171 |
+
+These are runner elapsed times including request preparation/catalog checking, generation and final validation, **excluding session startup/full verification and the helper's initial argument parsing**. First request means first on that native process, not cold OS/disk caches. Run order and prompts affect timing; the older 26.949-second one-shot LoRA observation is not a matched speedup denominator. Warm means were approximately 12.44 and 12.34 seconds: no meaningful additional benefit is established for 4 GiB, so the default stays zero.
+
+All six pass native `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo. Every matched prompt has **byte-identical config, raw tensor and PNG** across cache settings. Bard and bicycle outputs were viewed and follow the changed prompts, without stale prompt reuse. Sampled whole-device peaks were 4,029-5,407 MiB, maximum temperature 59 C; this does not lower previous LoRA memory requirements for other prompts/settings. Both sessions were explicitly stopped, with GPU memory returning to zero.
+
+The initial cache-zero signpost filter buffered until EOF. It was replaced with unbuffered `sed -un` before the cache-four session, with a before-EOF regression test. Cache-zero request wall times remain valid, but its phase timestamps must not be used. The corrected cache-four sampling spans were about 3.25 seconds. The same 716 pre-existing CUFILE diagnostics occur per request in both modes; these are neither new failures nor a cache-hit counter. Native `/proc/<pid>/io` counters were unavailable here. No particular weights-cache hit rate is claimed.
+
+Source analysis still shows `ModelPreloader.isEnabled` excluding MOSS from complete compiled-model retention. On this dGPU, `WeightsCache` keeps CPU copies and rejects whole entries larger than its limit; cache size is integer GiB and is not the checkpoint file size. The observed idle memory and timings do not establish full MOSS weight/model reuse. This first implementation saves process/context setup and repeated whole-bundle verification. Native MOSS-specific GPU model retention remains a separate, unimplemented optimization requiring phase-aware memory budgeting and correct invalidation; simply removing the preloader guard is not justified.
+
+Evidence: `output/upgrades/moss-image-stateful-20261027/moss-persistent-session-20261102.json`, `output/q6p_canary_moss_session_cache{0,4}_20261102_{a,b,c}`, and shared logs under `output/image-session-7862/run-1793616067742814752` and `run-1793616296101113756`. The complete neighboring regression module now covers lifecycle, unchanged one-shot cleanup, external-server ownership, same-PID images, single startup verification, cache inheritance/mismatch, busy locking/status, input invalidation, failure/timeout teardown and before-EOF progress delivery.
+
 ## MOSSkr2 i4x Four-Step LoRA: October 30
 
 The user supplied a BF16 MOSS four-step LoRA and its Draw Things iOS import, and reported that the imported adapter works with our MOSSkr2 i4x on iOS. The Linux tests below independently verify native LoRA support on the accepted private server. They finished on October 30 before the session was paused; saved configs, image hashes, source audits and model preservation were verified again on November 2 without repeating inference.

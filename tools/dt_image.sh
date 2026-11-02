@@ -28,6 +28,8 @@ OUTPUT_DIR=""
 DRY_RUN=0
 METRICS=0
 PREFLIGHT_ONLY=0
+SESSION=""
+WEIGHTS_CACHE=""
 
 usage() {
   cat <<'EOF'
@@ -56,6 +58,11 @@ Usage: bash tools/dt_image.sh [options] "Your prompt"
   --seed N                        Seed (default: 4242).
   --negative-prompt TEXT           Negative prompt (default: empty).
   --port N                        Local temporary server port (default: 7862).
+  --session start|use|status|stop  Persistent local server; start/use require
+                                  --preset mosskr2-lora4. Start needs no prompt.
+                                  use submits one request; status/stop need no preset.
+  --weights-cache N               Session-start RAM cache bound, 0..8 integer GiB
+                                  (default: 0). Not persistent GPU model retention.
   --tag NAME                      Output tag (default: automatic timestamp).
   --output-dir PATH               Exact new directory for image, config and logs.
                                   Relative to the current directory; must not exist.
@@ -82,7 +89,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --metrics) METRICS=1; shift ;;
     --check) PREFLIGHT_ONLY=1; shift ;;
-    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag|--output-dir)
+    --preset|--model|--bundle|--grpc-bin|--mode|--size|--width|--height|--steps|--guidance-scale|--lora|--timeout-sec|--seed|--negative-prompt|--port|--tag|--output-dir|--session|--weights-cache)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       case "$1" in
         --preset) PRESET="$2"; [[ "$PRESET" == "mosskr2-lora4" ]] || fail "preset must be mosskr2-lora4" ;;
@@ -104,6 +111,8 @@ while [[ $# -gt 0 ]]; do
         --seed) SEED="$2" ;;
         --negative-prompt) NEGATIVE_PROMPT="$2" ;;
         --port) PORT="$2" ;;
+        --session) SESSION="$2"; [[ "$SESSION" =~ ^(start|use|status|stop)$ ]] || fail "session must be start, use, status or stop" ;;
+        --weights-cache) WEIGHTS_CACHE="$2"; [[ "$WEIGHTS_CACHE" =~ ^[0-8]$ ]] || fail "weights-cache must be 0..8 integer GiB" ;;
         --tag) TAG="$2"; [[ -n "$TAG" ]] || fail "tag cannot be empty" ;;
         --output-dir) OUTPUT_DIR="$2"; [[ -n "$OUTPUT_DIR" ]] || fail "output-dir cannot be empty" ;;
       esac
@@ -115,6 +124,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$SESSION" == "status" || "$SESSION" == "stop" ]]; then
+  exec "$ROOT/.venv/bin/python" "$ROOT/tools/dt_image_session.py" "$SESSION" --port "$PORT"
+fi
+if [[ -n "$SESSION" ]]; then
+  [[ "$PRESET" == "mosskr2-lora4" ]] || fail "session start/use requires --preset mosskr2-lora4"
+  [[ "$DRY_RUN" == "0" && "$PREFLIGHT_ONLY" == "0" ]] || fail "session mode cannot combine with --dry-run or --check"
+  if [[ "$SESSION" == "start" && "$PROMPT_SET" == "0" ]]; then PROMPT="Session model preflight"; fi
+elif [[ -n "$WEIGHTS_CACHE" ]]; then
+  fail "weights-cache requires --session start (or a matching --session use)"
+fi
 [[ -n "${PROMPT//[[:space:]]/}" ]] || fail "provide a nonempty quoted prompt"
 if [[ -n "$PRESET" ]]; then
   [[ "$MODEL_EXPLICIT" == "0" && -z "$BUNDLE" && "$GRPC_BIN_EXPLICIT" == "0" ]] || fail "preset cannot be combined with --model, --bundle or --grpc-bin; use those options without --preset for a custom setup"
@@ -146,7 +165,13 @@ if [[ -n "$BUNDLE" ]]; then
   [[ "$MODEL_EXPLICIT" == "0" ]] || fail "--bundle cannot be combined with --model"
   [[ -d "$BUNDLE" ]] || fail "bundle directory does not exist: $BUNDLE"
   BUNDLE="$(cd "$BUNDLE" && pwd)"
-  MODEL_FILE="$("$ROOT/.venv/bin/python" "$ROOT/tools/dt_moss_convert.py" --bundle-model "$BUNDLE")"
+  if [[ "$SESSION" == "use" ]]; then
+    MODEL_FILE="$("$ROOT/.venv/bin/python" "$ROOT/tools/dt_image_session.py" model --port "$PORT")"
+  elif [[ "$SESSION" == "start" ]]; then
+    MODEL_FILE="$("$ROOT/.venv/bin/python" -c 'import json, sys; print(json.load(open(sys.argv[1]))["model"])' "$BUNDLE/bundle.json")"
+  else
+    MODEL_FILE="$("$ROOT/.venv/bin/python" "$ROOT/tools/dt_moss_convert.py" --bundle-model "$BUNDLE")"
+  fi
   if [[ "$MODE" == "gpu" ]]; then
     BUNDLE_QUANTIZATION="$("$ROOT/.venv/bin/python" -c 'import json, sys; print(json.load(open(sys.argv[1])).get("quantization", ""))' "$BUNDLE/bundle.json")"
     [[ "$BUNDLE_QUANTIZATION" == "i4x" ]] || fail "only verified i4x bundles support --mode gpu; other bundles require --mode offload"
@@ -184,6 +209,7 @@ fi
 if [[ -n "$PRESET" ]]; then export DT_VALIDATION_CLIENT_LOG="$RUN_DIR/client.log"; fi
 EXTRA_ARGUMENTS=()
 if [[ -n "$OUTPUT_DIR" ]]; then EXTRA_ARGUMENTS+=(--output-dir "$OUTPUT_DIR"); fi
+if [[ "$SESSION" == "use" && -z "$OUTPUT_DIR" ]]; then EXTRA_ARGUMENTS+=(--output-dir "$RUN_DIR"); fi
 for lora in "${LORAS[@]}"; do EXTRA_ARGUMENTS+=(--lora "$lora"); done
 if [[ -n "$BUNDLE" ]]; then EXTRA_ARGUMENTS+=(--require-model-version moss_image); fi
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then EXTRA_ARGUMENTS+=(--preflight-only); fi
@@ -193,7 +219,7 @@ if [[ -n "$TAG" ]]; then EXTRA_ARGUMENTS+=(--tag "$TAG"); fi
 
 printf 'image_model=%s weight_mode=%s dimensions=%sx%s\n' "$MODEL" "$MODE" "$WIDTH" "$HEIGHT"
 export LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
-exec bash "$ROOT/tools/run_q6p_canary_once.sh" \
+CANARY_ARGUMENTS=( \
   --grpc-bin "$GRPC_BIN" \
   --proto "$CANDIDATE/Libraries/GRPC/Models/Sources/imageService/imageService.proto" \
   --cache-dir "$SCHEMA" --bindings-dir "$SCHEMA/flatbuffers" \
@@ -202,5 +228,11 @@ exec bash "$ROOT/tools/run_q6p_canary_once.sh" \
   --host "127.0.0.1:$PORT" --image-mode --width "$WIDTH" --height "$HEIGHT" \
   --steps "$STEPS" --sampler DDIMTrailing --guidance-scale "$GUIDANCE_SCALE" --shift 5 --seed "$SEED" \
   --prompt "$PROMPT" --negative-prompt "$NEGATIVE_PROMPT" \
-  --server-fread-preferred --server-weights-cache 0 --final-mode --timeout-sec "$TIMEOUT_SEC" \
-  "${MODE_ARGUMENTS[@]}" "${EXTRA_ARGUMENTS[@]}"
+  --server-fread-preferred --server-weights-cache "${WEIGHTS_CACHE:-0}" --final-mode --timeout-sec "$TIMEOUT_SEC" \
+  "${MODE_ARGUMENTS[@]}" "${EXTRA_ARGUMENTS[@]}" )
+if [[ -n "$SESSION" ]]; then
+  SESSION_ARGUMENTS=("$SESSION" --port "$PORT" --bundle "$BUNDLE" --mode "$MODE")
+  if [[ -n "$WEIGHTS_CACHE" ]]; then SESSION_ARGUMENTS+=(--cache-gib "$WEIGHTS_CACHE"); fi
+  exec "$ROOT/.venv/bin/python" "$ROOT/tools/dt_image_session.py" "${SESSION_ARGUMENTS[@]}" -- "${CANARY_ARGUMENTS[@]}"
+fi
+exec bash "$ROOT/tools/run_q6p_canary_once.sh" "${CANARY_ARGUMENTS[@]}"

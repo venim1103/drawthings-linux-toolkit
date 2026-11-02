@@ -11,6 +11,8 @@ MODELS_DIR="$ROOT/dt-models"
 OUTPUT_DIR=""
 DRY_RUN=0
 PREFLIGHT_ONLY=0
+CONNECT_ONLY=0
+CONNECTED_SERVER_PID=""
 REQUIRED_MODEL_VERSION=""
 IMAGE_MODE=0
 REQUIRED_MODEL_FILES=()
@@ -76,6 +78,9 @@ Options:
                             Uses one frame and disables resolution-dependent shift.
   --dry-run                 Generate config and print the server command only.
   --preflight-only          Start server, validate requested model metadata, then stop.
+  --connect-only            Use an existing local server without starting/stopping it.
+                            Requires --server-pid for local process validation.
+  --server-pid <pid>        Existing server PID for --connect-only.
   --require-model-version <version>
                             Require every requested model in decoded server metadata.
   --server-gpu <n>          GPU id passed to server launcher (default: 0).
@@ -177,6 +182,14 @@ if [[ $# -gt 0 ]]; then
       --preflight-only)
         PREFLIGHT_ONLY=1
         shift
+        ;;
+      --connect-only)
+        CONNECT_ONLY=1
+        shift
+        ;;
+      --server-pid)
+        CONNECTED_SERVER_PID="${2:-}"
+        shift 2
         ;;
       --require-model-version)
         REQUIRED_MODEL_VERSION="${2:-}"
@@ -539,6 +552,16 @@ if [[ "$NO_TIMEOUT" != "1" ]]; then
   fi
 fi
 
+if [[ "$CONNECT_ONLY" == "1" ]]; then
+  if [[ ! "$CONNECTED_SERVER_PID" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$CONNECTED_SERVER_PID" 2>/dev/null; then
+    echo "error: --connect-only requires a live --server-pid" >&2
+    exit 1
+  fi
+elif [[ -n "$CONNECTED_SERVER_PID" ]]; then
+  echo "error: --server-pid requires --connect-only" >&2
+  exit 1
+fi
+
 if [[ -n "$OUTPUT_DIR" ]]; then
   WORK_DIR="$(realpath -m -- "$OUTPUT_DIR")"
   if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" || -e "$WORK_DIR" || -L "$WORK_DIR" ]]; then
@@ -642,12 +665,25 @@ done
 printf 'server_command='
 printf '%q ' "$GRPC_BIN" "${server_args[@]}"
 printf '\n'
+"$PYTHON_BIN" - "$WORK_DIR/server-launch.json" "$GRPC_BIN" "${server_args[@]}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+environment = {key: os.environ[key] for key in (
+  "LD_LIBRARY_PATH", "DT_VALIDATION_NATIVE", "DT_VALIDATION_WEIGHT_POLICY",
+  "DT_VALIDATION_MAX_GPU_MIB", "DT_VALIDATION_MIN_HOST_MIB",
+) if key in os.environ}
+Path(sys.argv[1]).write_text(json.dumps({"command": sys.argv[2:], "environment": environment}, indent=2) + "\n")
+PY
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "RESULT=DRY_RUN"
   exit 0
 fi
 
-"$PYTHON_BIN" - "$SERVER_ADDRESS" "$SERVER_PORT" <<'PY'
+if [[ "$CONNECT_ONLY" != "1" ]]; then
+  "$PYTHON_BIN" - "$SERVER_ADDRESS" "$SERVER_PORT" <<'PY'
 import socket
 import sys
 
@@ -660,6 +696,7 @@ with socket.socket(family, socket.SOCK_STREAM) as listener:
     except OSError as error:
         raise SystemExit(f"error: server endpoint unavailable: {address}:{port}: {error}")
 PY
+fi
 
 SERVER_PID=""
 GPU_MONITOR_PID=""
@@ -690,16 +727,23 @@ if [[ "$GPU_METRICS" == "1" ]]; then
   echo "gpu_metrics=$WORK_DIR/gpu.csv"
 fi
 
-nohup "$GRPC_BIN" "${server_args[@]}" > "$SERVER_LOG" 2>&1 &
-SERVER_PID=$!
-echo "server_pid=$SERVER_PID"
+if [[ "$CONNECT_ONLY" == "1" ]]; then
+  ACTIVE_SERVER_PID="$CONNECTED_SERVER_PID"
+  SERVER_LOG="${DT_SESSION_SERVER_LOG:-$SERVER_LOG}"
+  echo "connected_server_pid=$ACTIVE_SERVER_PID"
+else
+  nohup "$GRPC_BIN" "${server_args[@]}" > "$SERVER_LOG" 2>&1 &
+  SERVER_PID=$!
+  ACTIVE_SERVER_PID="$SERVER_PID"
+  echo "server_pid=$SERVER_PID"
+fi
 
 READY=0
 for _ in $(seq 1 200); do
-  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  if ! kill -0 "$ACTIVE_SERVER_PID" 2>/dev/null; then
     break
   fi
-  if "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" --host "$HOST" echo --name "q6p-canary" >/dev/null 2>&1 && kill -0 "$SERVER_PID" 2>/dev/null; then
+  if "$PYTHON_BIN" "$ROOT/tools/dt_api_client.py" "${CLIENT_SCHEMA_ARGS[@]}" --host "$HOST" echo --name "q6p-canary" >/dev/null 2>&1 && kill -0 "$ACTIVE_SERVER_PID" 2>/dev/null; then
     READY=1
     break
   fi
@@ -746,7 +790,7 @@ fi
 run_request() {
   local MODEL_KEY="$1" WORK_DIR="$2" LAST_REQUEST="$3"
   local CONFIG_BIN="$WORK_DIR/config.bin" CLIENT_LOG="$WORK_DIR/client.log"
-  local REQUEST_SERVER_PID="$SERVER_PID"
+  local REQUEST_SERVER_PID="$ACTIVE_SERVER_PID"
   if ! kill -0 "$REQUEST_SERVER_PID" 2>/dev/null; then
     echo "RESULT=FAIL owned server exited before request"
     exit 1
@@ -765,7 +809,8 @@ run_request() {
         --output-dir "$WORK_DIR" \
         --chunked \
         --save-preview \
-        --max-responses "$MAX_RESPONSES" > "$CLIENT_LOG" 2>&1
+        --max-responses "$MAX_RESPONSES" 2>&1 | tee "$CLIENT_LOG" |
+      sed -un '/^current signpost:/p' >> "${DT_SESSION_PROGRESS_LOG:-/dev/null}"
     CANARY_RC=$?
   else
     timeout -k 10s "${TIMEOUT_SEC}s" \
@@ -780,7 +825,8 @@ run_request() {
         --output-dir "$WORK_DIR" \
         --chunked \
         --save-preview \
-        --max-responses "$MAX_RESPONSES" > "$CLIENT_LOG" 2>&1
+        --max-responses "$MAX_RESPONSES" 2>&1 | tee "$CLIENT_LOG" |
+      sed -un '/^current signpost:/p' >> "${DT_SESSION_PROGRESS_LOG:-/dev/null}"
     CANARY_RC=$?
   fi
   timeout -k 5s 15s \
@@ -801,7 +847,7 @@ run_request() {
   echo "--- client.log (tail) ---"
   tail -n 120 "$CLIENT_LOG" || true
   echo "--- server.log (tail) ---"
-  tail -n 120 "$SERVER_LOG" || true
+  if [[ -f "$SERVER_LOG" ]]; then tail -n 120 "$SERVER_LOG" || true; fi
 
   if [[ "$CANARY_RC" == "124" ]]; then
     echo "RESULT=FAIL canary timed out (${TIMEOUT_SEC}s)"

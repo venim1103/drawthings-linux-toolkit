@@ -1,5 +1,7 @@
 import json
+import fcntl
 import os
+import select
 import shlex
 import shutil
 import socket
@@ -14,6 +16,7 @@ from unittest.mock import patch
 
 from tools import dt_tensor_to_playable as decoder
 from tools.dt_make_config import _resolve_sampler
+from tools.dt_image_session import owned_process, process_identity, snapshot, validate_inputs
 
 
 class SamplerResolutionTests(unittest.TestCase):
@@ -220,6 +223,37 @@ class ImageCanarySequenceTests(unittest.TestCase):
             os.kill(process_id, 0)
         self.assertFalse((self.root / "output/q6p_canary_sequence-test/sequence_acceptance.json").exists())
 
+    def test_connected_request_never_stops_external_server(self):
+        external = subprocess.Popen([str(self.server)])
+        try:
+            result = self.run_canary(models=(), image_mode=False, dry_run=False,
+                                     extra=("--connect-only", "--server-pid", str(external.pid)))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(f"connected_server_pid={external.pid}", result.stdout)
+            self.assertIn(f"request_server_pid={external.pid}", result.stdout)
+            self.assertIsNone(external.poll())
+        finally:
+            external.kill()
+            external.wait()
+
+    def test_failed_connected_request_never_stops_external_server(self):
+        external = subprocess.Popen([str(self.server)])
+        try:
+            result = self.run_canary(models=(), dry_run=False,
+                                     extra=("--connect-only", "--server-pid", str(external.pid)))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("RESULT=FAIL no final generated output", result.stdout)
+            self.assertIsNone(external.poll())
+        finally:
+            external.kill()
+            external.wait()
+
+    def test_connected_request_requires_live_pid_before_output(self):
+        result = self.run_canary(extra=("--connect-only", "--server-pid", "0"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires a live --server-pid", result.stderr)
+        self.assertFalse((self.root / "output").exists())
+
     def test_timed_out_request_preserves_progress_and_cleans_up_owned_server(self):
         self.client.write_text(
             "import signal, sys\n"
@@ -263,6 +297,176 @@ class ImageCanarySequenceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("did not decode", result.stderr)
         self.assertNotIn("RESULT=PREFLIGHT_PASS", result.stdout)
+
+
+class ImageSessionTests(unittest.TestCase):
+    def test_signpost_filter_flushes_before_request_stream_closes(self):
+        with subprocess.Popen(["sed", "-un", "/^current signpost:/p"], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE) as process:
+            try:
+                process.stdin.write(b"response #1\ncurrent signpost: textEncoded\n")
+                process.stdin.flush()
+                self.assertTrue(select.select([process.stdout], [], [], 2)[0])
+                self.assertEqual(process.stdout.readline(), b"current signpost: textEncoded\n")
+            finally:
+                process.stdin.close()
+
+    def prepare_lifecycle(self):
+        fixture = ImageCanarySequenceTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.fixture = fixture
+        self.root = fixture.root
+        shutil.copyfile(Path(__file__).with_name("dt_image_session.py"), fixture.tools / "dt_image_session.py")
+        (fixture.tools / "dt_image.sh").write_text("fixture helper\n")
+        (self.root / "bundle.json").write_text(json.dumps({"model": "first.ckpt"}))
+        (fixture.tools / "dt_moss_convert.py").write_text(
+            "from pathlib import Path\n"
+            f"with Path({str(self.root / 'verify-count')!r}).open('a') as output: output.write('verified\\n')\n"
+            "print('first.ckpt')\n")
+        fixture.server.write_text(
+            f"#!{sys.executable}\nimport signal, socket, sys\n"
+            "listener = socket.socket()\n"
+            "listener.bind(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])))\n"
+            "listener.listen(32)\n"
+            "signal.pause()\n")
+        image = self.root / "fixture_image.bin"
+        header = struct.pack("<17I", decoder.IDENTIFIER_RAW, 0,
+                             decoder.CCV_TENSOR_FORMAT_NHWC, decoder.CCV_16F, 0,
+                             1, 256, 256, 3, *([0] * 8))
+        image.write_bytes(header + bytes(256 * 256 * 3 * 2))
+        fixture.client.write_text(
+            "import base64, json, shutil, signal, socket, sys\nfrom pathlib import Path\n"
+            "if 'echo' in sys.argv:\n"
+            "    address, port = sys.argv[sys.argv.index('--host') + 1].split(':')\n"
+            "    socket.create_connection((address, int(port)), timeout=1).close()\n"
+            "    models = [{'file': 'first.ckpt', 'version': 'moss_image'}]\n"
+            "    print(json.dumps({'override': {'models': base64.b64encode(json.dumps(models).encode()).decode()}}))\n"
+            "else:\n"
+            "    prompt = sys.argv[sys.argv.index('--prompt') + 1]\n"
+            "    if prompt == 'timeout': signal.pause()\n"
+            "    if prompt == 'fail': raise SystemExit(2)\n"
+            "    output = Path(sys.argv[sys.argv.index('--output-dir') + 1])\n"
+            f"    shutil.copyfile({str(image)!r}, output / 'image_fixture.bin')\n"
+            "    print('current signpost: textEncoded')\n"
+            "    print('response #1')\n"
+            "    print('generation stream finished')\n"
+            "    print('images written: 1')\n"
+            "    print('audio written: 0')\n")
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.port = listener.getsockname()[1]
+        self.session = self.root / f"output/image-session-{self.port}"
+        self.addCleanup(lambda: self.run_session("stop"))
+
+    def run_session(self, action, *, output=None, prompt="teapot", cache=None, mode="gpu"):
+        fixture = self.fixture
+        command = [sys.executable, str(fixture.tools / "dt_image_session.py"), action,
+                   "--bundle", str(self.root), "--port", str(self.port), "--mode", mode]
+        if cache is not None:
+            command.extend(("--cache-gib", str(cache)))
+        if action in ("start", "use"):
+            command.extend(("--", "--model", "first.ckpt", "--models-dir", str(fixture.models),
+                            "--grpc-bin", str(fixture.server), "--proto", str(fixture.proto),
+                            "--bindings-dir", str(fixture.bindings), "--cache-dir", str(self.root / "cache"),
+                            "--host", f"127.0.0.1:{self.port}", "--image-mode", "--tag", "session-test",
+                            "--require-model-version", "moss_image", "--timeout-sec", "1", "--prompt", prompt))
+            if output is not None:
+                command.extend(("--output-dir", str(output)))
+        return subprocess.run(command, cwd=self.root, capture_output=True, text=True, timeout=30,
+                              env=dict(os.environ, DT_VALIDATION_NATIVE=str(fixture.server)))
+
+    def test_persistent_lifecycle_reuses_pid_and_verifies_only_once(self):
+        self.prepare_lifecycle()
+        started = self.run_session("start", cache=4)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        state = json.loads((self.session / "state.json").read_text())
+        self.assertTrue(owned_process(state))
+        self.assertEqual(state["cache_gib"], 4)
+        for ordinal, prompt in enumerate(("teapot", "a red bicycle")):
+            output = self.root / f"results/request {ordinal}"
+            result = self.run_session("use", output=output, prompt=prompt)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads((output / "session-request.json").read_text())
+            self.assertEqual(report["pid"], state["pid"])
+            self.assertEqual(report["weights_cache_gib"], 4)
+            self.assertEqual(report["request"], ordinal + 1)
+            self.assertTrue((output / "image.png").is_file())
+        again = self.run_session("start")
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("already running", again.stderr)
+        self.assertEqual((self.root / "verify-count").read_text().splitlines(), ["verified"])
+        progress = Path(state["run_directory"]) / "current-client.log"
+        self.assertEqual(progress.read_text().splitlines(), ["current signpost: textEncoded"] * 2)
+        status = self.run_session("status")
+        self.assertTrue(json.loads(status.stdout)["alive"])
+        stopped = self.run_session("stop")
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertFalse(owned_process(state))
+
+    def test_session_rejects_busy_changed_and_mismatched_requests_before_output(self):
+        self.prepare_lifecycle()
+        started = self.run_session("start")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        output = self.root / "must-not-exist"
+        with (self.session / "request.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = self.run_session("use", output=output)
+            status = self.run_session("status")
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertTrue(json.loads(status.stdout)["alive"])
+        self.assertIn("session busy", busy.stderr)
+        mismatch = self.run_session("use", output=output, mode="offload")
+        self.assertIn("policy mismatch", mismatch.stderr)
+        mismatch = self.run_session("use", output=output, cache=4)
+        self.assertIn("cache mismatch", mismatch.stderr)
+        (self.fixture.models / "first.ckpt").write_bytes(b"changed")
+        changed = self.run_session("use", output=output)
+        self.assertIn("inputs changed", changed.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual((self.root / "verify-count").read_text().splitlines(), ["verified"])
+
+    def test_failed_or_timed_out_generation_stops_owned_session(self):
+        self.prepare_lifecycle()
+        for prompt in ("fail", "timeout"):
+            with self.subTest(prompt=prompt):
+                started = self.run_session("start")
+                self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+                state = json.loads((self.session / "state.json").read_text())
+                output = self.root / f"results/{prompt}"
+                result = self.run_session("use", output=output, prompt=prompt)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(owned_process(state))
+                self.assertEqual(json.loads((self.session / "state.json").read_text())["phase"], "failed")
+                self.assertFalse((output / "image_acceptance.json").exists())
+
+    def test_identity_rejects_reused_or_missing_process(self):
+        state = {"pid": os.getpid(), "identity": process_identity(os.getpid())}
+        self.assertTrue(owned_process(state))
+        state["identity"] = dict(state["identity"], start_ticks="wrong")
+        self.assertFalse(owned_process(state))
+        self.assertIsNone(process_identity(999999999))
+
+    def test_pinned_inputs_reject_changes_additions_and_model_links(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            models = bundle / "models"
+            models.mkdir()
+            (bundle / "bundle.json").write_text("{}")
+            model = models / "model.ckpt"
+            model.write_bytes(b"first")
+            state = {"bundle": str(bundle), "runtime_paths": [], "inputs": snapshot(bundle, [])}
+            validate_inputs(state)
+            model.write_bytes(b"other")
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                validate_inputs(state)
+            state["inputs"] = snapshot(bundle, [])
+            (models / "custom_lora.json").write_text("[]")
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                validate_inputs(state)
+            (models / "linked.ckpt").symlink_to(model)
+            with self.assertRaisesRegex(ValueError, "independent writable"):
+                snapshot(bundle, [])
 
 
 class ImageHelperTests(unittest.TestCase):
@@ -317,6 +521,35 @@ class ImageHelperTests(unittest.TestCase):
         self.assertEqual(report["environment"]["DT_VALIDATION_WEIGHT_POLICY"], "gpu")
         self.assertEqual(report["environment"]["DT_VALIDATION_CLIENT_LOG"],
                          str(self.root / "output/q6p_canary_preset_test/client.log"))
+
+    def test_session_start_routes_without_prompt_or_repeated_helper_verification(self):
+        bundle, _, _ = self.prepare_lora_preset()
+        (bundle / "bundle.json").write_text(json.dumps({"quantization": "i4x", "model": "my_moss_i4x.ckpt"}))
+        (self.root / "tools/dt_moss_convert.py").write_text("raise SystemExit('helper must not verify here')\n")
+        (self.root / "tools/dt_image_session.py").write_text("import json, sys; print(json.dumps(sys.argv[1:]))\n")
+        result = self.run_helper("--preset", "mosskr2-lora4", "--session", "start", "--weights-cache", "4")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(arguments[0], "start")
+        self.assertEqual(arguments[arguments.index("--cache-gib") + 1], "4")
+        self.assertEqual(arguments[arguments.index("--server-weights-cache") + 1], "4")
+
+    def test_session_lifecycle_status_and_stop_need_no_prompt_or_preset(self):
+        (self.root / "tools/dt_image_session.py").write_text("import json, sys; print(json.dumps(sys.argv[1:]))\n")
+        for action in ("status", "stop"):
+            result = self.run_helper("--session", action, "--port", "7863")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [action, "--port", "7863"])
+
+    def test_session_invalid_combinations_leave_one_shot_defaults_unchanged(self):
+        for arguments in (("--session", "unknown"), ("--session", "start"),
+                          ("--weights-cache", "4", "prompt"),
+                          ("--preset", "mosskr2-lora4", "--session", "start", "--dry-run"),
+                          ("--weights-cache", "9", "prompt")):
+            with self.subTest(arguments=arguments):
+                result = self.run_helper(*arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("error:", result.stderr)
 
     def test_lora_preset_overrides_are_order_independent(self):
         self.prepare_lora_preset()
