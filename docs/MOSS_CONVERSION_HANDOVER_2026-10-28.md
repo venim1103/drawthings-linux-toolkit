@@ -1,6 +1,75 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-10-29. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints; arbitrary custom checkpoints and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-11-02. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints. A four-step LoRA and source-only adapter reconstruction also work with MOSSkr2 i4x; arbitrary checkpoints/adapters and broader quality coverage are not yet certified.
+
+## MOSSkr2 i4x Four-Step LoRA: October 30
+
+The user supplied a BF16 MOSS four-step LoRA and its Draw Things iOS import, and reported that the imported adapter works with our MOSSkr2 i4x on iOS. The Linux tests below independently verify native LoRA support on the accepted private server. They finished on October 30 before the session was paused; saved configs, image hashes, source audits and model preservation were verified again on November 2 without repeating inference.
+
+### Adapter Analysis
+
+- Source: `dt-models/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors`, SHA-256 `632ff58fba4b09893ba591c043f447240768cf9ac989e12bffa25f5d684b6616`.
+- iOS import: `dt-models/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16_lora_f16.ckpt`, SHA-256 `c59aba6f10f3aa6f09731298abf5348c9779cc40b48fc9c5d537586e7ba3af4e`.
+- The source contains 756 BF16 tensors: 252 modules with down/up/alpha across all 42 main layers. Rank is dynamic, **2-121, mean 72.13**, not a fixed rank 72. Each module's alpha equals its own rank. Embedded metadata describes dynamic resizing from rank 128; this is metadata, not independent training-provenance verification.
+- The existing LoRA verifier and freshly built MOSS contract pass all 252 modules against the iOS import. Native storage has 294 down/up pairs, **588 tensors**: 84 Q/K up matrices require rotary deinterleaving; the packed FFN up/gate projection splits into two native up matrices sharing duplicated down factors. Alpha/rank scaling is incorporated into the up factors; alpha does not become a separate native tensor.
+- Private bundle: `output/moss-models/mosskr2-i4x-4step-lora-test-20261030`. The base and companions are independent writable regular copies, and its separate `custom_lora.json` explicitly declares `version: moss_image` and an empty prefix for both adapters. Active catalogs and the original working bundle are unchanged. No native runtime change was needed.
+
+### Native Results
+
+All three runs used the accepted `acafef3d...` private server and resource guard, CPU offload, `--fread-preferred`, weights cache zero, **512x512, four steps, DDIMTrailing, CFG 1, shift 5, seed 4242**, empty negative prompt and the orange-teapot prompt. LoRA runs used weight 1.0, mode 0 (all); the control had no LoRA. Saved FlatBuffers configurations verify these settings. Each request had a 480-second cap.
+
+| Adapter | Result | Wall Seconds Including Startup/Cleanup | GPU Samples | Peak MiB | Max C | Missing Utilization Samples |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| iOS import | PASS, clean prompt-following image | 49.452 | 77 | 2,305 | 57 | 1 |
+| No-LoRA control | PASS, visibly less resolved image | 49.114 | 80 | 2,305 | 58 | 0 |
+| Source reconstruction | PASS, clean prompt-following image | 41.153 | 65 | 2,305 | 57 | 0 |
+
+All memory/temperature samples are present. All runs pass decoded native `moss_image` selection, one finite final image, zero audio, complete stream/chunks and post-Echo. The viewed adapter images clearly show an orange ceramic teapot on a white table beside a green plant with bright window light. The control is visibly hazier and less resolved; its different raw output and PNG show this is not just acceptance of a LoRA field. Timings are individual observations, not a controlled benchmark.
+
+Images are under `output/q6p_canary_<tag>/image.png`, with tags `mosskr2_i4x_lora4_20261030_a`, `mosskr2_i4x_no_lora4_20261030_a` and `mosskr2_i4x_our_lora4_20261030_a`, respectively.
+
+### Source-Only Reconstruction
+
+The isolated feasibility artifact is `output/moss-models/mosskr2-i4x-4step-lora-test-20261030/models/moss_sft_4_steps_v2_ourconvert_lora_f16.ckpt`, **345,235,456 bytes**, SHA-256 `26e832133822e9347d08add519a6687075a9c4b11260cae7cd5d1cd000b93a15`. It was built from the safetensors using the existing source-key normalization, MOSS contract, split/rotary transforms and F16 store writer, not copied from iOS learned values. The iOS file was used as a comparison reference.
+
+All 588 tensors have exact native metadata matches. Only two payloads are byte-identical: 454,066 values differ by at most **5.960464477539063e-08**, one FP16 subnormal unit. No differences occur outside the subnormal range. The existing writer's rounding policy was not changed. Both artifacts pass the same 252-module source audit at absolute tolerance `1e-5`.
+
+The reconstructed adapter produces a clean image, but **not pixel-identical output**: mean absolute RGB difference from the imported-adapter render is 4.51973 on the 0-255 scale, versus 38.28836 for the no-LoRA control. These are output differences, not quality scores or proof that rounding alone caused the differences; no deterministic repeat study was performed. This demonstrates source-to-native conversion feasibility for this adapter, not general adapter coverage or iOS image parity.
+
+No reusable MOSS LoRA conversion CLI was added. The next tooling step is a fail-closed converter with coverage/rank/alpha checks, split-down duplication and Q/K-up rotary tests, exact storage checks, atomic no-overwrite publication and checkpoint-specific image acceptance. The legacy LTX LoRA converter is not certified for MOSS by this study.
+
+### Preservation And Repeat
+
+November 2 verification passes all **nine protected hashes plus nine source/conversion/companion/candidate hashes**, both original and test bundle integrity checks, both complete source audits and the full 588-tensor comparison. The source LoRA, iOS import, reconstructed adapter, canonical MOSSkr2 BF16/F16/i4x, companions, accepted server, installed defaults, legacy CPU tools and active catalogs are unchanged. Private LoRA files remain writable regular single-link files; the imported copy does not alias its canonical source. No native process remains, port 7862 is free and GPU memory/utilization are zero. No model or adapter was registered globally or promoted as a default.
+
+The image helper does not expose LoRA inputs or CFG 1, so repeat this profile through the existing canary, using the local guard:
+
+```bash
+tag="mosskr2_lora4_$(date +%Y%m%d_%H%M%S)"
+env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
+  LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}" \
+  DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
+  DT_VALIDATION_CLIENT_LOG="$PWD/output/q6p_canary_${tag}/client.log" \
+  bash tools/run_q6p_canary_once.sh \
+    --grpc-bin "$PWD/output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh" \
+    --proto output/upgrades/community-0621d819-qwen35-cuda/Libraries/GRPC/Models/Sources/imageService/imageService.proto \
+    --cache-dir output/upgrades/schemas/0621d819 \
+    --bindings-dir output/upgrades/schemas/0621d819/flatbuffers \
+    --models-dir "$PWD/output/moss-models/mosskr2-i4x-4step-lora-test-20261030/models" \
+    --model mosskr2_image_sft_v1_ourconvert_i4x.ckpt \
+    --require-model-version moss_image \
+    --require-model-file qwen_3.5_9b_i5x.ckpt --require-model-file flux_2_vae_f16.ckpt \
+    --lora moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16_lora_f16.ckpt:1.0 \
+    --host 127.0.0.1:7862 --image-mode --width 512 --height 512 \
+    --steps 4 --sampler DDIMTrailing --guidance-scale 1 --shift 5 --seed 4242 \
+    --prompt 'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.' \
+    --negative-prompt '' --server-cpu-offload --server-fread-preferred --server-weights-cache 0 \
+    --gpu-metrics --final-mode --timeout-sec 480 --tag "$tag"
+```
+
+To select the reconstructed adapter, replace only the `--lora` basename with `moss_sft_4_steps_v2_ourconvert_lora_f16.ckpt:1.0`; omit that option for the control. Confirm resources first and serialize inference with other native/GPU jobs, conversion, copying and large hashes. Do not rerun merely to reproduce the accepted study. This is one adapter/model/prompt/profile, not broad LoRA compatibility, GPU-only certification, framework parity or general low-step Turbo certification. Existing CUFILE diagnostics occur during successful reads.
+
+Evidence under `output/upgrades/moss-image-stateful-20261027/`: `mosskr2-lora-inspection-20261030.json`, `mosskr2-lora-reconstruction-20261030.json`, `mosskr2-lora-acceptance-20261030.json`, `mosskr2-lora-preservation-20261102.json` and `mosskr2-i4x-{lora4,no-lora4,our-lora4}-20261030-a.log`. All model payloads and reports remain local and uncommitted. No source/runtime change or additional image test was needed when resuming.
 
 ## MoodyMOSS i4x Result: October 29
 
