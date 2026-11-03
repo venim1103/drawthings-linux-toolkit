@@ -1,6 +1,8 @@
 # MOSS Conversion Handover
 
-Created: 2026-10-28. Updated: 2026-11-02. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints. A four-step LoRA and source-only adapter reconstruction also work with MOSSkr2 i4x. Short GPU-policy tests now pass for MOSSkr2 i4x with and without the imported LoRA; arbitrary checkpoints/adapters and broader quality coverage are not yet certified.
+Created: 2026-10-28. Updated: 2026-11-03. Original-source, custom merged-SFT and MoodyMOSS end-to-end tests now pass, including our own i4x quantization of both custom checkpoints. A four-step LoRA and source-only adapter reconstruction also work with MOSSkr2 i4x. Short GPU-policy tests now pass for MOSSkr2 i4x with and without the imported LoRA; arbitrary checkpoints/adapters and broader quality coverage are not yet certified.
+
+Optional test bundles were [retired on November 3](#model-bundle-retirement-november-3). All canonical models remain in `dt-models`; only the default pool, MOSSkr2 four-step preset and MoodyMOSS i4x pool remain prepared. Older full-precision repeat commands require bundle preparation first. The current-use command below selects the retained MOSSkr2 bundle without enabling its LoRA preset.
 
 ## GPU-Preferred Custom i4x: November 2
 
@@ -45,7 +47,7 @@ env -u LD_PRELOAD -u DT_SAMPLE_CPU_STACKS -u DT_TARGETED_PROFILE_CLIENT_LOG \
   DT_VALIDATION_NATIVE="$PWD/output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/bazel-bin/Apps/gRPCServerCLI" \
   DT_VALIDATION_CLIENT_LOG="$PWD/output/q6p_canary_${tag}/client.log" \
   bash tools/dt_image.sh \
-    --bundle output/moss-models/mosskr2-sft-v1-i4x \
+    --bundle output/moss-models/mosskr2-i4x-4step-lora-test-20261030 \
     --grpc-bin output/upgrades/moss-image-stateful-20261027/guard-moss-converted-server.sh \
     --mode gpu --steps 8 --metrics --tag "$tag" \
     'An orange ceramic teapot on a white table beside a green plant, bright window light, product photograph.'
@@ -744,7 +746,32 @@ output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/.cache/cas
 
 Cleanup completed with all 5,803 protected identity records unchanged. Canonical models, every current prepared bundle, images, logs, installed/legacy tools, resource guards, schemas, accepted CCV source and the main `.cache/bazel-*` roots were retained. Runtime binaries resolve into those retained Bazel roots, not the removed CAS directories. Future native builds may take longer while compiler caches rebuild.
 
-`output` fell from about 133 GiB to 122 GiB; Linux available space rose by 12,086,231,040 bytes to about 301 GiB. About 88 GiB remains in prepared model bundles still used by documented commands. No additional model-pool deletion or Windows VHD compaction was performed. The local deletion manifest, before/after identity snapshots and result are retained under `output/upgrades/moss-image-stateful-20261027/cleanup-evidence-20261103-compiler-cas/`.
+`output` fell from about 133 GiB to 122 GiB; Linux available space rose by 12,086,231,040 bytes to about 301 GiB. At this stage about 88 GiB remained in prepared model bundles. No model-pool deletion or Windows VHD compaction was performed in this cache-only pass. The local deletion manifest, before/after identity snapshots and result are retained under `output/upgrades/moss-image-stateful-20261027/cleanup-evidence-20261103-compiler-cas/`.
+
+### Model Bundle Retirement: November 3
+
+The user requested practical storage cleanup rather than retaining every historical runtime copy, and explicitly approved removing these four entire optional bundles:
+
+```text
+output/moss-models/base-original-85975793-trailer
+output/moss-models/mosskr2-sft-v1
+output/moss-models/moodymoss-v10-turbo
+output/moss-models/mosskr2-sft-v1-i4x
+```
+
+Their six distinct canonical source hashes were verified against the bundle manifests before deletion. The retained four-step bundle's denoiser, Qwen encoder and VAE also passed full hash checks against the duplicate MOSSkr2 i4x bundle. Removal reclaimed 69,242,322,944 allocated bytes, **64.487 GiB**, with the same observed increase in filesystem free space. All 5,693 protected identity records were unchanged. All of `dt-models`, the default MOSS pool, MOSSkr2 four-step preset, MoodyMOSS i4x bundle, user images, runtimes, guards, schemas and required source/build roots were retained.
+
+`output` is now about **57 GiB** and Linux has about **365 GiB available**. Both `dt_image.sh --check` and `dt_image.sh --preset mosskr2-lora4 --check`, with a placeholder prompt, returned `PREFLIGHT_PASS`; no images were generated. Old full-precision bundle paths above no longer exist. Recreate a needed bundle from its canonical converted checkpoint, without reconverting or downloading the source:
+
+```bash
+.venv/bin/python tools/dt_moss_convert.py \
+  --prepare-existing dt-models/mosskr2_image_sft_v1_ourconvert_f16.ckpt \
+  --prepare-inference output/moss-models/mosskr2-sft-v1
+```
+
+For the original Base or MoodyMOSS F16 variants, substitute their canonical `moss_image_base_ourconvert_f16.ckpt` or `moodymoss_v10_turbo_ourconvert_f16.ckpt` and the corresponding destination above. For i4x, add `--quantization i4x`; there is no need to rebuild the duplicate MOSSkr2 i4x bundle while the retained four-step bundle exists. Passing that bundle with `--bundle`, rather than `--preset`, does not automatically select a LoRA. Keep only runtime pools needed by current workflows, and stop sessions before deleting their pool. Canonical paths and symlinked/hardlinked inputs remain intentionally refused by the image helper.
+
+The local verified plan and deletion result are under `output/upgrades/moss-image-stateful-20261027/cleanup-evidence-20261103-model-bundles/`. No further historical outputs or Windows VHD were deleted/compacted in this pass.
 
 ## Next Investigation
 
