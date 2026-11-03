@@ -730,7 +730,21 @@ The user reported Windows host free space falling roughly from 120 GB to 50 GB. 
 
 The user approved deleting only payloads from `output/moss-models/base-original-85975793` and `output/moss-models/base-original-85975793-v2`. Seven payload files totaling 38,205,521,920 bytes were removed; catalogs, manifests, run evidence and about 1.1 MiB native metadata were retained. Those two old bundles are intentionally not runnable.
 
-The one replacement bundle contains 19,100,000,256 payload bytes. Net reclaimed model-payload space is 19,105,521,664 bytes, about 17.8 GiB. Last Linux free space was about 330 GiB. Deletion frees reusable Linux blocks but does not guarantee immediate Windows VHD shrinkage; the Windows disk is not mounted/accessibly measurable here. No other pool/cache deletion or Docker reset is authorized.
+The one replacement bundle contains 19,100,000,256 payload bytes. Net reclaimed model-payload space is 19,105,521,664 bytes, about 17.8 GiB. At that checkpoint, Linux free space was about 330 GiB. Deletion frees reusable Linux blocks but does not guarantee immediate Windows VHD shrinkage; the Windows disk is not mounted/accessibly measurable here. At that checkpoint, no other pool/cache deletion or Docker reset was authorized.
+
+### Compiler Cache Cleanup: November 3
+
+The user approved removing only the three rebuildable compiler CAS directories below. They occupied 12,088,143,872 allocated bytes, about 11.3 GiB:
+
+```text
+output/upgrades/community-0621d819/.cache/cas
+output/upgrades/community-0621d819-qwen35-cuda/.cache/cas
+output/upgrades/community-0621d819-qwen35-cuda-prefetch-guard/.cache/cas
+```
+
+Cleanup completed with all 5,803 protected identity records unchanged. Canonical models, every current prepared bundle, images, logs, installed/legacy tools, resource guards, schemas, accepted CCV source and the main `.cache/bazel-*` roots were retained. Runtime binaries resolve into those retained Bazel roots, not the removed CAS directories. Future native builds may take longer while compiler caches rebuild.
+
+`output` fell from about 133 GiB to 122 GiB; Linux available space rose by 12,086,231,040 bytes to about 301 GiB. About 88 GiB remains in prepared model bundles still used by documented commands. No additional model-pool deletion or Windows VHD compaction was performed. The local deletion manifest, before/after identity snapshots and result are retained under `output/upgrades/moss-image-stateful-20261027/cleanup-evidence-20261103-compiler-cas/`.
 
 ## Next Investigation
 
